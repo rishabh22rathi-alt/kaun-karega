@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-export async function POST(req: Request) {
+export async function POST(req) {
   try {
     const body = await req.json();
 
@@ -13,7 +13,6 @@ export async function POST(req: Request) {
       );
     }
 
-    // Google Apps Script Endpoint
     const SHEET_URL =
       "https://script.google.com/macros/s/AKfycby3WrvppRyQkfjE8hr8AL05IEqTwqB0Vylyup4QVXTO4N8knWLVZlTUDzQJqctpWGI/exec";
 
