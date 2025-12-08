@@ -7,9 +7,12 @@ export async function POST(
 ) {
   try {
     await resolveCommunityRequest(params.communityId);
-    return Response.json({ ok: true });
+    return NextResponse.json({ ok: true });
   } catch (error) {
     console.error("Admin community resolve error:", error);
-    return Response.json({ ok: false, error: "Internal error" }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: "Internal error" },
+      { status: 500 }
+    );
   }
 }
