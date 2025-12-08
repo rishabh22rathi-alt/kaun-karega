@@ -32,7 +32,7 @@ function PageContent() {
     if (typeof window === "undefined") return;
     const role = localStorage.getItem("kk_user_role");
     if (role === "provider") {
-      router.replace(redirectTo || "/dashboard");
+      router.replace(redirectTo || "/provider-dashboard");
     } else if (role === "receiver") {
       router.replace(redirectTo || "/");
     }
@@ -71,7 +71,7 @@ function PageContent() {
           localStorage.setItem("kk_last_phone", phoneDigits);
         }
         const query = new URLSearchParams({ phone: phoneDigits });
-        if (redirectTo) query.set("redirectTo", redirectTo);
+      if (redirectTo) query.set("redirectTo", redirectTo);
         router.push(`/otp?${query.toString()}`);
       }
     } catch (err) {

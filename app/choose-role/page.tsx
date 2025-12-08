@@ -30,7 +30,7 @@ function PageContent() {
     if (typeof window !== "undefined") {
       const role = localStorage.getItem("kk_user_role");
       if (role === "provider") {
-        router.replace("/dashboard");
+        router.replace("/provider-dashboard");
         return;
       }
       if (role === "receiver") {

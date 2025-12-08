@@ -37,7 +37,7 @@ function PageContent() {
     if (typeof window !== "undefined") {
       const role = localStorage.getItem("kk_user_role");
       if (role === "provider") {
-        router.replace(redirectTo || "/dashboard");
+        router.replace(redirectTo || "/provider-dashboard");
         return;
       }
       if (role === "receiver") {
@@ -122,7 +122,7 @@ function PageContent() {
       }
 
       if (status === "provider") {
-        router.replace("/dashboard");
+        router.replace("/provider-dashboard");
       } else if (status === "receiver") {
         router.replace("/");
       } else {
