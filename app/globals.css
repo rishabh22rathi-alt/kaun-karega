@@ -1,0 +1,40 @@
+@import "tailwindcss";
+
+/* Light mode default variables */
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+/* Tailwind theme variables */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+/* Dark mode */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+/* Global body styling */
+body {
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+  /* 
+   NOTE: Do NOT set background here.
+   Each page (like homepage) should control its own background.
+  */
+}
+
+/* Optional: Make sure pages stretch full height */
+html, body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
