@@ -1,12 +1,27 @@
 ﻿"use client";
 
-"use client";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState, FormEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 type UserStatus = "provider" | "receiver" | "new";
 
 export default function OtpPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="min-h-screen bg-[#FFE3C2] flex items-center justify-center px-4 py-10">
+          <div className="w-full max-w-md rounded-2xl bg-white shadow-lg p-8 text-sm text-slate-700">
+            Loading OTP form...
+          </div>
+        </main>
+      }
+    >
+      <PageContent />
+    </Suspense>
+  );
+}
+
+function PageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [phone, setPhone] = useState("");
@@ -42,7 +57,7 @@ export default function OtpPage() {
     if (cached) {
       setPhone(cached);
     }
-  }, [router, searchParams]);
+  }, [router, searchParams, redirectTo]);
 
   const persistSession = (status: UserStatus, digits: string) => {
     if (typeof window === "undefined") return;
@@ -166,4 +181,3 @@ export default function OtpPage() {
     </main>
   );
 }
-

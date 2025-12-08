@@ -1,10 +1,26 @@
 "use client";
 
-"use client";
+import { Suspense } from "react";
 import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 export default function ChatEntryPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="min-h-screen bg-[#FFE3C2] flex items-center justify-center px-4 py-8">
+          <div className="rounded-xl bg-white shadow-lg px-6 py-4 text-sm text-slate-700">
+            Opening chat...
+          </div>
+        </main>
+      }
+    >
+      <PageContent />
+    </Suspense>
+  );
+}
+
+function PageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const taskId = searchParams.get("taskId") || "";

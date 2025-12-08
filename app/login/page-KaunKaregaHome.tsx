@@ -1,10 +1,25 @@
 ﻿"use client";
 
-"use client";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState, FormEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 export default function LoginPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="min-h-screen bg-[#FFE3C2] flex items-center justify-center px-4 py-10">
+          <div className="w-full max-w-md rounded-2xl bg-white shadow-lg p-8 text-sm text-slate-700">
+            Loading login...
+          </div>
+        </main>
+      }
+    >
+      <PageContent />
+    </Suspense>
+  );
+}
+
+function PageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [phone, setPhone] = useState("");
@@ -48,22 +63,17 @@ export default function LoginPage() {
         body: JSON.stringify({ phone: phoneDigits }),
       });
 
-      
-      
       const data = await res.json();
-      console.log(res);console.log(data);
       if (!res.ok || !data.ok) {
-          console.log('Response OK but data not OK');
-          setError(data.error || "Failed to send OTP. Try again.");
-        } else {
-          console.log('OTP sent successfully');
-          if (typeof window !== "undefined") {
-            localStorage.setItem("kk_last_phone", phoneDigits);
-          }
-          const query = new URLSearchParams({ phone: phoneDigits });
-          if (redirectTo) query.set("redirectTo", redirectTo);
-          router.push(`/otp?${query.toString()}`);
+        setError(data.error || "Failed to send OTP. Try again.");
+      } else {
+        if (typeof window !== "undefined") {
+          localStorage.setItem("kk_last_phone", phoneDigits);
         }
+        const query = new URLSearchParams({ phone: phoneDigits });
+        if (redirectTo) query.set("redirectTo", redirectTo);
+        router.push(`/otp?${query.toString()}`);
+      }
     } catch (err) {
       setError("Network error. Please try again.");
     } finally {

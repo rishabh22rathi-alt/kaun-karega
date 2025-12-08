@@ -1,7 +1,6 @@
-"use client";
+﻿"use client";
 
-"use client";
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import WhenNeedIt from "../components/WhenNeedIt";
 import AreaSelection from "@/app/(public)/components/AreaSelection";
@@ -61,6 +60,22 @@ const MASTER_AREAS = [
 const POPULAR_AREAS = ["Sardarpura", "Shastri Nagar"];
 
 export default function RequestFlowPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex min-h-screen flex-col items-center justify-center bg-white px-4 py-10">
+          <div className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-700 shadow-sm">
+            Loading request flow...
+          </div>
+        </div>
+      }
+    >
+      <PageContent />
+    </Suspense>
+  );
+}
+
+function PageContent() {
   const params = useSearchParams();
   const router = useRouter();
 
@@ -146,7 +161,7 @@ export default function RequestFlowPage() {
             <textarea
               value={details}
               onChange={(e) => setDetails(e.target.value)}
-              placeholder="Describe your work in 1–2 sentences..."
+              placeholder="Describe your work in 1-2 sentences..."
               className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-800 shadow-sm focus:border-[#0EA5E9] focus:outline-none focus:ring-2 focus:ring-[#0EA5E9]/30"
               rows={4}
             />

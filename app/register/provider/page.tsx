@@ -1,10 +1,25 @@
 ﻿"use client";
 
-"use client";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState, FormEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 export default function ProviderRegisterPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="min-h-screen bg-[#FFE3C2] flex items-center justify-center px-4 py-10">
+          <div className="w-full max-w-xl rounded-2xl bg-white shadow-lg p-8 text-sm text-slate-700">
+            Loading provider registration...
+          </div>
+        </main>
+      }
+    >
+      <PageContent />
+    </Suspense>
+  );
+}
+
+function PageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -169,4 +184,3 @@ export default function ProviderRegisterPage() {
     </main>
   );
 }
-

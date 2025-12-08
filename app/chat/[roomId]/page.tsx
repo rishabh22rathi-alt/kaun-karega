@@ -1,6 +1,6 @@
 "use client";
 
-"use client";
+import { Suspense } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 type Message = {
@@ -33,6 +33,22 @@ type PageProps = {
 };
 
 export default function ChatPage({ params }: PageProps) {
+  return (
+    <Suspense
+      fallback={
+        <main className="min-h-screen bg-[#FFE3C2] flex items-center justify-center px-4 py-8">
+          <div className="rounded-xl bg-white shadow-lg px-6 py-4 text-sm text-slate-700">
+            Loading chat...
+          </div>
+        </main>
+      }
+    >
+      <PageContent params={params} />
+    </Suspense>
+  );
+}
+
+function PageContent({ params }: PageProps) {
   const { roomId } = params;
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");

@@ -1,6 +1,8 @@
-﻿import type { ReactNode } from "react";
-import Sidebar from "@/components/Sidebar";
-import SidebarToggle from "@/components/SidebarToggle";
+import type { ReactNode } from "react";
+import dynamic from "next/dynamic";
+
+const Sidebar = dynamic(() => import("@/components/Sidebar"));
+const SidebarToggle = dynamic(() => import("@/components/SidebarToggle"));
 
 export default function ProviderLayout({ children }: { children: ReactNode }) {
   return (

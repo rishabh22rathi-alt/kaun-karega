@@ -1,10 +1,25 @@
 ﻿"use client";
 
-"use client";
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 export default function ChooseRolePage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="min-h-screen bg-[#FFE3C2] flex items-center justify-center px-4 py-10">
+          <div className="rounded-2xl bg-white p-6 text-sm text-slate-700 shadow-lg">
+            Loading role chooser...
+          </div>
+        </main>
+      }
+    >
+      <PageContent />
+    </Suspense>
+  );
+}
+
+function PageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [phone, setPhone] = useState("");
@@ -71,9 +86,7 @@ export default function ChooseRolePage() {
             onClick={() => goTo("/register/receiver")}
             className="rounded-2xl border-2 border-orange-400 bg-orange-50 px-5 py-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg"
           >
-            <p className="text-sm uppercase tracking-wide text-orange-500">
-              Service Receiver
-            </p>
+            <p className="text-sm uppercase tracking-wide text-orange-500">Service Receiver</p>
             <p className="text-lg font-semibold text-slate-900">I need help with tasks</p>
           </button>
         </div>
@@ -81,4 +94,3 @@ export default function ChooseRolePage() {
     </main>
   );
 }
-
