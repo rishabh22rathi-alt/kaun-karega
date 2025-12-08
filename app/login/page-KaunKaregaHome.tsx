@@ -1,5 +1,6 @@
 ﻿"use client";
 
+"use client";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
@@ -109,4 +110,3 @@ export default function LoginPage() {
     </main>
   );
 }
-

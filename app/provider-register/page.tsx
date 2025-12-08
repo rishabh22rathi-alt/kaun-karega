@@ -1,5 +1,6 @@
 "use client";
 
+"use client";
 import { FormEvent, useMemo, useState } from "react";
 
 const SERVICE_OPTIONS = [

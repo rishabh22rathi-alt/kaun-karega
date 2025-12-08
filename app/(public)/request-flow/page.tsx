@@ -1,5 +1,6 @@
 "use client";
 
+"use client";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import WhenNeedIt from "../components/WhenNeedIt";

@@ -1,5 +1,6 @@
 "use client";
 
+"use client";
 import { ReactNode, useEffect, useState } from "react";
 import AdminSidebar from "@/components/AdminSidebar";
 import AdminTopbar from "@/components/AdminTopbar";

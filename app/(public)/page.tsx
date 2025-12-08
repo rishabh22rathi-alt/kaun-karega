@@ -1,6 +1,7 @@
 ﻿"use client";
 
 import Image from "next/image";
+"use client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { FaSearch } from "react-icons/fa";
