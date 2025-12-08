@@ -3,18 +3,18 @@
 import { useState } from "react";
 
 export default function PostTaskPage() {
-  const [taskTitle, setTaskTitle] = useState("");
-  const [taskDescription, setTaskDescription] = useState("");
-  const [location, setLocation] = useState("");
-  const [budget, setBudget] = useState("");
+  const [category, setCategory] = useState("");
+  const [details, setDetails] = useState("");
+  const [area, setArea] = useState("");
+  const [urgency, setUrgency] = useState("Today");
   const [phone, setPhone] = useState("");
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
   const handleSubmit = async () => {
-    if (!taskTitle || !taskDescription || !location || !phone) {
-      setError("Please fill all required fields");
+    if (!category || !details || !area || !urgency || !phone) {
+      setError("Please fill all required fields.");
       return;
     }
 
@@ -23,15 +23,15 @@ export default function PostTaskPage() {
     setMessage("");
 
     try {
-      const res = await fetch("/api/save-task", {
+      const res = await fetch("/api/tasks/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          category,
+          details,
+          area,
+          urgency,
           phone,
-          taskTitle,
-          taskDescription,
-          location,
-          budget,
         }),
       });
 
@@ -39,13 +39,13 @@ export default function PostTaskPage() {
 
       if (data.success) {
         setMessage("Task posted successfully!");
-        setTaskTitle("");
-        setTaskDescription("");
-        setLocation("");
-        setBudget("");
+        setCategory("");
+        setDetails("");
+        setArea("");
+        setUrgency("Today");
         setPhone("");
       } else {
-        setError("Failed to post task");
+        setError(data.message || "Failed to post task");
       }
     } catch (err) {
       setError("Network error");
@@ -63,9 +63,9 @@ export default function PostTaskPage() {
 
       <input
         type="text"
-        placeholder="Task Title (Required)"
-        value={taskTitle}
-        onChange={(e) => setTaskTitle(e.target.value)}
+        placeholder="Category (Required)"
+        value={category}
+        onChange={(e) => setCategory(e.target.value)}
         style={{
           padding: 10,
           width: "100%",
@@ -76,9 +76,9 @@ export default function PostTaskPage() {
       />
 
       <textarea
-        placeholder="Task Description (Required)"
-        value={taskDescription}
-        onChange={(e) => setTaskDescription(e.target.value)}
+        placeholder="Task Details (Required)"
+        value={details}
+        onChange={(e) => setDetails(e.target.value)}
         rows={4}
         style={{
           padding: 10,
@@ -91,9 +91,9 @@ export default function PostTaskPage() {
 
       <input
         type="text"
-        placeholder="Location (Required)"
-        value={location}
-        onChange={(e) => setLocation(e.target.value)}
+        placeholder="Area (Required)"
+        value={area}
+        onChange={(e) => setArea(e.target.value)}
         style={{
           padding: 10,
           width: "100%",
@@ -103,19 +103,25 @@ export default function PostTaskPage() {
         }}
       />
 
-      <input
-        type="number"
-        placeholder="Budget (Optional)"
-        value={budget}
-        onChange={(e) => setBudget(e.target.value)}
+      <select
+        value={urgency}
+        onChange={(e) => setUrgency(e.target.value)}
         style={{
           padding: 10,
           width: "100%",
           marginTop: 10,
           border: "1px solid #ccc",
           borderRadius: 5,
+          background: "white",
         }}
-      />
+      >
+        <option value="" disabled>
+          Select urgency
+        </option>
+        <option value="Immediate">Immediate</option>
+        <option value="Today">Today</option>
+        <option value="This Week">This Week</option>
+      </select>
 
       <input
         type="number"

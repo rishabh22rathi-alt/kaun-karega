@@ -26,3 +26,7 @@ export async function GET(req: NextRequest) {
     return Response.json({ ok: false, error: message }, { status: 500 });
   }
 }
+
+export async function POST(req: Request) {
+  return GET(req as NextRequest);
+}

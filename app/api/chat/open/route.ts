@@ -36,7 +36,7 @@ async function resolveRoom(taskId: string, provider: string) {
   return roomId;
 }
 
-export async function POST(req: NextRequest) {
+export async function POST(req: Request) {
   try {
     const { taskId, provider }: Payload = await req.json();
     if (!taskId || !provider) {

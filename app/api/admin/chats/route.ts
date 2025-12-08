@@ -9,3 +9,7 @@ export async function GET() {
     return Response.json({ ok: false, error: "Internal error" }, { status: 500 });
   }
 }
+
+export async function POST(req: Request) {
+  return GET();
+}

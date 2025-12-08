@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { sendWhatsappTemplate } from "@/lib/notifications";
 import { normalizePhone } from "@/lib/utils/phone";
 
@@ -10,7 +10,7 @@ type Payload = {
   providerPhones?: string[];
 };
 
-export async function POST(req: NextRequest) {
+export async function POST(req: Request) {
   try {
     const { category, area, description, taskId, providerPhones }: Payload =
       await req.json();

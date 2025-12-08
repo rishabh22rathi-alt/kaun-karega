@@ -1,6 +1,4 @@
-import { NextRequest } from "next/server";
-
-export async function GET(req: NextRequest) {
+export async function GET(req: Request) {
   const url = new URL(req.url);
   const mode = url.searchParams.get("hub.mode");
   const token = url.searchParams.get("hub.verify_token");
@@ -13,7 +11,7 @@ export async function GET(req: NextRequest) {
   return new Response("Forbidden", { status: 403 });
 }
 
-export async function POST(req: NextRequest) {
+export async function POST(req: Request) {
   const body = await req.json();
   console.log("WHATSAPP WEBHOOK:", JSON.stringify(body, null, 2));
   return new Response("OK", { status: 200 });

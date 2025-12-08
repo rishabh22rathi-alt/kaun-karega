@@ -1,112 +1,67 @@
-﻿"use client";
-
-import { FormEvent, useEffect, useMemo, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+"use client";
+import { useState } from "react";
 
 export default function LoginPage() {
-  const router = useRouter();
-  const searchParams = useSearchParams();
   const [phone, setPhone] = useState("");
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
-  const phoneDigits = useMemo(() => phone.replace(/\D/g, "").slice(0, 10), [phone]);
-  const redirectTo = searchParams.get("redirectTo");
 
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const role = localStorage.getItem("kk_user_role");
-    if (role === "provider") {
-      router.replace(redirectTo || "/dashboard");
-    } else if (role === "receiver") {
-      router.replace(redirectTo || "/");
-    }
-  }, [redirectTo, router]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const cached = localStorage.getItem("kk_last_phone") || localStorage.getItem("kk_user_phone");
-    if (cached) {
-      setPhone(cached);
-    }
-  }, []);
-
-  const handleSubmit = async (e: FormEvent) => {
+  async function handleLogin(e: any) {
     e.preventDefault();
-    setError("");
 
-    if (phoneDigits.length !== 10) {
-      setError("Enter a valid 10-digit mobile number");
+    if (phone.length !== 10) {
+      alert("Please enter a valid 10-digit phone number");
       return;
     }
 
-    setLoading(true);
     try {
-      const res = await fetch("/api/send-otp", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone: phoneDigits }),
-      });
-
-      
-      
-      const data = await res.json();
-      console.log(res);console.log(data);
-      if (!res.ok || !data.ok) {
-          console.log('Response OK but data not OK');
-          setError(data.error || "Failed to send OTP. Try again.");
-        } else {
-          console.log('OTP sent successfully');
-          if (typeof window !== "undefined") {
-            localStorage.setItem("kk_last_phone", phoneDigits);
-          }
-          const query = new URLSearchParams({ phone: phoneDigits });
-          if (redirectTo) query.set("redirectTo", redirectTo);
-          router.push(`/otp?${query.toString()}`);
+      // 1️⃣ CHECK IF USER EXISTS IN SHEETS
+      const res = await fetch(
+        "https://script.google.com/macros/s/AKfycbwUbKw6vXMON4aFOYPCFrPWXbDno-4BN3M086QkbwGNPLzB7mh7G4htdERcWQqIKX5wmA/exec",
+        {
+          method: "POST",
+          body: JSON.stringify({ phone }),
         }
-    } catch (err) {
-      setError("Network error. Please try again.");
-    } finally {
-      setLoading(false);
+      );
+
+      const data = await res.json();
+
+      if (!data.exists) {
+        alert("⚠️ Number not found. Please register first.");
+        window.location.href = "/register";
+        return;
+      }
+
+      // 2️⃣ USER EXISTS → REDIRECT TO VERIFY PAGE WITH PHONE
+      window.location.href = `/verify?phone=${phone}`;
+
+    } catch (error) {
+      alert("Something went wrong. Try again.");
+      console.log(error);
     }
-  };
+  }
 
   return (
-    <main className="min-h-screen bg-[#FFE3C2] flex items-center justify-center px-4 py-10">
-      <div className="w-full max-w-md rounded-2xl bg-white shadow-lg p-8 space-y-6">
-        <header className="text-center space-y-2">
-          <h1 className="text-3xl font-bold text-[#0EA5E9]">Login / Register</h1>
-          <p className="text-slate-600 text-sm">Enter your WhatsApp number to get started.</p>
-        </header>
+    <div className="min-h-screen flex items-center justify-center bg-gray-100">
+      <form
+        onSubmit={handleLogin}
+        className="bg-white p-8 rounded shadow-md w-96"
+      >
+        <h2 className="text-2xl mb-4 font-bold text-center">Login</h2>
 
-        {error && (
-          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-            {error}
-          </div>
-        )}
+        <input
+          type="text"
+          placeholder="Enter WhatsApp Number"
+          value={phone}
+          onChange={(e) => setPhone(e.target.value)}
+          className="border p-2 w-full rounded mb-4"
+        />
 
-        <form className="space-y-4" onSubmit={handleSubmit}>
-          <div className="space-y-1">
-            <label className="text-sm font-semibold text-slate-700">Mobile Number</label>
-            <input
-              type="tel"
-              value={phoneDigits}
-              onChange={(e) => setPhone(e.target.value)}
-              className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm shadow-sm focus:border-[#0EA5E9] focus:outline-none focus:ring-2 focus:ring-[#0EA5E9]/30"
-              placeholder="10-digit mobile number"
-              inputMode="numeric"
-            />
-          </div>
-
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full rounded-full bg-[#0EA5E9] px-4 py-3 text-white font-semibold shadow-md transition hover:shadow-lg disabled:opacity-60"
-          >
-            {loading ? "Sending OTP..." : "Continue"}
-          </button>
-        </form>
-      </div>
-    </main>
+        <button
+          type="submit"
+          className="bg-black text-white w-full py-2 rounded hover:bg-gray-800"
+        >
+          Continue
+        </button>
+      </form>
+    </div>
   );
 }
-

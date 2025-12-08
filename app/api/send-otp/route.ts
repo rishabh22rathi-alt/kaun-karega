@@ -1,34 +1,47 @@
-import { NextRequest, NextResponse } from "next/server";
-import { sendOtpMessage } from "@/lib/notifications";
+import { saveOTP } from "@/lib/googleSheets";
 import { normalizePhone } from "@/lib/utils/phone";
+import { sendOtpMessage } from "@/lib/notifications";
 
-function generateOtp() {
-  return Math.floor(1000 + Math.random() * 9000).toString();
-}
+type OtpRequestBody = {
+  phone?: string;
+};
 
-export async function POST(req: NextRequest) {
+const isTenDigitPhone = (phone: string): boolean =>
+  /^\d{10}$/.test(phone.trim());
+
+const generateOtp = (): string =>
+  Math.floor(1000 + Math.random() * 9000).toString();
+
+export async function POST(req: Request): Promise<Response> {
   try {
-    const { phone } = await req.json();
-    const normalizedPhone = normalizePhone(phone || "");
-      console.log('ehre');
-    console.log(normalizedPhone);
+    const { phone }: OtpRequestBody = await req.json();
+
+    if (!phone || typeof phone !== "string" || !isTenDigitPhone(phone)) {
+      return Response.json(
+        { success: false, error: "Phone must be a 10-digit number." },
+        { status: 400 }
+      );
+    }
+
+    const normalizedPhone = normalizePhone(phone);
     if (!normalizedPhone) {
-      return NextResponse.json(
-        { ok: false, error: "Invalid phone number" },
+      return Response.json(
+        { success: false, error: "Invalid phone number." },
         { status: 400 }
       );
     }
 
     const otp = generateOtp();
-    console.log("[OTP] Generated OTP:", { normalizedPhone, otp });
 
-    // Send the OTP via WhatsApp
+    await saveOTP(normalizedPhone, otp);
     await sendOtpMessage(normalizedPhone, otp);
 
-    return NextResponse.json({ ok: true });
+    return Response.json({ success: true, otp });
   } catch (error) {
-    console.error("[OTP] Send OTP error:", error);
     const message = error instanceof Error ? error.message : "Internal error";
-    return NextResponse.json({ ok: false, error: message }, { status: 500 });
+    return Response.json(
+      { success: false, error: message },
+      { status: 500 }
+    );
   }
 }

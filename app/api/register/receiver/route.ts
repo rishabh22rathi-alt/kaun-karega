@@ -1,11 +1,11 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import {
   phoneExistsInReceivers,
   saveReceiverRegistration,
 } from "@/lib/googleSheets";
 import { normalizePhone } from "@/lib/utils/phone";
 
-export async function POST(req: NextRequest) {
+export async function POST(req: Request) {
   try {
     const { name, phone, area } = await req.json();
 

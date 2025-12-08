@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { buildAppsScriptUrl } from "@/lib/api/client";
 
 async function forwardProviderResponse(taskId: string, providerId: string) {
@@ -14,7 +14,7 @@ async function forwardProviderResponse(taskId: string, providerId: string) {
   return true;
 }
 
-export async function GET(req: NextRequest) {
+export async function GET(req: Request) {
   const search = new URL(req.url).searchParams;
   const taskId = search.get("taskId") || "";
   const providerId = search.get("providerId") || "";
@@ -38,7 +38,7 @@ export async function GET(req: NextRequest) {
   }
 }
 
-export async function POST(req: NextRequest) {
+export async function POST(req: Request) {
   try {
     const { taskId, providerId } = await req.json();
     if (!taskId || !providerId) {
