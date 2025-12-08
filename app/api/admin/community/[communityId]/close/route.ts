@@ -1,8 +1,10 @@
+import { NextRequest, NextResponse } from "next/server";
 import { resolveCommunityRequest } from "@/lib/googleSheets";
 
-type Params = { params: { communityId: string } };
-
-export async function POST(_: Request, { params }: Params) {
+export async function POST(
+  req: NextRequest,
+  { params }: { params: { communityId: string } }
+) {
   try {
     await resolveCommunityRequest(params.communityId);
     return Response.json({ ok: true });
