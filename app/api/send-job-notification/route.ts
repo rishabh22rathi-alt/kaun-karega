@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { sendJobNotification } from "@/lib/notifications";
+import { sendWhatsappTemplate } from "@/lib/notifications";
 import { normalizePhone } from "@/lib/utils/phone";
 
 type Payload = {
@@ -39,13 +39,34 @@ export async function POST(req: NextRequest) {
         taskId
       )}&provider=${encodeURIComponent(normalizedPhone)}`;
 
+      const components = [
+        {
+          type: "body" as const,
+          parameters: [
+            {
+              type: "text" as const,
+              text: `${category} | ${area} | ${detail}`,
+            },
+          ],
+        },
+        {
+          type: "button" as const,
+          sub_type: "url" as const,
+          index: "0",
+          parameters: [
+            {
+              type: "text" as const,
+              text: chatUrl,
+            },
+          ],
+        },
+      ];
+
       try {
-        await sendJobNotification(
+        await sendWhatsappTemplate(
           normalizedPhone,
-          category,
-          area,
-          detail,
-          chatUrl
+          "kk_job_notification",
+          components
         );
         sent += 1;
       } catch (err) {

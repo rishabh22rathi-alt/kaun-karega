@@ -1,5 +1,5 @@
 import { saveTaskProviderRow } from "@/lib/googleSheets";
-import { sendJobNotification } from "@/lib/notifications";
+import { sendWhatsappTemplate } from "@/lib/notifications";
 import { normalizePhone } from "@/lib/utils/phone";
 
 type ProviderEntry = {
@@ -40,18 +40,39 @@ export async function POST(req: Request) {
         taskId
       )}&provider=${encodeURIComponent(providerPhone)}`;
 
+      const components = [
+        {
+          type: "body" as const,
+          parameters: [
+            {
+              type: "text" as const,
+              text: `${category} | ${area} | ${description}`,
+            },
+          ],
+        },
+        {
+          type: "button" as const,
+          sub_type: "url" as const,
+          index: "0",
+          parameters: [
+            {
+              type: "text" as const,
+              text: chatUrl,
+            },
+          ],
+        },
+      ];
+
       try {
         await saveTaskProviderRow({
           taskId,
           providerId,
           providerPhone,
         });
-        await sendJobNotification(
+        await sendWhatsappTemplate(
           providerPhone,
-          category,
-          area,
-          description,
-          chatUrl
+          "kk_job_notification",
+          components
         );
         sent += 1;
       } catch (err) {

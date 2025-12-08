@@ -2,7 +2,7 @@ import {
   createChatRoom,
   getTaskById,
 } from "@/lib/googleSheets";
-import { sendWhatsappText } from "@/lib/notifications";
+import { sendWhatsappTemplate } from "@/lib/notifications";
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
@@ -57,17 +57,34 @@ export async function POST(req: Request) {
       providerPhone,
     });
 
-    const message = [
-      "Kaun Karega Aapka Kaam?",
-      "",
-      "Ek service provider ne aapke request ka jawab diya hai!",
-      "",
-      "Chat kholne ke liye click karein:",
-      `https://kaunkarega.com/chat/${roomId}`,
-    ].join("\n");
+    const chatUrl = `https://kaunkarega.com/chat/${roomId}`;
+
+    const components = [
+      {
+        type: "body" as const,
+        parameters: [
+          {
+            type: "text" as const,
+            text:
+              "Kaun Karega Aapka Kaam? Ek service provider ne aapke request ka jawab diya hai!",
+          },
+        ],
+      },
+      {
+        type: "button" as const,
+        sub_type: "url" as const,
+        index: "0",
+        parameters: [
+          {
+            type: "text" as const,
+            text: chatUrl,
+          },
+        ],
+      },
+    ];
 
     try {
-      await sendWhatsappText(task.userPhone, message);
+      await sendWhatsappTemplate(task.userPhone, "kk_job_notification", components);
     } catch (err) {
       console.error("Failed to notify user of response:", err);
     }
