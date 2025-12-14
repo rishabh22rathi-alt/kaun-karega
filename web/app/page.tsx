@@ -64,17 +64,32 @@ const POPULAR_AREAS = ["Sardarpura", "Shastri Nagar"];
 
 export default function Home() {
   return (
-    <Suspense
-      fallback={
-        <div className="flex min-h-screen flex-col items-center justify-center bg-slate-50 px-4 py-10">
-          <div className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-700 shadow-sm">
-            Loading Kaun Karega…
+    <>
+      <div
+        style={{
+          width: "100%",
+          background: "#f1f5f9",
+          color: "#0f172a",
+          textAlign: "center",
+          padding: "8px 12px",
+          fontWeight: 600,
+          fontSize: "14px",
+        }}
+      >
+        🚀 Deployment test – 14 Dec 2025 13:00
+      </div>
+      <Suspense
+        fallback={
+          <div className="flex min-h-screen flex-col items-center justify-center bg-slate-50 px-4 py-10">
+            <div className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-700 shadow-sm">
+              Loading Kaun Karega…
+            </div>
           </div>
-        </div>
-      }
-    >
-      <PageContent />
-    </Suspense>
+        }
+      >
+        <PageContent />
+      </Suspense>
+    </>
   );
 }
 
