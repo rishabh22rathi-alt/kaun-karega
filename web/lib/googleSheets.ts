@@ -46,6 +46,10 @@ type TeamMember = {
   timestamp?: string;
 };
 
+type CategoriesResponse = {
+  categories?: unknown;
+};
+
 type AdminStats = Record<string, unknown>;
 type TaskWithStats = Record<string, unknown>;
 
@@ -130,13 +134,13 @@ export async function savePendingCategory(payload: {
 }
 
 export async function getAllCategories(): Promise<string[]> {
-  const data = await postToAppsScript<{ categories?: unknown }>(
+  const data = await postToAppsScript<CategoriesResponse | unknown[]>(
     "get_all_categories"
   );
-  const categories = Array.isArray(data)
+  const categories: unknown[] = Array.isArray(data)
     ? data
-    : Array.isArray((data as { categories?: unknown })?.categories)
-      ? (data as { categories?: unknown }).categories
+    : Array.isArray(data.categories)
+      ? data.categories
       : [];
   return categories.filter((item): item is string => typeof item === "string");
 }
