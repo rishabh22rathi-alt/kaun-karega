@@ -1,5 +1,4 @@
-{
+﻿{
   "version": 2,
-  "framework": "nextjs",
-  "rootDirectory": "web"
+  "framework": "nextjs"
 }
