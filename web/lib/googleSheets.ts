@@ -1,7 +1,6 @@
 export const appsScriptUrl = process.env.APPS_SCRIPT_URL;
 
 type AppsScriptPayload = Record<string, unknown>;
-
 type AppsScriptError = { error?: unknown; message?: unknown };
 
 type ChatRoom = {
@@ -44,10 +43,6 @@ type TeamMember = {
   permissions?: string[];
   active?: boolean;
   timestamp?: string;
-};
-
-type CategoriesResponse = {
-  categories?: unknown;
 };
 
 type AdminStats = Record<string, unknown>;
@@ -107,9 +102,7 @@ export async function saveOTP(phone: string, otp: string) {
 export async function findProvidersByCategoryAndArea(
   category: string,
   area: string
-): Promise<
-  { providerId?: string; phone?: string; [key: string]: unknown }[]
-> {
+): Promise<{ providerId?: string; phone?: string }[]> {
   return postToAppsScript("find_providers", { category, area });
 }
 
@@ -133,19 +126,29 @@ export async function savePendingCategory(payload: {
   return postToAppsScript("save_pending_category", payload);
 }
 
+/* ===========================
+   ✅ FIXED FUNCTION (IMPORTANT)
+   =========================== */
 export async function getAllCategories(): Promise<string[]> {
-  const data = await postToAppsScript<CategoriesResponse | unknown[]>(
-    "get_all_categories"
-  );
-  const categories: unknown = Array.isArray(data) ? data : data.categories;
+  const data = await postToAppsScript<unknown>("get_all_categories");
 
-  if (Array.isArray(categories)) {
-    return categories.filter(
-      (item): item is string => typeof item === "string"
-    );
+  let rawCategories: unknown;
+
+  if (Array.isArray(data)) {
+    rawCategories = data;
+  } else if (data && typeof data === "object" && "categories" in data) {
+    rawCategories = (data as { categories?: unknown }).categories;
+  } else {
+    return [];
   }
 
-  return [];
+  if (!Array.isArray(rawCategories)) {
+    return [];
+  }
+
+  return rawCategories.filter(
+    (item): item is string => typeof item === "string"
+  );
 }
 
 export async function saveTaskRow(payload: {
@@ -224,15 +227,11 @@ export async function verifyOTP(phone: string, otp: string): Promise<boolean> {
   return postToAppsScript("verify_otp", { phone, otp });
 }
 
-export async function phoneExistsInProviders(
-  phone: string
-): Promise<boolean> {
+export async function phoneExistsInProviders(phone: string): Promise<boolean> {
   return postToAppsScript("phone_exists_in_providers", { phone });
 }
 
-export async function phoneExistsInReceivers(
-  phone: string
-): Promise<boolean> {
+export async function phoneExistsInReceivers(phone: string): Promise<boolean> {
   return postToAppsScript("phone_exists_in_receivers", { phone });
 }
 
