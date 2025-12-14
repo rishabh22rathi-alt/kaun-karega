@@ -137,12 +137,15 @@ export async function getAllCategories(): Promise<string[]> {
   const data = await postToAppsScript<CategoriesResponse | unknown[]>(
     "get_all_categories"
   );
-  const categories: unknown[] = Array.isArray(data)
-    ? data
-    : Array.isArray(data.categories)
-      ? data.categories
-      : [];
-  return categories.filter((item): item is string => typeof item === "string");
+  const categories: unknown = Array.isArray(data) ? data : data.categories;
+
+  if (Array.isArray(categories)) {
+    return categories.filter(
+      (item): item is string => typeof item === "string"
+    );
+  }
+
+  return [];
 }
 
 export async function saveTaskRow(payload: {
