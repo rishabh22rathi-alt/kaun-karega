@@ -17,8 +17,11 @@ function submitTask_(data) {
   if (!phone) return { ok: false, status: "error", error: "Invalid phone number" };
 
   const category = String(data.category || "").trim();
-  const area = String(data.area || "").trim();
+  const area = resolveCanonicalAreaName_(data.area || "");
   const details = String(data.details || data.description || "").trim();
+  const selectedTimeframe = String(
+    data.selectedTimeframe || data.time || data.urgency || ""
+  ).trim();
 
   const serviceDate = String(data.serviceDate || "").trim();
   const timeSlot = String(data.timeSlot || "").trim();
@@ -27,15 +30,22 @@ function submitTask_(data) {
   if (!area) return { ok: false, status: "error", error: "Area required" };
 
   const sh = getTasksSheet_();
-
-  if (sh.getLastRow() === 0) {
-    sh.appendRow([
-      "TaskID","UserPhone","Category","Area","Details","Status","CreatedAt",
-      "ServiceDate","TimeSlot","notified_at","responded_at"
-    ]);
-  }
-
-  const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(h => String(h).trim());
+  const headers = ensureSheetHeaders_(sh, [
+    "TaskID",
+    "UserPhone",
+    "Category",
+    "Area",
+    "Details",
+    "Status",
+    "CreatedAt",
+    "SelectedTimeframe",
+    "ServiceDate",
+    "TimeSlot",
+    "notified_at",
+    "responded_at",
+  ]).map(function (header) {
+    return String(header).trim();
+  });
   const idx = (name) => headers.indexOf(name);
 
   const taskId = makeTaskId_();
@@ -50,6 +60,7 @@ function submitTask_(data) {
   row[idx("Details")] = details;
   row[idx("Status")] = "submitted";
   row[idx("CreatedAt")] = createdAt;
+  if (idx("SelectedTimeframe") >= 0) row[idx("SelectedTimeframe")] = selectedTimeframe;
 
   const iServiceDate = idx("ServiceDate");
   const iTimeSlot = idx("TimeSlot");
@@ -125,6 +136,7 @@ function getAdminTaskSheetState_() {
     "Details",
     "Status",
     "CreatedAt",
+    "SelectedTimeframe",
     "ServiceDate",
     "TimeSlot",
     "notified_at",
@@ -147,6 +159,14 @@ function getAdminTaskSheetState_() {
     idxDetails: findHeaderIndexByAliases_(headers, ["Details", "Description"]),
     idxStatus: findHeaderIndexByAliases_(headers, ["Status"]),
     idxCreatedAt: findHeaderIndexByAliases_(headers, ["CreatedAt"]),
+    idxSelectedTimeframe: findHeaderIndexByAliases_(headers, [
+      "SelectedTimeframe",
+      "Timeframe",
+      "Urgency",
+      "WhenNeedIt",
+    ]),
+    idxServiceDate: findHeaderIndexByAliases_(headers, ["ServiceDate"]),
+    idxTimeSlot: findHeaderIndexByAliases_(headers, ["TimeSlot"]),
     idxNotifiedAt: findHeaderIndexByAliases_(headers, ["notified_at", "NotifiedAt"]),
     idxRespondedAt: findHeaderIndexByAliases_(headers, ["responded_at", "RespondedAt"]),
     idxAssignedProvider: findHeaderIndexByAliases_(headers, ["AssignedProvider"]),
@@ -193,6 +213,163 @@ function minutesSince_(value) {
   const ms = parseTaskDateMs_(value);
   if (!ms) return 0;
   return Math.max(0, Math.floor((Date.now() - ms) / 60000));
+}
+
+function normalizeSelectedTimeframe_(value, serviceDateValue, createdAtValue) {
+  const raw = String(value || "").trim();
+  const normalized = raw.toLowerCase();
+
+  if (normalized === "right now" || normalized === "within 2 hours" || normalized === "asap") {
+    return "Within 2 hours";
+  }
+  if (normalized === "within 6 hours" || normalized === "6 hours") {
+    return "Within 6 hours";
+  }
+  if (normalized === "today" || normalized === "same day") {
+    return "Today";
+  }
+  if (normalized === "tomorrow") {
+    return "Tomorrow";
+  }
+  if (
+    normalized === "schedule later" ||
+    normalized === "within 1-2 days" ||
+    normalized === "1-2 days" ||
+    normalized === "flexible"
+  ) {
+    return raw || "Schedule later";
+  }
+
+  const createdAtMs = parseTaskDateMs_(createdAtValue);
+  const serviceDateMs = parseTaskDateMs_(serviceDateValue);
+  if (serviceDateMs && createdAtMs) {
+    const createdDate = new Date(createdAtMs);
+    const serviceDate = new Date(serviceDateMs);
+    const dayDiff = Math.floor(
+      (new Date(serviceDate.getFullYear(), serviceDate.getMonth(), serviceDate.getDate()).getTime() -
+        new Date(createdDate.getFullYear(), createdDate.getMonth(), createdDate.getDate()).getTime()) /
+        86400000
+    );
+
+    if (dayDiff <= 0) return "Today";
+    if (dayDiff === 1) return "Tomorrow";
+    return "Schedule later";
+  }
+
+  if (serviceDateMs) return "Schedule later";
+  return raw || "Today";
+}
+
+function getTimeSlotStartHour_(timeSlotValue) {
+  const normalized = String(timeSlotValue || "").trim().toLowerCase();
+  if (normalized === "morning") return 8;
+  if (normalized === "noon") return 11;
+  if (normalized === "afternoon") return 14;
+  if (normalized === "evening") return 17;
+  return 9;
+}
+
+function buildLocalDateMs_(dateValue, hour, minute) {
+  const raw = String(dateValue || "").trim();
+  if (!raw) return 0;
+
+  const isoMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoMatch) {
+    return new Date(
+      Number(isoMatch[1]),
+      Number(isoMatch[2]) - 1,
+      Number(isoMatch[3]),
+      hour || 0,
+      minute || 0,
+      0,
+      0
+    ).getTime();
+  }
+
+  const baseMs = parseTaskDateMs_(raw);
+  if (!baseMs) return 0;
+  const baseDate = new Date(baseMs);
+  return new Date(
+    baseDate.getFullYear(),
+    baseDate.getMonth(),
+    baseDate.getDate(),
+    hour || 0,
+    minute || 0,
+    0,
+    0
+  ).getTime();
+}
+
+function endOfDayMs_(baseMs) {
+  if (!baseMs) return 0;
+  const date = new Date(baseMs);
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999).getTime();
+}
+
+function getFlexibleDeadlineMs_(createdAtMs, serviceDateValue, timeSlotValue) {
+  const slotStartHour = getTimeSlotStartHour_(timeSlotValue);
+  const scheduledMs = buildLocalDateMs_(serviceDateValue, slotStartHour, 0);
+  if (scheduledMs) return scheduledMs;
+
+  const serviceDateMs = parseTaskDateMs_(serviceDateValue);
+  if (serviceDateMs) return endOfDayMs_(serviceDateMs);
+
+  return createdAtMs ? createdAtMs + 48 * 60000 * 60 : 0;
+}
+
+function getPriorityAttentionThresholdMinutes_(priority) {
+  if (priority === "URGENT") return 10;
+  if (priority === "PRIORITY") return 30;
+  if (priority === "SAME_DAY") return 60;
+  return 180;
+}
+
+function deriveAdminRequestTiming_(selectedTimeframeValue, createdAtValue, serviceDateValue, timeSlotValue) {
+  const createdAtMs = parseTaskDateMs_(createdAtValue);
+  const selectedTimeframe = normalizeSelectedTimeframe_(
+    selectedTimeframeValue,
+    serviceDateValue,
+    createdAtValue
+  );
+  const normalized = String(selectedTimeframe || "").trim().toLowerCase();
+  let priority = "FLEXIBLE";
+  let deadlineMs = 0;
+
+  if (normalized === "within 2 hours" || normalized === "right now" || normalized === "asap") {
+    priority = "URGENT";
+    deadlineMs = createdAtMs ? createdAtMs + 120 * 60000 : 0;
+  } else if (normalized === "within 6 hours" || normalized === "6 hours") {
+    priority = "PRIORITY";
+    deadlineMs = createdAtMs ? createdAtMs + 360 * 60000 : 0;
+  } else if (normalized === "today" || normalized === "same day") {
+    priority = "SAME_DAY";
+    deadlineMs = endOfDayMs_(createdAtMs);
+  } else if (normalized === "tomorrow") {
+    priority = "FLEXIBLE";
+    deadlineMs =
+      buildLocalDateMs_(serviceDateValue, getTimeSlotStartHour_(timeSlotValue), 0) ||
+      (createdAtMs ? endOfDayMs_(createdAtMs + 24 * 60000 * 60) : 0);
+  } else {
+    priority = "FLEXIBLE";
+    deadlineMs = getFlexibleDeadlineMs_(createdAtMs, serviceDateValue, timeSlotValue);
+  }
+
+  const waitingMinutes = createdAtMs
+    ? Math.max(0, Math.floor((Date.now() - createdAtMs) / 60000))
+    : 0;
+  const minutesUntilDeadline = deadlineMs
+    ? Math.floor((deadlineMs - Date.now()) / 60000)
+    : 0;
+
+  return {
+    SelectedTimeframe: selectedTimeframe,
+    Priority: priority,
+    Deadline: deadlineMs ? new Date(deadlineMs).toISOString() : "",
+    WaitingMinutes: waitingMinutes,
+    MinutesUntilDeadline: minutesUntilDeadline,
+    OverdueMinutes: minutesUntilDeadline < 0 ? Math.abs(minutesUntilDeadline) : 0,
+    AttentionThresholdMinutes: getPriorityAttentionThresholdMinutes_(priority),
+  };
 }
 
 function getProviderNameLookup_() {
@@ -309,6 +486,16 @@ function buildAdminRequests_() {
 
     const createdAt =
       state.idxCreatedAt !== -1 && row[state.idxCreatedAt] !== undefined ? row[state.idxCreatedAt] : "";
+    const selectedTimeframeValue =
+      state.idxSelectedTimeframe !== -1 && row[state.idxSelectedTimeframe] !== undefined
+        ? row[state.idxSelectedTimeframe]
+        : "";
+    const serviceDateValue =
+      state.idxServiceDate !== -1 && row[state.idxServiceDate] !== undefined
+        ? row[state.idxServiceDate]
+        : "";
+    const timeSlotValue =
+      state.idxTimeSlot !== -1 && row[state.idxTimeSlot] !== undefined ? row[state.idxTimeSlot] : "";
     const notifiedAt =
       state.idxNotifiedAt !== -1 && row[state.idxNotifiedAt] !== undefined ? row[state.idxNotifiedAt] : "";
     const respondedAt =
@@ -341,8 +528,19 @@ function buildAdminRequests_() {
       completedAt
     );
     const createdAtIso = toIsoDateString_(createdAt);
-    const waitingMinutes = minutesSince_(createdAt);
+    const timing = deriveAdminRequestTiming_(
+      selectedTimeframeValue,
+      createdAt,
+      serviceDateValue,
+      timeSlotValue
+    );
+    const waitingMinutes = timing.WaitingMinutes || minutesSince_(createdAt);
     const responseWaitingMinutes = minutesSince_(notifiedAt || createdAt);
+    const isResolved = status === "COMPLETED";
+    const isOverdue = Boolean(timing.Deadline && timing.MinutesUntilDeadline < 0 && !isResolved);
+    const needsAttention = Boolean(
+      !isResolved && (isOverdue || waitingMinutes >= timing.AttentionThresholdMinutes)
+    );
 
     requests.push({
       TaskID: taskId,
@@ -380,6 +578,17 @@ function buildAdminRequests_() {
       CompletedAt: toIsoDateString_(completedAt),
       WaitingMinutes: waitingMinutes,
       ResponseWaitingMinutes: responseWaitingMinutes,
+      SelectedTimeframe: timing.SelectedTimeframe,
+      Priority: timing.Priority,
+      Deadline: timing.Deadline,
+      IsOverdue: isOverdue,
+      IsExpired: isOverdue,
+      NeedsAttention: needsAttention,
+      AttentionThresholdMinutes: timing.AttentionThresholdMinutes,
+      MinutesUntilDeadline: timing.MinutesUntilDeadline,
+      OverdueMinutes: timing.OverdueMinutes,
+      ServiceDate: serviceDateValue ? String(serviceDateValue).trim() : "",
+      TimeSlot: timeSlotValue ? String(timeSlotValue).trim() : "",
       MatchedProviders: matchSummary.matchedProviders,
     });
   }
@@ -421,6 +630,15 @@ function getAdminRequestMetrics_(requests) {
     : 0;
 
   return {
+    urgentRequestsOpen: requests.filter(
+      (request) => request.Priority === "URGENT" && request.Status !== "COMPLETED"
+    ).length,
+    priorityRequestsOpen: requests.filter(
+      (request) => request.Priority === "PRIORITY" && request.Status !== "COMPLETED"
+    ).length,
+    overdueRequests: requests.filter(
+      (request) => request.IsOverdue && request.Status !== "COMPLETED"
+    ).length,
     newRequestsToday: requests.filter((request) => request.Status === "NEW" && isSameDay(request.CreatedAt))
       .length,
     pendingProviderResponse: requests.filter(
@@ -431,7 +649,7 @@ function getAdminRequestMetrics_(requests) {
     ).length,
     averageResponseTimeMinutes: averageResponseTimeMinutes,
     needsAttentionCount: requests.filter(
-      (request) => request.WaitingMinutes > 20 && !request.AssignedProvider && request.Status !== "COMPLETED"
+      (request) => request.NeedsAttention && request.Status !== "COMPLETED"
     ).length,
   };
 }

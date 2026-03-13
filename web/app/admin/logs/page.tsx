@@ -20,7 +20,7 @@ export default function AdminLogsPage() {
     const load = async () => {
       try {
         const data = await getAllLogs();
-        if (mounted) setLogs(data || []);
+        if (mounted) setLogs(Array.isArray(data) ? data : []);
       } catch (err) {
         console.error("getAllLogs error", err);
         if (mounted) setError("Unable to load logs");
@@ -76,7 +76,7 @@ export default function AdminLogsPage() {
               )}
               {!loading &&
                 !error &&
-                logs.map((log) => (
+                (Array.isArray(logs) ? logs : []).map((log) => (
                   <tr key={log.id} className="hover:bg-slate-50">
                     <td className="px-4 py-3 font-semibold text-slate-900">
                       {log.id}
@@ -96,7 +96,7 @@ export default function AdminLogsPage() {
                     </td>
                   </tr>
                 ))}
-              {!loading && !error && logs.length === 0 && (
+              {!loading && !error && (Array.isArray(logs) ? logs : []).length === 0 && (
                 <tr>
                   <td colSpan={6} className="px-4 py-4 text-center text-slate-500">
                     No logs available.

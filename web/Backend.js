@@ -177,6 +177,15 @@ function doPost(e) {
       case "edit_area":
         return json_(editArea_(data));
 
+      case "add_area_alias":
+        return json_(addAreaAlias_(data));
+
+      case "merge_area_into_canonical":
+        return json_(mergeAreaIntoCanonical_(data));
+
+      case "get_admin_area_mappings":
+        return json_(getAdminAreaMappingsResponse_());
+
       case "get_admin_requests":
         return json_(getAdminRequests_(data));
 

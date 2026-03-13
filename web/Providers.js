@@ -203,9 +203,6 @@ function getApprovedCategoriesLookup_() {
 
 function upsertCategoryApplications_(providerId, providerName, phone, categories, now) {
   const requestedCategories = uniqueNormalizedValues_(categories);
-  if (!requestedCategories.length) return;
-
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
   const sheet = getOrCreateSheet("CategoryApplications", [
     "RequestID",
     "ProviderID",
@@ -228,11 +225,17 @@ function upsertCategoryApplications_(providerId, providerName, phone, categories
 
   const idxRequestId = findHeaderIndexByAliases_(headers, ["RequestID"]);
   const idxProviderId = findHeaderIndexByAliases_(headers, ["ProviderID"]);
+  const idxPhone = findHeaderIndexByAliases_(headers, ["Phone", "ProviderPhone"]);
   const idxCategory = findHeaderIndexByAliases_(headers, ["RequestedCategory", "Category"]);
   const idxStatus = findHeaderIndexByAliases_(headers, ["Status"]);
+  const idxUpdatedAt = findHeaderIndexByAliases_(headers, ["UpdatedAt"]);
 
   const pendingKeys = new Set();
+  const requestedCategoryKeys = new Set(
+    requestedCategories.map((category) => String(category || "").trim().toLowerCase())
+  );
   let maxSeq = 0;
+  const rowsToCancel = [];
 
   for (let i = 1; i < values.length; i++) {
     const row = values[i] || [];
@@ -250,6 +253,8 @@ function upsertCategoryApplications_(providerId, providerName, phone, categories
       idxProviderId !== -1 && row[idxProviderId] !== undefined
         ? String(row[idxProviderId]).trim()
         : "";
+    const existingPhone =
+      idxPhone !== -1 && row[idxPhone] !== undefined ? normalizePhone10_(row[idxPhone]) : "";
     const existingCategory =
       idxCategory !== -1 && row[idxCategory] !== undefined
         ? getNormalizedCategoryKey_(row[idxCategory])
@@ -259,10 +264,28 @@ function upsertCategoryApplications_(providerId, providerName, phone, categories
         ? String(row[idxStatus]).trim().toLowerCase()
         : "";
 
-    if (existingProviderId && existingCategory && existingStatus === "pending") {
+    const sameProvider =
+      (providerId && existingProviderId === String(providerId).trim()) ||
+      (phone && existingPhone === normalizePhone10_(phone));
+
+    if (!sameProvider || !existingCategory || existingStatus !== "pending") {
+      continue;
+    }
+
+    if (requestedCategoryKeys.has(existingCategory)) {
       pendingKeys.add(existingProviderId + "|" + existingCategory);
+    } else {
+      rowsToCancel.push(i + 1);
     }
   }
+
+  rowsToCancel.forEach((rowNumber) => {
+    const updates = { Status: "cancelled" };
+    if (idxUpdatedAt !== -1) {
+      updates.UpdatedAt = now || new Date();
+    }
+    updateRowFromData_(sheet, rowNumber, updates);
+  });
 
   const rowsToAppend = [];
   requestedCategories.forEach((category) => {
@@ -426,7 +449,7 @@ function providerRegister(phoneRaw, providerName, categories, areas) {
   const providerHeaderMap = getProviderHeaderMap_(providerHeaders);
 
   const cleanCats = uniqueNormalizedValues_(categories);
-  const cleanAreas = uniqueNormalizedValues_(areas);
+  const cleanAreas = uniqueNormalizedAreaValues_(areas);
   const approvedLookup = getApprovedCategoriesLookup_();
   const requestedNewCategories = cleanCats.filter(
     (category) => !approvedLookup[getNormalizedCategoryKey_(category)]
@@ -526,6 +549,11 @@ function getProviderByPhone_(phoneRaw) {
 
   const services = getProviderServices_(record.provider.ProviderID);
   const areas = getProviderAreas_(record.provider.ProviderID);
+  const analytics = getProviderDashboardAnalytics_(
+    record.provider.ProviderID,
+    services,
+    areas
+  );
 
   return {
     ok: true,
@@ -537,7 +565,8 @@ function getProviderByPhone_(phoneRaw) {
       PendingApproval: record.provider.PendingApproval,
       Status: record.provider.Status,
       Services: services,
-      Areas: areas
+      Areas: areas,
+      Analytics: analytics,
     }
   };
 }
@@ -688,6 +717,7 @@ function getAdminCategoryApplications_() {
           : "",
     }))
     .filter((item) => item.RequestID || item.ProviderName || item.RequestedCategory)
+    .filter((item) => String(item.Status).trim().toLowerCase() === "pending")
     .sort((a, b) => String(b.CreatedAt).localeCompare(String(a.CreatedAt)));
 }
 
@@ -1024,6 +1054,310 @@ function getProviderAreas_(providerId) {
     }
   });
   return out;
+}
+
+function getProviderTaskLookup_() {
+  const state = getAdminTaskSheetState_();
+  const byTaskId = {};
+  const rows = [];
+
+  for (let i = 1; i < state.values.length; i++) {
+    const row = state.values[i] || [];
+    const taskId =
+      state.idxTaskId !== -1 && row[state.idxTaskId] !== undefined
+        ? String(row[state.idxTaskId]).trim()
+        : "";
+    if (!taskId) continue;
+
+    const item = {
+      TaskID: taskId,
+      Category:
+        state.idxCategory !== -1 && row[state.idxCategory] !== undefined
+          ? String(row[state.idxCategory]).trim()
+          : "",
+      Area:
+        state.idxArea !== -1 && row[state.idxArea] !== undefined
+          ? String(row[state.idxArea]).trim()
+          : "",
+      Details:
+        state.idxDetails !== -1 && row[state.idxDetails] !== undefined
+          ? String(row[state.idxDetails]).trim()
+          : "",
+      Status:
+        state.idxStatus !== -1 && row[state.idxStatus] !== undefined
+          ? String(row[state.idxStatus]).trim()
+          : "",
+      CreatedAt:
+        state.idxCreatedAt !== -1 && row[state.idxCreatedAt] !== undefined
+          ? toIsoDateString_(row[state.idxCreatedAt])
+          : "",
+      AssignedProvider:
+        state.idxAssignedProvider !== -1 && row[state.idxAssignedProvider] !== undefined
+          ? String(row[state.idxAssignedProvider]).trim()
+          : "",
+      CompletedAt:
+        state.idxCompletedAt !== -1 && row[state.idxCompletedAt] !== undefined
+          ? toIsoDateString_(row[state.idxCompletedAt])
+          : "",
+    };
+
+    byTaskId[taskId] = item;
+    rows.push(item);
+  }
+
+  return { byTaskId: byTaskId, rows: rows };
+}
+
+function getProviderMatchRows_(providerId) {
+  const normalizedProviderId = String(providerId || "").trim();
+  const sheet = getProviderTaskMatchesSheet_();
+  const values = sheet.getDataRange().getValues();
+  if (values.length <= 1) return [];
+
+  const headers = values[0] || [];
+  const idxTaskId = findHeaderIndexByAliases_(headers, ["TaskID"]);
+  const idxProviderId = findHeaderIndexByAliases_(headers, ["ProviderID"]);
+  const idxCategory = findHeaderIndexByAliases_(headers, ["Category"]);
+  const idxArea = findHeaderIndexByAliases_(headers, ["Area"]);
+  const idxStatus = findHeaderIndexByAliases_(headers, ["Status"]);
+  const idxCreatedAt = findHeaderIndexByAliases_(headers, ["CreatedAt"]);
+  const idxAcceptedAt = findHeaderIndexByAliases_(headers, ["AcceptedAt"]);
+
+  return values
+    .slice(1)
+    .map(function (row) {
+      return {
+        TaskID:
+          idxTaskId !== -1 && row[idxTaskId] !== undefined ? String(row[idxTaskId]).trim() : "",
+        ProviderID:
+          idxProviderId !== -1 && row[idxProviderId] !== undefined
+            ? String(row[idxProviderId]).trim()
+            : "",
+        Category:
+          idxCategory !== -1 && row[idxCategory] !== undefined
+            ? String(row[idxCategory]).trim()
+            : "",
+        Area:
+          idxArea !== -1 && row[idxArea] !== undefined ? String(row[idxArea]).trim() : "",
+        Status:
+          idxStatus !== -1 && row[idxStatus] !== undefined
+            ? String(row[idxStatus]).trim().toLowerCase()
+            : "",
+        CreatedAt:
+          idxCreatedAt !== -1 && row[idxCreatedAt] !== undefined
+            ? toIsoDateString_(row[idxCreatedAt])
+            : "",
+        AcceptedAt:
+          idxAcceptedAt !== -1 && row[idxAcceptedAt] !== undefined
+            ? toIsoDateString_(row[idxAcceptedAt])
+            : "",
+      };
+    })
+    .filter(function (item) {
+      return item.ProviderID === normalizedProviderId && item.TaskID;
+    });
+}
+
+function startOfTodayMs_() {
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0).getTime();
+}
+
+function buildCategoryDemandForRange_(taskRows, activeCategories, startMs) {
+  const categoryLookup = {};
+  const counts = {};
+  const list = Array.isArray(activeCategories) ? activeCategories : [];
+
+  list.forEach(function (categoryName) {
+    const normalized = normalizeCategoryName_(categoryName);
+    const key = getNormalizedCategoryKey_(normalized);
+    if (!key || categoryLookup[key]) return;
+    categoryLookup[key] = normalized;
+  });
+
+  (Array.isArray(taskRows) ? taskRows : []).forEach(function (task) {
+    const createdAtMs = parseTaskDateMs_(task.CreatedAt);
+    if (!createdAtMs || createdAtMs < startMs) return;
+
+    const categoryKey = getNormalizedCategoryKey_(task.Category);
+    if (!categoryLookup[categoryKey]) return;
+
+    counts[categoryKey] = (counts[categoryKey] || 0) + 1;
+  });
+
+  return Object.keys(counts)
+    .map(function (categoryKey) {
+      return {
+        CategoryName: categoryLookup[categoryKey],
+        RequestCount: counts[categoryKey],
+      };
+    })
+    .filter(function (item) {
+      return Number(item.RequestCount || 0) > 0;
+    })
+    .sort(function (a, b) {
+      if (b.RequestCount !== a.RequestCount) return b.RequestCount - a.RequestCount;
+      return String(a.CategoryName || "").localeCompare(String(b.CategoryName || ""));
+    });
+}
+
+function getProviderDashboardAnalytics_(providerId, services, areas) {
+  const normalizedProviderId = String(providerId || "").trim();
+  const serviceList = Array.isArray(services) ? services : [];
+  const areaList = Array.isArray(areas) ? areas : [];
+  const categories = serviceList
+    .map(function (item) {
+      return normalizeCategoryName_(item && item.Category !== undefined ? item.Category : "");
+    })
+    .filter(Boolean);
+  const providerAreas = areaList
+    .map(function (item) {
+      return normalizeAreaName_(item && item.Area !== undefined ? item.Area : "");
+    })
+    .filter(Boolean);
+  const categoryKeys = new Set(
+    categories.map(function (item) {
+      return getNormalizedCategoryKey_(item);
+    })
+  );
+
+  const taskLookup = getProviderTaskLookup_();
+  const taskRows = taskLookup.rows.filter(function (task) {
+    return categoryKeys.has(getNormalizedCategoryKey_(task.Category));
+  });
+  const allPlatformTasks = Array.isArray(taskLookup.rows) ? taskLookup.rows : [];
+  const areaDemandMap = {};
+  taskRows.forEach(function (task) {
+    const areaName = normalizeAreaName_(task.Area);
+    if (!areaName) return;
+    areaDemandMap[areaName] = (areaDemandMap[areaName] || 0) + 1;
+  });
+
+  const matchRows = getProviderMatchRows_(normalizedProviderId).filter(function (row) {
+    if (!row.Category) return true;
+    return categoryKeys.has(getNormalizedCategoryKey_(row.Category));
+  });
+
+  const matchedTaskIds = new Set();
+  const respondedTaskIds = new Set();
+  const acceptedTaskIds = new Set();
+
+  matchRows.forEach(function (row) {
+    matchedTaskIds.add(row.TaskID);
+    if (row.Status === "responded" || row.AcceptedAt) {
+      respondedTaskIds.add(row.TaskID);
+    }
+    if (row.AcceptedAt || row.Status === "accepted") {
+      acceptedTaskIds.add(row.TaskID);
+    }
+  });
+
+  const assignedTaskIds = new Set();
+  const completedTaskIds = new Set();
+  taskRows.forEach(function (task) {
+    if (String(task.AssignedProvider || "").trim() === normalizedProviderId) {
+      assignedTaskIds.add(task.TaskID);
+      if (String(task.Status || "").trim().toLowerCase() === "completed" || task.CompletedAt) {
+        completedTaskIds.add(task.TaskID);
+      }
+    }
+  });
+
+  assignedTaskIds.forEach(function (taskId) {
+    acceptedTaskIds.add(taskId);
+  });
+
+  const totalRequestsMatchedToMe = matchedTaskIds.size;
+  const totalRequestsRespondedByMe = respondedTaskIds.size;
+  const totalRequestsAcceptedByMe = acceptedTaskIds.size;
+  const totalRequestsCompletedByMe = completedTaskIds.size;
+  const responseRate = totalRequestsMatchedToMe
+    ? Math.round((totalRequestsRespondedByMe / totalRequestsMatchedToMe) * 100)
+    : 0;
+  const acceptanceRate = totalRequestsMatchedToMe
+    ? Math.round((totalRequestsAcceptedByMe / totalRequestsMatchedToMe) * 100)
+    : 0;
+
+  const areaDemand = Object.keys(areaDemandMap)
+    .map(function (areaName) {
+      return {
+        AreaName: areaName,
+        RequestCount: areaDemandMap[areaName],
+      };
+    })
+    .sort(function (a, b) {
+      if (b.RequestCount !== a.RequestCount) return b.RequestCount - a.RequestCount;
+      return String(a.AreaName || "").localeCompare(String(b.AreaName || ""));
+    });
+
+  const activeCategories = getAllCategoriesFromSheet_();
+  const nowMs = Date.now();
+  const categoryDemandByRange = {
+    today: buildCategoryDemandForRange_(allPlatformTasks, activeCategories, startOfTodayMs_()),
+    last7Days: buildCategoryDemandForRange_(allPlatformTasks, activeCategories, nowMs - 7 * 86400000),
+    last30Days: buildCategoryDemandForRange_(
+      allPlatformTasks,
+      activeCategories,
+      nowMs - 30 * 86400000
+    ),
+    last365Days: buildCategoryDemandForRange_(
+      allPlatformTasks,
+      activeCategories,
+      nowMs - 365 * 86400000
+    ),
+  };
+
+  const selectedAreaDemand = providerAreas
+    .map(function (areaName) {
+      return {
+        AreaName: areaName,
+        RequestCount: areaDemandMap[areaName] || 0,
+        IsSelectedByProvider: true,
+      };
+    })
+    .sort(function (a, b) {
+      if (b.RequestCount !== a.RequestCount) return b.RequestCount - a.RequestCount;
+      return String(a.AreaName || "").localeCompare(String(b.AreaName || ""));
+    });
+
+  const recentMatchedRequests = Array.from(matchedTaskIds)
+    .map(function (taskId) {
+      const task = taskLookup.byTaskId[taskId] || {};
+      return {
+        TaskID: taskId,
+        Category: task.Category || "",
+        Area: task.Area || "",
+        Details: task.Details || "",
+        CreatedAt: task.CreatedAt || "",
+        Accepted: acceptedTaskIds.has(taskId),
+        Responded: respondedTaskIds.has(taskId),
+      };
+    })
+    .sort(function (a, b) {
+      return parseTaskDateMs_(b.CreatedAt) - parseTaskDateMs_(a.CreatedAt);
+    })
+    .slice(0, 6);
+
+  return {
+    Summary: {
+      ProviderID: normalizedProviderId,
+      Categories: categories,
+      Areas: providerAreas,
+    },
+    Metrics: {
+      TotalRequestsInMyCategories: taskRows.length,
+      TotalRequestsMatchedToMe: totalRequestsMatchedToMe,
+      TotalRequestsRespondedByMe: totalRequestsRespondedByMe,
+      TotalRequestsAcceptedByMe: totalRequestsAcceptedByMe,
+      TotalRequestsCompletedByMe: totalRequestsCompletedByMe,
+      ResponseRate: responseRate,
+      AcceptanceRate: acceptanceRate,
+    },
+    AreaDemand: areaDemand,
+    SelectedAreaDemand: selectedAreaDemand,
+    CategoryDemandByRange: categoryDemandByRange,
+    RecentMatchedRequests: recentMatchedRequests,
+  };
 }
 
 function getProviderLeads_(providerId) {

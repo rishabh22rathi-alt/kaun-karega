@@ -30,7 +30,7 @@ function serviceStats_(serviceName) {
 
 function matchProviders_(serviceName, areaName, limit) {
   serviceName = String(serviceName || "").trim();
-  areaName = String(areaName || "").trim();
+  areaName = resolveCanonicalAreaName_(areaName || "");
   limit = Math.min(parseInt(limit || "20", 10) || 20, 50);
 
   if (!serviceName) return { ok: false, status: "error", error: "Missing service" };

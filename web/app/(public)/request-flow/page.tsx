@@ -130,6 +130,7 @@ function PageContent() {
         body: JSON.stringify({
           category,
           area: normalizedArea,
+          time,
           serviceDate,
           timeSlot,
           details: cleanDetails,

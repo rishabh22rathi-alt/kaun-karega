@@ -28,7 +28,7 @@ export default function AdminProviderListPage() {
       try {
         const data = await getAllProviders();
         if (!mounted) return;
-        setProviders(data);
+        setProviders(Array.isArray(data) ? data : []);
       } catch (err) {
         console.error("Failed to load providers", err);
         if (mounted) setError("Unable to load providers right now.");
@@ -45,7 +45,7 @@ export default function AdminProviderListPage() {
   // Client-side filtering on name/phone/category/area and status
   const filteredProviders = useMemo(() => {
     const term = search.toLowerCase();
-    return providers.filter((provider) => {
+    return (Array.isArray(providers) ? providers : []).filter((provider) => {
       const matchesTerm =
         provider.name.toLowerCase().includes(term) ||
         provider.phone.toLowerCase().includes(term) ||
@@ -57,10 +57,11 @@ export default function AdminProviderListPage() {
   }, [providers, search, status]);
 
   const stats = useMemo(() => {
-    const total = providers.length;
-    const active = providers.filter((p) => p.status === "Active").length;
-    const pending = providers.filter((p) => p.status === "Pending").length;
-    const blocked = providers.filter((p) => p.status === "Blocked").length;
+    const providerList = Array.isArray(providers) ? providers : [];
+    const total = providerList.length;
+    const active = providerList.filter((p) => p.status === "Active").length;
+    const pending = providerList.filter((p) => p.status === "Pending").length;
+    const blocked = providerList.filter((p) => p.status === "Blocked").length;
     return { total, active, pending, blocked };
   }, [providers]);
 

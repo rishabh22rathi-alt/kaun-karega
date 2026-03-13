@@ -8,6 +8,16 @@ export async function POST(request: Request) {
     // Destructure the data coming from your frontend component
     const category = typeof body?.category === "string" ? body.category.trim() : "";
     const area = typeof body?.area === "string" ? body.area.trim() : "";
+    const selectedTimeframe =
+      typeof body?.time === "string"
+        ? body.time.trim()
+        : typeof body?.urgency === "string"
+          ? body.urgency.trim()
+          : "";
+    const serviceDate =
+      typeof body?.serviceDate === "string" ? body.serviceDate.trim() : "";
+    const timeSlot =
+      typeof body?.timeSlot === "string" ? body.timeSlot.trim() : "";
     let details = (body?.details ?? body?.description ?? "").toString().trim();
     if (!details) {
       details = "-";
@@ -55,6 +65,9 @@ export async function POST(request: Request) {
         area: area,
         details,
         phone: session.phone,
+        selectedTimeframe,
+        serviceDate,
+        timeSlot,
       }),
     });
 
