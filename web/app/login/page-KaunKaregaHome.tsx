@@ -59,21 +59,37 @@ function PageContent() {
     try {
       const res = await fetch("/api/send-otp", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+        },
         body: JSON.stringify({ phone: phoneDigits }),
       });
 
-      const data = await res.json();
-      if (!res.ok || !data.ok) {
-        setError(data.error || "Failed to send OTP. Try again.");
-      } else {
-        if (typeof window !== "undefined") {
-          localStorage.setItem("kk_last_phone", phoneDigits);
-        }
-        const query = new URLSearchParams({ phone: phoneDigits });
-      if (redirectTo) query.set("redirectTo", redirectTo);
-        router.push(`/otp?${query.toString()}`);
+      const rawText = await res.text();
+
+      let data;
+      try {
+        data = JSON.parse(rawText);
+      } catch {
+        console.error("Server returned non-JSON:", rawText);
+        throw new Error("Server error. Check backend.");
       }
+
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to send OTP. Try again.");
+      }
+
+      if (!data.success) {
+        setError(data.error || "Failed to send OTP. Try again.");
+        return;
+      }
+
+      if (typeof window !== "undefined") {
+        localStorage.setItem("kk_last_phone", phoneDigits);
+      }
+      const query = new URLSearchParams({ phone: phoneDigits });
+      if (redirectTo) query.set("redirectTo", redirectTo);
+      router.push(`/otp?${query.toString()}`);
     } catch (err) {
       setError("Network error. Please try again.");
     } finally {

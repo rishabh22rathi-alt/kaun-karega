@@ -1,191 +1,150 @@
-import { normalizePhone } from "./utils/phone";
-
-export const whatsappToken = process.env.META_WA_TOKEN;
-export const whatsappPhoneId = process.env.META_WA_PHONE_ID;
-export const templateName = process.env.META_WA_TEMPLATE_OTP;
-export const templateLanguage = "en";
-
-type TextParameter = { type: "text"; text: string };
-
-type BodyComponent = {
-  type: "body";
-  parameters: TextParameter[];
-};
-
-type ButtonComponent = {
-  type: "button";
-  subtype?: "url";
-  sub_type?: "url";
-  index: number | string;
-  parameters: TextParameter[];
-};
-
-type WhatsAppTemplateComponent = BodyComponent | ButtonComponent;
-type WhatsAppTemplateComponentPayload =
-  | BodyComponent
-  | {
-      type: "button";
-      sub_type: "url";
-      index: string;
-      parameters: TextParameter[];
-    };
-
-type WhatsAppTemplatePayload = {
-  messaging_product: "whatsapp";
-  to: string;
-  type: "template";
-  template: {
-    name: string;
-    language: { code: typeof templateLanguage };
-    components: WhatsAppTemplateComponent[];
-  };
-};
-
-type WhatsAppErrorResponse = {
-  error?: {
-    message?: string;
-    code?: number;
-    error_data?: { details?: string };
-  };
-};
-
-type WhatsAppSuccessResponse = Record<string, unknown>;
-
-export function ensureWhatsAppConfig(): {
+// 1. Configuration Type Definition
+interface WhatsAppConfig {
   whatsappToken: string;
   whatsappPhoneId: string;
-  templateName: string;
-} {
-  const missing: string[] = [];
-  if (!whatsappToken) missing.push("META_WA_TOKEN");
-  if (!whatsappPhoneId) missing.push("META_WA_PHONE_ID");
-  if (!templateName) missing.push("META_WA_TEMPLATE_OTP");
-
-  if (missing.length > 0) {
-    throw new Error(
-      `Missing WhatsApp configuration: ${missing.join(", ")}`
-    );
-  }
-
-  return {
-    whatsappToken: whatsappToken as string,
-    whatsappPhoneId: whatsappPhoneId as string,
-    templateName: templateName as string,
-  };
 }
 
-export async function sendWhatsappTemplate(
-  phone: string,
-  template: string,
-  components: WhatsAppTemplateComponent[]
-): Promise<WhatsAppSuccessResponse> {
-  const { whatsappToken: token, whatsappPhoneId: phoneId } =
-    ensureWhatsAppConfig();
+/**
+ * Ensures required WhatsApp configuration variables are present.
+ * NOTE: Replace process.env access with your actual environment variable loading method
+ * (e.g., config file, Secrets Manager, etc.).
+ *
+ * @returns The configuration object.
+ * @throws Error if configuration variables are missing.
+ */
+function ensureWhatsAppConfig(): WhatsAppConfig {
+  // --- Replace these lines with how you securely load your tokens/IDs ---
+  const whatsappToken = process.env.WHATSAPP_ACCESS_TOKEN;
+  const whatsappPhoneId = process.env.WHATSAPP_PHONE_ID;
+  // ---------------------------------------------------------------------
 
-  const payload: WhatsAppTemplatePayload = {
+  if (!whatsappToken) {
+    throw new Error("WHATSAPP_ACCESS_TOKEN is not configured.");
+  }
+  if (!whatsappPhoneId) {
+    throw new Error("WHATSAPP_PHONE_ID is not configured.");
+  }
+
+  return { whatsappToken, whatsappPhoneId };
+}
+
+/**
+ * Sends an OTP message via a WhatsApp template.
+ *
+ * @param phone The recipient's phone number (must include country code, e.g., "919876543210").
+ * @param otp The one-time password (e.g., "123456").
+ * @returns A Promise that resolves when the message is successfully queued or rejects on failure.
+ * @throws Error on API call failure or misconfiguration.
+ */
+export async function sendOtpMessage(phone: string, otp: string): Promise<void> {
+  // 1. Configuration Check
+  let config: WhatsAppConfig;
+
+  try {
+    config = ensureWhatsAppConfig();
+
+
+  } catch (error) {
+    console.error("Configuration Error:", error);
+    // Re-throw if configuration is missing, as the API call cannot proceed.
+    throw error;
+  }
+  
+  const { whatsappToken, whatsappPhoneId } = config;
+
+  // The dynamic URL parameter for the button variable ({{1}} in the URL suffix).
+  // **CAUTION**: If your template button is static, REMOVE the entire 'button' component from the payload.
+  const dynamicUrlParameter = "login"; // or requestId or token
+
+  // 2. WhatsApp API Endpoint
+  // Using v19.0 as of now, update to the latest version if needed.
+  const apiEndpoint = `https://graph.facebook.com/v19.0/${whatsappPhoneId}/messages`;
+
+  // 3. Request Payload
+  const payload = {
     messaging_product: "whatsapp",
     to: phone,
     type: "template",
     template: {
-      name: template,
-      language: { code: templateLanguage },
-      components: components.map<WhatsAppTemplateComponentPayload>(
-        (component) => {
-          if (component.type === "button") {
-            return {
-              type: "button",
-              sub_type: component.subtype || component.sub_type || "url",
-              index: String(component.index),
-              parameters: component.parameters,
-            };
-          }
-          return component;
-        }
-      ),
+      name: "kk_login_code", // Ensure this matches your approved template name exactly
+      language: { code: "en_US" },
+      components: [
+        {
+          type: "body",
+          parameters: [
+            {
+              type: "text",
+              text: otp, // Variable for the body (e.g., {{1}} in the message body)
+            },
+          ],
+        },
+       /* {
+          type: "button",
+          sub_type: "URL",
+          index: 0, 
+          parameters: [
+            {
+              type: "text",
+              text: dynamicUrlParameter, // Variable for the button's dynamic URL part
+            },
+          ],
+        },*/
+      ],
     },
   };
 
-  const response = await fetch(
-    `https://graph.facebook.com/v20.0/${phoneId}/messages`,
-    {
-      method: "POST",
+  // 4. Fetch Call and Error Handling
+  try {
+    const response = await fetch(apiEndpoint, {
+      method: 'POST',
       headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${whatsappToken}`, 
       },
       body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      // API call failed (4xx or 5xx status)
+      const errorData = await response.json().catch(() => ({})); // Handle case where response is not JSON
+      
+      const errorMessage = errorData.error 
+        ? errorData.error.message 
+        : `Unknown API error. Status: ${response.status}`;
+
+      console.error('WhatsApp API Error:', { status: response.status, details: errorData });
+      
+      throw new Error(`Failed to send OTP message. ${errorMessage}`);
     }
-  );
 
-  let data: WhatsAppSuccessResponse | WhatsAppErrorResponse | undefined;
-  try {
-    data = (await response.json()) as
-      | WhatsAppSuccessResponse
-      | WhatsAppErrorResponse;
-  } catch {
-    data = undefined;
+    // Success response
+    const successData = await response.json();
+    console.log(`OTP sent successfully to ${phone}. ID: ${successData.messages[0].id}`);
+    
+  } catch (error) {
+    // Network errors or errors re-thrown from configuration/API check
+    console.error('sendOtpMessage execution failed:', error);
+    throw error;
   }
-
-  if (!response.ok) {
-    const errorPayload = data as WhatsAppErrorResponse | undefined;
-    const message =
-      errorPayload?.error?.error_data?.details ||
-      errorPayload?.error?.message ||
-      `WhatsApp API error (${response.status})`;
-    throw new Error(message);
-  }
-
-  return (data as WhatsAppSuccessResponse) || {};
 }
 
-export async function sendOtpMessage(
-  phone: string,
-  otp: string
-): Promise<WhatsAppSuccessResponse> {
-  const normalized = normalizePhone(phone);
-  if (!normalized) {
-    throw new Error("Invalid phone number");
-  }
-  if (!otp) {
-    throw new Error("OTP is required");
-  }
+// --- Example Usage (Optional: uncomment to test) ---
+/*
+async function main() {
+    try {
+        // **IMPORTANT**: Replace with a real number and OTP for testing
+        const recipientPhone = "12345678900"; 
+        const testOtp = "998877"; 
 
-  const components: BodyComponent[] = [
-    {
-      type: "body",
-      parameters: [{ type: "text", text: otp }],
-    },
-  ];
+        console.log(`Attempting to send OTP ${testOtp} to ${recipientPhone}...`);
+        
+        await sendOtpMessage(recipientPhone, testOtp);
 
-  const { templateName: name } = ensureWhatsAppConfig();
-  return sendWhatsappTemplate(normalized, name, components);
+        console.log("Message sending attempt complete.");
+
+    } catch (error) {
+        console.error("Main execution failed:", error);
+    }
 }
-
-export async function sendJobNotification(
-  phone: string,
-  link: string
-): Promise<WhatsAppSuccessResponse> {
-  const normalized = normalizePhone(phone);
-  if (!normalized) {
-    throw new Error("Invalid phone number");
-  }
-  if (!link) {
-    throw new Error("Job link is required");
-  }
-
-  const components: WhatsAppTemplateComponent[] = [
-    {
-      type: "body",
-      parameters: [{ type: "text", text: "You have a new job request" }],
-    },
-    {
-      type: "button",
-      subtype: "url",
-      index: 0,
-      parameters: [{ type: "text", text: link }],
-    },
-  ];
-
-  const { templateName: name } = ensureWhatsAppConfig();
-  return sendWhatsappTemplate(normalized, name, components);
-}
+// main();
+*/

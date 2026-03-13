@@ -1,21 +1,89 @@
+import { X } from "lucide-react";
+
 type ChipProps = {
   label: string;
   selected?: boolean;
   onClick?: () => void;
+  onRemove?: () => void;
+  disabled?: boolean;
+  className?: string;
 };
 
-export default function Chip({ label, selected, onClick }: ChipProps) {
+const BASE_CLASS =
+  "inline-flex items-center gap-2 px-4 py-2 rounded-full border border-green-700 text-green-800 bg-white text-sm font-medium focus:outline-none focus:ring-2 focus:ring-green-700/30 disabled:cursor-not-allowed disabled:opacity-60";
+const SELECTED_CLASS = "bg-green-700 text-white border-green-700";
+const UNSELECTED_HOVER_CLASS = "hover:bg-green-50";
+const SELECTED_HOVER_CLASS = "hover:bg-green-800";
+
+export default function Chip({
+  label,
+  selected = false,
+  onClick,
+  onRemove,
+  disabled = false,
+  className = "",
+}: ChipProps) {
+  const clickable = Boolean(onClick);
+  const chipClass = `${BASE_CLASS} ${selected ? `${SELECTED_CLASS} ${SELECTED_HOVER_CLASS}` : UNSELECTED_HOVER_CLASS} ${className}`.trim();
+
+  if (!clickable) {
+    return (
+      <span
+        className={chipClass}
+        aria-disabled={disabled || undefined}
+      >
+        <span className="truncate">{label}</span>
+        {onRemove ? (
+          <button
+            type="button"
+            onClick={onRemove}
+            disabled={disabled}
+            className={`inline-flex h-5 w-5 items-center justify-center rounded-full transition ${
+              selected
+                ? "text-white hover:text-white/80"
+                : "text-green-800 hover:text-green-900"
+            }`}
+            aria-label={`Remove ${label}`}
+          >
+            <X size={12} strokeWidth={2.4} />
+          </button>
+        ) : null}
+      </span>
+    );
+  }
+
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`rounded-full px-4 py-2 text-sm font-medium transition shadow-sm border ${
-        selected
-          ? "bg-[#0EA5E9] text-white border-[#0EA5E9] shadow-md"
-          : "bg-white text-slate-700 border-[#0EA5E9]/40 hover:bg-orange-100 hover:border-orange-400"
-      }`}
+      disabled={disabled}
+      className={chipClass}
     >
-      {label}
+      <span className="truncate">{label}</span>
+      {onRemove ? (
+        <span
+          onClick={(event) => {
+            event.stopPropagation();
+            onRemove();
+          }}
+          className={`inline-flex h-5 w-5 items-center justify-center rounded-full transition ${
+            selected
+              ? "text-white hover:text-white/80"
+              : "text-green-800 hover:text-green-900"
+          }`}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              onRemove();
+            }
+          }}
+          aria-label={`Remove ${label}`}
+        >
+          <X size={12} strokeWidth={2.4} />
+        </span>
+      ) : null}
     </button>
   );
 }

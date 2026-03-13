@@ -1,6 +1,60 @@
 /**
  * Builds provider dashboard data from sheets.
  */
+function toUniqueNormalizedList_(values) {
+  var seen = {};
+  var out = [];
+  (values || []).forEach(function (value) {
+    var normalized = String(value || "").replace(/\s+/g, " ").trim();
+    if (!normalized) return;
+    var key = normalized.toLowerCase();
+    if (seen[key]) return;
+    seen[key] = true;
+    out.push(normalized);
+  });
+  return out;
+}
+
+function getProviderServicesForDashboard_(providerId) {
+  var serviceSheet = getOrCreateSheet("ProviderServices", [
+    "ProviderID",
+    "Phone",
+    "Category",
+    "CategoryName",
+    "CategoryID",
+    "Status",
+    "CreatedAt",
+  ]);
+  var values = serviceSheet.getDataRange().getValues();
+  if (!values.length) return [];
+
+  var headers = values[0] || [];
+  var idxProviderId = headerIndex(headers, "ProviderID");
+  var idxCategoryName =
+    headerIndex(headers, "CategoryName") !== -1
+      ? headerIndex(headers, "CategoryName")
+      : headerIndex(headers, "Category");
+  var idxStatus = headerIndex(headers, "Status");
+
+  if (idxProviderId === -1 || idxCategoryName === -1) return [];
+
+  var categories = values
+    .slice(1)
+    .filter(function (row) {
+      return String(row[idxProviderId] || "").trim() === String(providerId);
+    })
+    .filter(function (row) {
+      if (idxStatus === -1) return true;
+      var status = String(row[idxStatus] || "").trim().toLowerCase();
+      return !status || status === "active";
+    })
+    .map(function (row) {
+      return row[idxCategoryName];
+    });
+
+  return toUniqueNormalizedList_(categories);
+}
+
 function getProviderDashboardData(providerId) {
   if (!providerId) {
     throw new Error("Missing providerId");
@@ -18,20 +72,27 @@ function getProviderDashboardData(providerId) {
   var pStatusIdx = headerIndex(pHeaders, "Status");
 
   var provider = null;
+  var providerRow = null;
   for (var i = 1; i < providerData.length; i++) {
     if (String(providerData[i][pIdIdx]) === String(providerId)) {
+      providerRow = providerData[i] || [];
       provider = {
         providerId: providerId,
-        name: providerData[i][pNameIdx] || "",
-        phone: providerData[i][pPhoneIdx] || "",
-        categories: toArray(providerData[i][pCatIdx]),
-        areas: toArray(providerData[i][pAreaIdx]),
-        status: providerData[i][pStatusIdx] || "",
+        name: providerRow[pNameIdx] || "",
+        phone: providerRow[pPhoneIdx] || "",
+        categories: [],
+        areas: toArray(providerRow[pAreaIdx]),
+        status: providerRow[pStatusIdx] || "",
       };
       break;
     }
   }
   if (!provider) throw new Error("Provider not found");
+
+  var mappedCategories = getProviderServicesForDashboard_(providerId);
+  provider.categories = mappedCategories.length
+    ? mappedCategories
+    : toUniqueNormalizedList_(toArray(pCatIdx !== -1 ? providerRow[pCatIdx] : ""));
 
   // Distribution log (received tasks)
   var distSheet = getOrCreateSheet("Distribution_Log", [

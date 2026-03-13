@@ -9,9 +9,7 @@ export type UserTask = {
   createdAt: string;
   providersNotified: number;
   firstSentAt: string;
-  acceptedByProviderId?: string;
-  acceptedAt?: string;
-  status: "Sent" | "Accepted" | "No Response" | "Completed";
+  status: "submitted" | "notified" | "responded" | "";
 };
 
 export async function getUserTasks(phone: string): Promise<UserTask[]> {

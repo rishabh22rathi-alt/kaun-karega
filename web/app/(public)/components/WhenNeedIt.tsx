@@ -1,11 +1,14 @@
-﻿"use client";
-
 "use client";
-import { useEffect, useMemo, useRef, useState } from "react";
+
+import { useMemo } from "react";
 
 type WhenNeedItProps = {
   selectedTime: string;
+  serviceDate: string;
+  timeSlot: string;
   onSelect: (timeValue: string) => void;
+  onServiceDateChange: (date: string) => void;
+  onTimeSlotChange: (slot: string) => void;
 };
 
 const OPTIONS = [
@@ -16,38 +19,30 @@ const OPTIONS = [
   "Schedule later",
 ];
 
-export default function WhenNeedIt({ selectedTime, onSelect }: WhenNeedItProps) {
-  const [showPicker, setShowPicker] = useState(false);
-  const [scheduledValue, setScheduledValue] = useState("");
-  const pickerRef = useRef<HTMLDivElement | null>(null);
+const TIME_SLOTS = ["Morning", "Noon", "Afternoon", "Evening"] as const;
 
+const SLOT_LABELS: Record<(typeof TIME_SLOTS)[number], string> = {
+  Morning: "Morning (8-11)",
+  Noon: "Noon (11-2)",
+  Afternoon: "Afternoon (2-5)",
+  Evening: "Evening (5-8)",
+};
+
+export default function WhenNeedIt({
+  selectedTime,
+  serviceDate,
+  timeSlot,
+  onSelect,
+  onServiceDateChange,
+  onTimeSlotChange,
+}: WhenNeedItProps) {
   const handleSelect = (value: string) => {
-    if (value === "Schedule later") {
-      setShowPicker(true);
-      onSelect(value);
-      return;
-    }
-    setShowPicker(false);
     onSelect(value);
-  };
-
-  const handleScheduleChange = (value: string) => {
-    setScheduledValue(value);
-    if (value) {
-      onSelect(value);
-      setShowPicker(false);
+    if (value !== "Schedule later") {
+      onServiceDateChange("");
+      onTimeSlotChange("");
     }
   };
-
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (pickerRef.current && !pickerRef.current.contains(event.target as Node)) {
-        setShowPicker(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
 
   const chipClass = useMemo(
     () =>
@@ -62,7 +57,9 @@ export default function WhenNeedIt({ selectedTime, onSelect }: WhenNeedItProps) 
 
   return (
     <div className="w-full">
-      <p className="text-sm font-semibold text-[#111827] mb-2">When do you need it?</p>
+      <p className="mb-2 text-sm font-semibold text-[#111827]">
+        When do you need it?
+      </p>
       <div className="flex flex-wrap gap-2">
         {OPTIONS.map((option) => {
           const active = selectedTime === option;
@@ -79,16 +76,32 @@ export default function WhenNeedIt({ selectedTime, onSelect }: WhenNeedItProps) 
         })}
       </div>
 
-      {showPicker && (
-        <div className="relative mt-3" ref={pickerRef}>
-          <div className="absolute z-30 w-64 rounded-xl border border-emerald-100 bg-white p-3 shadow-lg">
-            <label className="text-xs font-semibold text-slate-700">Pick a date & time</label>
-            <input
-              type="datetime-local"
-              value={scheduledValue}
-              onChange={(e) => handleScheduleChange(e.target.value)}
-              className="mt-2 w-full rounded-lg border border-emerald-200 px-3 py-2 text-sm text-slate-800 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
-            />
+      {selectedTime === "Schedule later" && (
+        <div className="mt-3 rounded-xl border border-emerald-100 bg-white p-3 shadow-sm">
+          <label className="text-xs font-semibold text-slate-700">
+            Select date
+          </label>
+          <input
+            type="date"
+            value={serviceDate}
+            onChange={(e) => onServiceDateChange(e.target.value)}
+            className="mt-2 w-full rounded-lg border border-emerald-200 px-3 py-2 text-sm text-slate-800 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+          />
+
+          <p className="mt-3 text-xs font-semibold text-slate-700">
+            Select time slot
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {TIME_SLOTS.map((slot) => (
+              <button
+                key={slot}
+                type="button"
+                onClick={() => onTimeSlotChange(slot)}
+                className={chipClass(timeSlot === slot)}
+              >
+                {SLOT_LABELS[slot]}
+              </button>
+            ))}
           </div>
         </div>
       )}

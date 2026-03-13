@@ -14,7 +14,7 @@ export default function PostTaskPage() {
   const [error, setError] = useState("");
 
   const handleSubmit = async () => {
-    if (!taskTitle || !taskDescription || !location || !phone) {
+    if (!taskTitle || !location || !phone) {
       setError("Please fill all required fields");
       return;
     }
@@ -22,6 +22,7 @@ export default function PostTaskPage() {
     setLoading(true);
     setError("");
     setMessage("");
+    const cleanTaskDescription = (taskDescription ?? "").trim();
 
     try {
       const res = await fetch("/api/save-task", {
@@ -30,7 +31,7 @@ export default function PostTaskPage() {
         body: JSON.stringify({
           phone,
           taskTitle,
-          taskDescription,
+          taskDescription: cleanTaskDescription,
           location,
           budget,
         }),

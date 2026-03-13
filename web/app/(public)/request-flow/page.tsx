@@ -3,7 +3,9 @@
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import WhenNeedIt from "../components/WhenNeedIt";
-import AreaSelection from "@/app/(public)/components/AreaSelection";
+import AreaSelection, {
+  normalizeAreaValue,
+} from "@/app/(public)/components/AreaSelection";
 
 const MASTER_AREAS = [
   "Sardarpura",
@@ -57,8 +59,6 @@ const MASTER_AREAS = [
   "Mahamandir",
 ];
 
-const POPULAR_AREAS = ["Sardarpura", "Shastri Nagar"];
-
 export default function RequestFlowPage() {
   return (
     <Suspense
@@ -81,11 +81,15 @@ function PageContent() {
 
   const [category, setCategory] = useState(params.get("category") || "");
   const [time, setTime] = useState("");
+  const [serviceDate, setServiceDate] = useState("");
+  const [timeSlot, setTimeSlot] = useState("");
   const [area, setArea] = useState("");
+  const [areaError, setAreaError] = useState("");
   const [details, setDetails] = useState("");
-  const [error, setError] = useState("");
+  const [error, setError] = useState<string>("");
+  const [debug, setDebug] = useState<string>("");
   const [loading, setLoading] = useState(false);
-  const [success, setSuccess] = useState(false);
+  const [isRedirecting, setIsRedirecting] = useState(false);
 
   useEffect(() => {
     const fromParams = params.get("category") || "";
@@ -101,35 +105,78 @@ function PageContent() {
 
   const handleSubmit = async () => {
     setError("");
-    setSuccess(false);
+    setDebug("");
+    setAreaError("");
+    setIsRedirecting(false);
+    const normalizedArea = normalizeAreaValue(area);
+    if (!normalizedArea) {
+      setAreaError("Please select or type your area.");
+      return;
+    }
     if (!canSubmit) {
       setError("Please fill all required fields.");
       return;
     }
+    if (time === "Schedule later" && (!serviceDate || !timeSlot)) {
+      setError("Please select both date and time slot.");
+      return;
+    }
     setLoading(true);
     try {
+      const cleanDetails = (details ?? "").trim();
       const res = await fetch("/api/submit-request", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           category,
-          time,
-          area,
-          details,
+          area: normalizedArea,
+          serviceDate,
+          timeSlot,
+          details: cleanDetails,
           createdAt: new Date().toISOString(),
         }),
       });
+
+      const text = await res.text();
+      setDebug(`HTTP ${res.status}: ${text}`);
+
+      let json: any = null;
+      try {
+        json = JSON.parse(text);
+      } catch {}
+
       if (!res.ok) {
-        throw new Error("Failed to submit request");
+        setError(json?.error || "Request failed (non-200). Check debug.");
+        return;
       }
-      setSuccess(true);
-      setDetails("");
+
+      if (!json?.ok) {
+        setError(json?.error || "Apps Script rejected request. Check debug.");
+        return;
+      }
+
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem("kk_last_area", normalizedArea);
+      }
+      setIsRedirecting(true);
+      router.push("/my-tasks");
+      router.refresh();
+      return;
     } catch (err: any) {
       setError(err?.message || "Something went wrong.");
+      setIsRedirecting(false);
     } finally {
       setLoading(false);
     }
   };
+
+  if (isRedirecting) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-white px-4 py-10">
+        <p className="text-sm font-medium text-slate-700">Redirecting...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center bg-white px-4 py-10">
@@ -142,18 +189,22 @@ function PageContent() {
         <div className="space-y-6">
           <WhenNeedIt
             selectedTime={time}
+            serviceDate={serviceDate}
+            timeSlot={timeSlot}
             onSelect={(value) => {
               setTime(value);
             }}
+            onServiceDateChange={setServiceDate}
+            onTimeSlotChange={setTimeSlot}
           />
 
           <AreaSelection
             selectedArea={area}
             onSelect={(value) => {
               setArea(value);
+              setAreaError("");
             }}
-            areas={MASTER_AREAS}
-            popularAreas={POPULAR_AREAS}
+            errorMessage={areaError}
           />
 
           <div className="space-y-3">
@@ -167,21 +218,20 @@ function PageContent() {
             />
           </div>
 
-          {error && <p className="text-sm text-red-600">{error}</p>}
-          {success && (
-            <p className="text-sm font-semibold text-emerald-700">
-              Your request has been submitted! Providers will contact you soon.
-            </p>
-          )}
-
           <button
             type="button"
             onClick={handleSubmit}
-            disabled={loading}
+            disabled={loading || isRedirecting}
             className="w-full rounded-full bg-[#0EA5E9] px-4 py-3 text-white font-semibold shadow-md transition hover:shadow-lg disabled:opacity-60"
           >
-            {loading ? "Submitting..." : "Submit Request"}
+            {loading || isRedirecting ? "Submitting..." : "Submit Request"}
           </button>
+          {error && <div className="mt-2 text-sm text-red-600">{error}</div>}
+          {debug && (
+            <pre className="mt-2 text-xs whitespace-pre-wrap rounded bg-gray-50 p-2 border">
+              {debug}
+            </pre>
+          )}
         </div>
       </div>
     </div>

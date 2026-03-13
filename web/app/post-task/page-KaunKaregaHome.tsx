@@ -14,7 +14,7 @@ export default function PostTaskPage() {
   const [error, setError] = useState("");
 
   const handleSubmit = async () => {
-    if (!category || !details || !area || !urgency || !phone) {
+    if (!category || !area || !urgency || !phone) {
       setError("Please fill all required fields.");
       return;
     }
@@ -22,6 +22,7 @@ export default function PostTaskPage() {
     setLoading(true);
     setError("");
     setMessage("");
+    const cleanDetails = (details ?? "").trim();
 
     try {
       const res = await fetch("/api/tasks/create", {
@@ -29,7 +30,7 @@ export default function PostTaskPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           category,
-          details,
+          details: cleanDetails,
           area,
           urgency,
           phone,

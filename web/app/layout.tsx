@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import Sidebar from "@/components/Sidebar";
+import SidebarToggle from "@/components/SidebarToggle";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -25,9 +27,19 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+        className={`${geistSans.variable} ${geistMono.variable} antialiased overflow-x-hidden`}
       >
-        {children}
+        <div
+          id="kk-app-shell"
+          className="flex min-h-screen"
+          style={{ "--kk-sidebar-width": "0px" } as React.CSSProperties}
+        >
+          <SidebarToggle />
+          <Sidebar />
+          <div className="min-h-screen flex-1 transition-[padding] duration-200 md:pl-[var(--kk-sidebar-width)]">
+            {children}
+          </div>
+        </div>
       </body>
     </html>
   );

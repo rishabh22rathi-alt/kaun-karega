@@ -30,7 +30,7 @@ function PageContent() {
     if (typeof window !== "undefined") {
       const role = localStorage.getItem("kk_user_role");
       if (role === "provider") {
-        router.replace("/provider-dashboard");
+        router.replace("/provider/dashboard");
         return;
       }
       if (role === "receiver") {
@@ -74,7 +74,7 @@ function PageContent() {
         <div className="grid gap-4 md:grid-cols-2">
           <button
             type="button"
-            onClick={() => goTo("/register/provider")}
+            onClick={() => goTo("/provider/register")}
             className="rounded-2xl border-2 border-[#0EA5E9] bg-[#0EA5E9]/5 px-5 py-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg"
           >
             <p className="text-sm uppercase tracking-wide text-[#0EA5E9]">Service Provider</p>
@@ -83,7 +83,7 @@ function PageContent() {
 
           <button
             type="button"
-            onClick={() => goTo("/register/receiver")}
+            onClick={() => goTo("/provider/register")}
             className="rounded-2xl border-2 border-orange-400 bg-orange-50 px-5 py-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg"
           >
             <p className="text-sm uppercase tracking-wide text-orange-500">Service Receiver</p>

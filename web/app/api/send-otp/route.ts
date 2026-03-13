@@ -1,47 +1,64 @@
-import { saveOTP } from "@/lib/googleSheets";
-import { normalizePhone } from "@/lib/utils/phone";
-import { sendOtpMessage } from "@/lib/notifications";
+// app/api/send-otp/route.ts
 
-type OtpRequestBody = {
-  phone?: string;
-};
+import "dotenv/config";
+import { NextResponse } from "next/server";
+// Assuming this utility is where you handle the WhatsApp API call
+import { sendOtpMessage } from "../../../components/lib/utils/whatsapp-sender";
 
-const isTenDigitPhone = (phone: string): boolean =>
-  /^\d{10}$/.test(phone.trim());
+// Helper to generate a random 4-digit number
+function generateFourDigitOTP(): string {
+    // Generates a random integer between 1000 and 9999 (inclusive)
+    const otp = Math.floor(1000 + Math.random() * 9000);
+    return otp.toString();
+}
 
-const generateOtp = (): string =>
-  Math.floor(1000 + Math.random() * 9000).toString();
-
-export async function POST(req: Request): Promise<Response> {
-  try {
-    const { phone }: OtpRequestBody = await req.json();
-
-    if (!phone || typeof phone !== "string" || !isTenDigitPhone(phone)) {
-      return Response.json(
-        { success: false, error: "Phone must be a 10-digit number." },
-        { status: 400 }
-      );
+export async function POST(request: Request) {
+    if (!process.env.META_WA_TOKEN) {
+        return NextResponse.json({ error: "Server Configuration Error" }, { status: 500 });
     }
 
-    const normalizedPhone = normalizePhone(phone);
-    if (!normalizedPhone) {
-      return Response.json(
-        { success: false, error: "Invalid phone number." },
-        { status: 400 }
-      );
+    try {
+        const parsed = await request.json();
+        const { toPhoneNumber, buttonUrl, requestId } = parsed ?? {};
+
+        if (!toPhoneNumber) {
+            return NextResponse.json({ error: "Phone number required" }, { status: 400 });
+        }
+
+        const scriptUrl = process.env.NEXT_PUBLIC_APPS_SCRIPT_URL;
+        if (!scriptUrl) {
+            return NextResponse.json({ error: "Missing Apps Script URL in .env" }, { status: 500 });
+        }
+
+        const otpCode = generateFourDigitOTP();
+
+        // --- FIXED PILLAR 3: SAVE TO GOOGLE SCRIPT DIRECTLY ---
+        const saveResponse = await fetch(scriptUrl!, {
+            method: "POST",
+            headers: { "Content-Type": "text/plain" },
+            body: JSON.stringify({
+                action: "save_otp",
+                phone: toPhoneNumber,
+                otp: otpCode,
+                requestId: requestId
+            }),
+        });
+
+        const saveResultText = await saveResponse.text();
+        console.log("[GOOGLE SCRIPT RESPONSE]:", saveResultText);
+        if (!saveResultText.startsWith("{")) {
+            return NextResponse.json(
+                { error: "Script returned an error. Check Apps Script logs." },
+                { status: 502 }
+            );
+        }
+
+        // 5. Call WhatsApp sender
+        const result = await sendOtpMessage(toPhoneNumber, otpCode, buttonUrl);
+
+        return NextResponse.json({ success: true, otpSaved: true, data: result }, { status: 200 });
+    } catch (error: any) {
+        console.error("API Error:", error);
+        return NextResponse.json({ error: error.message }, { status: 500 });
     }
-
-    const otp = generateOtp();
-
-    await saveOTP(normalizedPhone, otp);
-    await sendOtpMessage(normalizedPhone, otp);
-
-    return Response.json({ success: true, otp });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Internal error";
-    return Response.json(
-      { success: false, error: message },
-      { status: 500 }
-    );
-  }
 }

@@ -2,6 +2,7 @@
 
 import { Suspense, useEffect, useMemo, useState, FormEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { setAuthSession } from "@/lib/auth";
 
 type UserStatus = "provider" | "receiver" | "new";
 
@@ -37,7 +38,7 @@ function PageContent() {
     if (typeof window !== "undefined") {
       const role = localStorage.getItem("kk_user_role");
       if (role === "provider") {
-        router.replace(redirectTo || "/provider-dashboard");
+        router.replace(redirectTo || "/provider/dashboard");
         return;
       }
       if (role === "receiver") {
@@ -102,6 +103,7 @@ function PageContent() {
         setError(verifyData.error || "Invalid OTP");
         return;
       }
+      setAuthSession(verifyData.phone, verifyData.token);
 
       const statusRes = await fetch(
         `/api/check-user-status?phone=${encodeURIComponent(phoneDigits)}`,
@@ -122,7 +124,7 @@ function PageContent() {
       }
 
       if (status === "provider") {
-        router.replace("/provider-dashboard");
+        router.replace("/provider/dashboard");
       } else if (status === "receiver") {
         router.replace("/");
       } else {

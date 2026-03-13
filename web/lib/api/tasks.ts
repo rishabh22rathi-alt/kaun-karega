@@ -21,6 +21,8 @@ export type NoResponseTask = {
   taskId: string;
   category: string;
   area: string;
+  status?: string;
+  notifiedAt?: string;
   details: string;
   urgency: string;
   createdAt: string;
@@ -71,6 +73,35 @@ export async function resendTask(taskId: string) {
     return await appsScriptPost("tasks/resend", { taskId }, { admin: true });
   } catch (err) {
     console.error("resendTask error", err);
+    return { success: false, error: (err as Error).message };
+  }
+}
+
+export async function getTasksWithoutResponseSince(hours: number): Promise<NoResponseTask[]> {
+  if (!ADMIN_KEY) {
+    console.warn("NEXT_PUBLIC_ADMIN_KEY is not set");
+  }
+  try {
+    const data = await appsScriptGet<{ tasks?: NoResponseTask[] }>(
+      "tasks/listNoResponse",
+      { minHours: String(hours) },
+      { admin: true }
+    );
+    return data.tasks || [];
+  } catch (err) {
+    console.error("getTasksWithoutResponseSince error", err);
+    return [];
+  }
+}
+
+export async function markTaskResponded(taskId: string) {
+  if (!ADMIN_KEY) {
+    console.warn("NEXT_PUBLIC_ADMIN_KEY is not set");
+  }
+  try {
+    return await appsScriptPost("tasks/markResponded", { taskId }, { admin: true });
+  } catch (err) {
+    console.error("markTaskResponded error", err);
     return { success: false, error: (err as Error).message };
   }
 }

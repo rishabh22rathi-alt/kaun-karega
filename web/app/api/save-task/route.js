@@ -4,9 +4,14 @@ export async function POST(req) {
   try {
     const body = await req.json();
 
-    const { phone, taskTitle, taskDescription, location, budget } = body;
+    const phone = typeof body?.phone === "string" ? body.phone.trim() : "";
+    const taskTitle = typeof body?.taskTitle === "string" ? body.taskTitle.trim() : "";
+    const taskDescription =
+      typeof body?.taskDescription === "string" ? body.taskDescription.trim() : "";
+    const location = typeof body?.location === "string" ? body.location.trim() : "";
+    const budget = body?.budget;
 
-    if (!phone || !taskTitle || !taskDescription || !location) {
+    if (!phone || !taskTitle || !location) {
       return NextResponse.json(
         { success: false, error: "Missing required fields" },
         { status: 400 }

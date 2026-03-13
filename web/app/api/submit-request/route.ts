@@ -1,153 +1,160 @@
 import { NextResponse } from "next/server";
-import {
-  findProvidersByCategoryAndArea,
-  savePendingCategory,
-  saveUserRequest,
-} from "@/lib/googleSheets";
-
-const MASTER_CATEGORIES = [
-  "Carpenter",
-  "Electrician",
-  "Plumber",
-  "AC Mechanic",
-  "Washing Machine Repair",
-  "RO Technician",
-  "Painter",
-  "House Cleaner",
-  "Sofa Cleaner",
-  "Car Cleaner",
-  "Kitchen Deep Cleaner",
-  "Play Group / Pre-School Teacher",
-  "Home Tutor (Nursery-5)",
-  "Home Tutor (6-10)",
-  "Accounts",
-  "Maths",
-  "English",
-  "Science",
-  "Economics",
-  "Business Studies",
-  "Dance Teacher",
-  "Drawing Teacher",
-  "Music Teacher",
-  "Yoga Instructor",
-  "Skating Coach",
-  "Karate Coach",
-  "Car Driver",
-  "Auto Driver",
-  "Bike Mechanic",
-  "Car Mechanic",
-  "Cook",
-  "Babysitter / Nanny",
-  "Elderly Care / Aya",
-  "Gardener",
-  "Security Guard",
-  "Photographer",
-  "Videographer",
-  "Event Helper",
-  "Makeup Artist",
-  "Mehendi Artist",
-  "Tailor",
-  "Delivery Boy",
-  "Labor / Helper (General)",
-  "Loader / Unloader",
-];
-
-const MASTER_AREAS = [
-  "Sardarpura",
-  "Shastri Nagar",
-  "Ratanada",
-  "Pal Road",
-  "Bhagat Ki Kothi",
-  "Chopasni Housing Board",
-  "Chopasni Road",
-  "Basni",
-  "Paota",
-  "Mandore",
-  "Residency Road",
-  "Rai Ka Bagh",
-  "High Court Colony",
-  "Civil Lines",
-  "Kamla Nehru Nagar",
-  "Kudi Bhagtasni Housing Board",
-  "Banar",
-  "Pratap Nagar",
-  "Nayapura",
-  "Shikargarh",
-  "Air Force Area",
-  "MIA",
-  "Jalori Gate",
-  "Sojati Gate",
-  "Clock Tower",
-  "Nandri",
-  "Paota Circle",
-  "Kabir Nagar",
-  "Vivek Vihar",
-  "BJS Colony",
-  "Umaid Stadium",
-  "Ashapurna Valley",
-  "Sangriya",
-  "Mogra",
-  "Khema Ka Kuan",
-  "Idgah",
-  "Agolai",
-  "Tinwari",
-  "Laxmi Nagar",
-  "Rajiv Gandhi Colony",
-  "Sursagar",
-  "Rikhtiya Bheruji",
-  "Sivanchi Gate",
-  "Chand Pole",
-  "Soorsagar Road",
-  "Panch Batti Circle",
-  "New Power House",
-  "Madar",
-  "Mahamandir",
-];
+import { getAuthSession } from "@/lib/auth";
+import { fetchProviderMatches } from "@/lib/api/providerMatching";
 
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { category, area, details, createdAt } = body || {};
-
-    if (!category || !area) {
-      return Response.json(
-        { error: "Missing required fields" },
+    // Destructure the data coming from your frontend component
+    const category = typeof body?.category === "string" ? body.category.trim() : "";
+    const area = typeof body?.area === "string" ? body.area.trim() : "";
+    let details = (body?.details ?? body?.description ?? "").toString().trim();
+    if (!details) {
+      details = "-";
+    }
+    const phone = body?.phone;
+    // Task submission now depends on auth session only.
+    if (phone !== undefined) {
+      return NextResponse.json(
+        { error: "Phone must come from the auth session." },
         { status: 400 }
       );
     }
 
-    await saveUserRequest({
-      category,
-      area,
-      details,
-      createdAt,
+    const session = getAuthSession({
+      cookie: request.headers.get("cookie") ?? "",
+    });
+    if (!session) {
+      return NextResponse.json(
+        { error: "Unauthorized" },
+        { status: 401 }
+      );
+    }
+
+    // Validation: Ensure we don't send empty data
+    if (!category || !area) {
+      return NextResponse.json(
+        { error: "Required fields missing: Category or Area" },
+        { status: 400 }
+      );
+    }
+
+    const GOOGLE_SCRIPT_URL = process.env.NEXT_PUBLIC_APPS_SCRIPT_URL;
+
+    if (!GOOGLE_SCRIPT_URL) {
+      throw new Error("NEXT_PUBLIC_APPS_SCRIPT_URL is missing in environment variables");
+    }
+
+    // Forward the data to Google Apps Script
+    const response = await fetch(GOOGLE_SCRIPT_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify({
+        action: "submit_task", // Tells the script which logic to trigger
+        category: category,
+        area: area,
+        details,
+        phone: session.phone,
+      }),
     });
 
-    const providers = await findProvidersByCategoryAndArea(category, area);
+    const scriptStatus = response.status;
+    const scriptBodyText = await response.text();
+    console.log("submit-request Apps Script response", {
+      status: scriptStatus,
+      body: scriptBodyText,
+    });
 
-    if (!MASTER_AREAS.includes(area)) {
-      await savePendingCategory({
-        category: "__NEW_AREA__",
-        area,
-        details: details || "",
-      });
+    if (!response.ok) {
+      let scriptError = scriptBodyText;
+      try {
+        const parsed = JSON.parse(scriptBodyText);
+        scriptError = parsed?.error || parsed?.message || scriptBodyText;
+      } catch {}
+      return NextResponse.json(
+        { error: scriptError || `Apps Script write failed (status ${scriptStatus}).` },
+        { status: 500 }
+      );
     }
 
-    if (!MASTER_CATEGORIES.includes(category)) {
-      await savePendingCategory({
+    let result: any = null;
+    try {
+      result = JSON.parse(scriptBodyText);
+    } catch {
+      return NextResponse.json(
+        { error: "Apps Script returned non-JSON response." },
+        { status: 500 }
+      );
+    }
+
+    if (result?.ok !== true) {
+      return NextResponse.json(
+        { error: result?.error || result?.message || "Apps Script returned failure." },
+        { status: 500 }
+      );
+    }
+
+    const taskId =
+      typeof result?.taskId === "string" ? result.taskId.trim() : "";
+    if (!taskId) {
+      return NextResponse.json(
+        { error: "Apps Script did not return taskId." },
+        { status: 500 }
+      );
+    }
+
+    try {
+      const matched = await fetchProviderMatches({
         category,
         area,
-        details,
+        taskId,
+        userPhone: session.phone,
+        limit: 20,
+      });
+
+      const persistResponse = await fetch(GOOGLE_SCRIPT_URL, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain" },
+        body: JSON.stringify({
+          action: "save_provider_matches",
+          taskId,
+          category,
+          area,
+          details,
+          providers: matched.providers,
+        }),
+      });
+
+      if (!persistResponse.ok) {
+        const persistBody = await persistResponse.text();
+        console.error("save_provider_matches failed", {
+          taskId,
+          status: persistResponse.status,
+          body: persistBody,
+        });
+      } else {
+        const persistText = await persistResponse.text();
+        console.log("save_provider_matches response", {
+          taskId,
+          body: persistText,
+        });
+      }
+    } catch (persistError) {
+      console.error("Provider match persistence failed", {
+        taskId,
+        error: persistError instanceof Error ? persistError.message : persistError,
       });
     }
 
-    return Response.json({ ok: true, providers });
+    return NextResponse.json({
+      ok: true,
+      taskId,
+    });
 
   } catch (error: any) {
-    console.error("submit-request error", error);
-
-    return Response.json(
-      { error: error?.message || "Failed to submit request" },
+    console.error("API Route Error:", error);
+    return NextResponse.json(
+      { error: error?.message || "Internal Server Error" },
       { status: 500 }
     );
   }

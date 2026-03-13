@@ -5,10 +5,10 @@ import { useEffect, useState } from "react";
 import { UserTask, getUserTasks } from "@/lib/api/userTasks";
 
 const statusClasses: Record<UserTask["status"], string> = {
-  Sent: "bg-amber-50 text-amber-700 border-amber-200",
-  "No Response": "bg-rose-50 text-rose-700 border-rose-200",
-  Accepted: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  Completed: "bg-slate-100 text-slate-700 border-slate-200",
+  submitted: "bg-amber-50 text-amber-700 border-amber-200",
+  notified: "bg-sky-50 text-sky-700 border-sky-200",
+  responded: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  "": "bg-slate-100 text-slate-700 border-slate-200",
 };
 
 export default function UserTasksPage() {

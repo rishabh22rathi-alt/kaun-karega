@@ -28,17 +28,35 @@ export default function AdminLoginPage() {
     try {
       const res = await fetch("/api/send-otp", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+        },
         body: JSON.stringify({ phone }),
       });
-      const data = await res.json();
-      if (data.ok) {
+
+      const rawText = await res.text();
+
+      let data;
+      try {
+        data = JSON.parse(rawText);
+      } catch {
+        console.error("Server returned non-JSON:", rawText);
+        throw new Error("Server error. Check backend.");
+      }
+
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to send OTP");
+      }
+
+      if (data.success) {
         setOtpSent(true);
       } else {
         setError(data.error || "Failed to send OTP");
       }
     } catch (err) {
-      setError("Network error. Please try again.");
+      setError(
+        err instanceof Error ? err.message : "Network error. Please try again."
+      );
     } finally {
       setLoading(false);
     }
