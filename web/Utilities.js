@@ -144,6 +144,153 @@ function normalizeHeaderKey_(header) {
   return String(header || "").trim().toLowerCase();
 }
 
+function normalizeComparableKey_(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function findHeaderIndexByAliases_(headers, aliases) {
+  const normalizedHeaders = (headers || []).map((header) =>
+    normalizeComparableKey_(header)
+  );
+  const normalizedAliases = (aliases || []).map((alias) =>
+    normalizeComparableKey_(alias)
+  );
+
+  for (let i = 0; i < normalizedAliases.length; i++) {
+    const idx = normalizedHeaders.indexOf(normalizedAliases[i]);
+    if (idx !== -1) return idx;
+  }
+
+  return -1;
+}
+
+function normalizeCategoryName_(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function getNormalizedCategoryKey_(value) {
+  return normalizeCategoryName_(value).toLowerCase();
+}
+
+function uniqueNormalizedValues_(values) {
+  const out = [];
+  const seen = new Set();
+
+  (values || []).forEach((value) => {
+    const normalized = normalizeCategoryName_(value);
+    if (!normalized) return;
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(normalized);
+  });
+
+  return out;
+}
+
+function isTruthySheetValue_(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized === "yes" || normalized === "true" || normalized === "1";
+}
+
+function isActiveCategoryRow_(row, idxStatus, idxActive) {
+  if (
+    idxStatus !== -1 &&
+    row[idxStatus] !== undefined &&
+    String(row[idxStatus]).trim() !== ""
+  ) {
+    const status = String(row[idxStatus]).trim().toLowerCase();
+    return status === "active" || status === "approved" || status === "yes";
+  }
+
+  if (
+    idxActive !== -1 &&
+    row[idxActive] !== undefined &&
+    String(row[idxActive]).trim() !== ""
+  ) {
+    return isTruthySheetValue_(row[idxActive]);
+  }
+
+  return true;
+}
+
+function getProviderHeaderMap_(headers) {
+  return {
+    providerId: findHeaderIndexByAliases_(headers, ["ProviderID", "ID"]),
+    providerName: findHeaderIndexByAliases_(headers, [
+      "ProviderName",
+      "Name",
+      "Provider",
+    ]),
+    phone: findHeaderIndexByAliases_(headers, ["Phone", "ProviderPhone", "UserPhone"]),
+    category: findHeaderIndexByAliases_(headers, ["Category", "Categories", "Service", "Services"]),
+    areas: findHeaderIndexByAliases_(headers, ["Areas", "Area"]),
+    verified: findHeaderIndexByAliases_(headers, ["Verified", "IsVerified"]),
+    status: findHeaderIndexByAliases_(headers, ["Status"]),
+    approvalStatus: findHeaderIndexByAliases_(headers, ["ApprovalStatus", "Approval Status"]),
+    pendingApproval: findHeaderIndexByAliases_(headers, [
+      "PendingApproval",
+      "Pending Approval",
+      "PendingCategories",
+    ]),
+    customCategory: findHeaderIndexByAliases_(headers, [
+      "CustomCategory",
+      "Custom Category",
+      "PendingCategories",
+    ]),
+    createdAt: findHeaderIndexByAliases_(headers, ["CreatedAt", "Timestamp"]),
+    updatedAt: findHeaderIndexByAliases_(headers, ["UpdatedAt"]),
+  };
+}
+
+function getProviderSheetFieldIndex_(headers, fieldName) {
+  const map = getProviderHeaderMap_(headers);
+
+  if (fieldName === "ProviderID") return map.providerId;
+  if (fieldName === "Name") return map.providerName;
+  if (fieldName === "Phone") return map.phone;
+  if (fieldName === "Category") return map.category;
+  if (fieldName === "Areas") return map.areas;
+  if (fieldName === "Verified") return map.verified;
+  if (fieldName === "Status") return map.status;
+  if (fieldName === "ApprovalStatus") return map.approvalStatus;
+  if (fieldName === "PendingApproval") return map.pendingApproval;
+  if (fieldName === "CustomCategory") return map.customCategory;
+  if (fieldName === "CreatedAt") return map.createdAt;
+  if (fieldName === "UpdatedAt") return map.updatedAt;
+
+  return findHeaderIndexByAliases_(headers, [fieldName]);
+}
+
+function buildProviderSheetRow_(headers, data, existingRow) {
+  const row = Array.isArray(existingRow) ? existingRow.slice() : [];
+  while (row.length < headers.length) row.push("");
+
+  Object.keys(data || {}).forEach((fieldName) => {
+    const idx = getProviderSheetFieldIndex_(headers, fieldName);
+    if (idx === -1) return;
+    row[idx] = data[fieldName];
+  });
+
+  return row;
+}
+
+function upsertProviderSheetRow_(sheet, headers, rowNumber, data) {
+  const existingRow =
+    rowNumber > 1 ? sheet.getRange(rowNumber, 1, 1, headers.length).getValues()[0] || [] : [];
+  const row = buildProviderSheetRow_(headers, data, existingRow);
+
+  if (rowNumber > 1) {
+    sheet.getRange(rowNumber, 1, 1, headers.length).setValues([row]);
+    return;
+  }
+
+  sheet.appendRow(row);
+}
+
 function buildDataMap_(data) {
   var map = {};
   Object.keys(data || {}).forEach(function (key) {

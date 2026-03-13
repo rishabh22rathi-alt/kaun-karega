@@ -17,8 +17,17 @@ type RegisterResponse = {
   message?: string;
   error?: string;
   providerId?: string;
+  verified?: string;
+  pendingApproval?: string;
+  requiresAdminApproval?: boolean;
+  requestedNewCategories?: string[];
   provider?: {
+    ProviderID?: string;
+    Name?: string;
+    Phone?: string;
     Verified?: string;
+    PendingApproval?: string;
+    Status?: string;
   };
 };
 
@@ -29,6 +38,7 @@ type ProviderProfileResponse = {
     Name?: string;
     Phone?: string;
     Verified?: string;
+    PendingApproval?: string;
     Status?: string;
   };
 };
@@ -567,7 +577,6 @@ export default function ProviderRegisterPage() {
         customCategoryKeys.includes(categoryKey(category))
       );
       const customCategory = pendingNewCategories[0] || "";
-      const requiresAdminApproval = pendingNewCategories.length > 0;
       const payload = {
         action: "provider_register",
         phone,
@@ -576,7 +585,7 @@ export default function ProviderRegisterPage() {
         areas: JSON.stringify(selectedAreas),
         pendingNewCategories: JSON.stringify(pendingNewCategories),
         customCategory,
-        requiresAdminApproval: requiresAdminApproval ? "true" : "false",
+        requiresAdminApproval: pendingNewCategories.length > 0 ? "true" : "false",
       };
 
       const response = await fetch("/api/kk", {
@@ -594,6 +603,7 @@ export default function ProviderRegisterPage() {
       }
 
       setSuccess(data ?? { ok: true, status: "success" });
+      const requiresAdminApproval = Boolean(data?.requiresAdminApproval);
       setSubmittedRequiresApproval(requiresAdminApproval);
       if (typeof window !== "undefined") {
         const canonicalPhone = normalizePhone10(phone);
@@ -603,14 +613,19 @@ export default function ProviderRegisterPage() {
         window.localStorage.setItem("kk_user_role", "provider");
         window.localStorage.setItem(
           "kk_provider_verified",
-          String(data?.provider?.Verified || "no").trim() || "no"
+          String(data?.verified || data?.provider?.Verified || "no").trim() || "no"
         );
         const fallbackProfile = {
           ProviderID: responseProviderId,
           Name: name.trim().toUpperCase(),
           Phone: canonicalPhone,
-          Verified: requiresAdminApproval ? "no" : "yes",
-          Status: requiresAdminApproval ? "Pending Verification" : "Active",
+          Verified: String(data?.verified || data?.provider?.Verified || "no").trim() || "no",
+          PendingApproval:
+            String(data?.pendingApproval || data?.provider?.PendingApproval || "no").trim() ||
+            "no",
+          Status:
+            data?.provider?.Status ||
+            (requiresAdminApproval ? "Pending Admin Approval" : "Active"),
         };
         window.localStorage.setItem("kk_provider_profile", JSON.stringify(fallbackProfile));
         window.dispatchEvent(new Event(PROVIDER_PROFILE_UPDATED_EVENT));
@@ -962,20 +977,26 @@ export default function ProviderRegisterPage() {
             </div>
 
             {success ? (
-              <div className="mt-6 rounded-xl border border-green-200 bg-green-50 p-4">
-                <p className="text-sm font-semibold text-green-800">
-                  {submittedRequiresApproval
-                    ? "Application submitted. Pending verification."
-                    : "Registration successful. You are now verified."}
-                </p>
-                <p className="mt-2 text-sm text-green-900">
-                  ProviderID: <span className="font-bold">{success.providerId || "Will be assigned soon"}</span>
-                </p>
+            <div className="mt-6 rounded-xl border border-green-200 bg-green-50 p-4">
+              <p className="text-sm font-semibold text-green-800">
+                  {success.message ||
+                    (submittedRequiresApproval
+                      ? "Application submitted successfully. Your new category request is pending admin approval."
+                      : "Registration successful. Your profile has been verified successfully.")}
+              </p>
+              <p className="mt-2 text-sm text-green-900">
+                ProviderID: <span className="font-bold">{success.providerId || "Will be assigned soon"}</span>
+              </p>
+              {success.requestedNewCategories?.length ? (
                 <p className="mt-2 text-xs text-green-700">
-                  Selected: {selectedCategories.length} categories, {selectedAreas.length} areas
+                  Pending categories: {success.requestedNewCategories.join(", ")}
                 </p>
-              </div>
-            ) : null}
+              ) : null}
+              <p className="mt-2 text-xs text-green-700">
+                Selected: {selectedCategories.length} categories, {selectedAreas.length} areas
+              </p>
+            </div>
+          ) : null}
           </aside>
         </div>
       </div>
@@ -1012,7 +1033,9 @@ export default function ProviderRegisterPage() {
               Congratulations!
             </h2>
             <p className="mt-3 text-sm leading-relaxed text-slate-700">
-              You are now registered service provider on Kaun Karega.
+              {submittedRequiresApproval
+                ? "Your application has been submitted successfully and is pending admin approval."
+                : "You are now a registered and verified service provider on Kaun Karega."}
             </p>
             <p className="mt-3 text-sm font-semibold text-slate-900">
               ProviderID: {successProviderId || "PR-xxxx"}

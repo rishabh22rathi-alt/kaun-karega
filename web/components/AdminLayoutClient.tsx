@@ -2,6 +2,7 @@
 
 import dynamic from "next/dynamic";
 import { useEffect, useState } from "react";
+import { usePathname } from "next/navigation";
 
 const AdminSidebar = dynamic(() => import("@/components/AdminSidebar"), {
   ssr: false,
@@ -17,13 +18,20 @@ type AdminLayoutClientProps = {
 export default function AdminLayoutClient({
   children,
 }: AdminLayoutClientProps) {
+  const pathname = usePathname();
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [name, setName] = useState("Admin");
   const [role, setRole] = useState("admin");
   const [permissions, setPermissions] = useState<string[]>([]);
+  const isLoginRoute = pathname === "/admin/login";
 
   useEffect(() => {
+    if (isLoginRoute) {
+      setLoading(false);
+      return;
+    }
+
     try {
       const phone = localStorage.getItem("kk_phone");
       const storedRole = localStorage.getItem("kk_role");
@@ -37,7 +45,7 @@ export default function AdminLayoutClient({
         return;
       }
 
-      if (storedRole !== "admin") {
+      if (storedRole !== "admin" && storedRole !== "superadmin") {
         window.location.href = "/admin/login";
         return;
       }
@@ -51,7 +59,7 @@ export default function AdminLayoutClient({
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [isLoginRoute]);
 
   const handleLogout = () => {
     localStorage.removeItem("kk_phone");
@@ -63,6 +71,10 @@ export default function AdminLayoutClient({
 
   if (loading) {
     return null;
+  }
+
+  if (isLoginRoute) {
+    return <>{children}</>;
   }
 
   return (

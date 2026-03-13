@@ -13,6 +13,8 @@ type ProviderProfile = {
   ProviderName: string;
   Phone: string;
   Verified: string;
+  PendingApproval?: string;
+  Status?: string;
   Services: { Category: string }[];
   Areas: { Area: string }[];
 };
@@ -125,10 +127,14 @@ export default function ProviderDashboardPage() {
               Name: profileData.provider.ProviderName,
               Phone: profileData.provider.Phone,
               Verified: profileData.provider.Verified,
+              PendingApproval: profileData.provider.PendingApproval,
               Status:
-                String(profileData.provider.Verified || "").toLowerCase() === "yes"
+                profileData.provider.Status ||
+                (String(profileData.provider.PendingApproval || "").toLowerCase() === "yes"
+                  ? "Pending Admin Approval"
+                  : String(profileData.provider.Verified || "").toLowerCase() === "yes"
                   ? "Active"
-                  : "Pending Verification",
+                  : "Pending Verification"),
             })
           );
           window.dispatchEvent(new Event(PROVIDER_PROFILE_UPDATED_EVENT));
@@ -166,10 +172,21 @@ export default function ProviderDashboardPage() {
     () => String(profile?.Verified || "").trim().toLowerCase() === "yes",
     [profile]
   );
+  const pendingApproval = useMemo(
+    () => String(profile?.PendingApproval || "").trim().toLowerCase() === "yes",
+    [profile]
+  );
   const servicesCount = profile?.Services.length ?? 0;
   const areasCount = profile?.Areas.length ?? 0;
+  const statusLabel = verified
+    ? "Verified"
+    : pendingApproval
+    ? "Pending Admin Approval"
+    : "Pending Verification";
   const verificationMessage = verified
     ? "Status: Verified and active"
+    : pendingApproval
+    ? "Status: Pending admin approval for new category review"
     : "Status: Under review";
   const emptyRequestsMessage = verified
     ? "No requests yet. Customer requests in your selected services and areas will appear here."
@@ -254,21 +271,25 @@ export default function ProviderDashboardPage() {
               className={`inline-flex w-fit rounded-full border px-3 py-1 text-xs font-semibold ${
                 verified
                   ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                  : "border-amber-200 bg-amber-50 text-amber-700"
+                  : pendingApproval
+                  ? "border-amber-200 bg-amber-50 text-amber-700"
+                  : "border-slate-200 bg-slate-100 text-slate-700"
               }`}
             >
-              {verified ? "Verified" : "Pending Verification"}
+              {statusLabel}
             </span>
           </div>
         </section>
 
         {!verified ? (
           <section className="rounded-2xl border border-amber-200 bg-amber-50/70 p-5 shadow-sm">
-            <p className="text-sm font-semibold text-amber-900">Profile Verification Pending</p>
+            <p className="text-sm font-semibold text-amber-900">
+              {pendingApproval ? "Pending Admin Approval" : "Profile Verification Pending"}
+            </p>
             <p className="mt-2 text-sm leading-6 text-amber-800">
-              Your profile is currently under review by Kaun Karega. You can still access
-              your dashboard, and verified providers will get higher priority in customer
-              matching.
+              {pendingApproval
+                ? "Your profile was saved successfully, but one or more selected categories are new and waiting for admin approval. You can still access your dashboard while the request is reviewed."
+                : "Your profile is currently under review by Kaun Karega. You can still access your dashboard, and verified providers will get higher priority in customer matching."}
             </p>
             <p className="mt-2 text-sm font-medium text-amber-900/90">
               Complete your profile and keep your phone active to improve trust.

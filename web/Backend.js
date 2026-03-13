@@ -57,6 +57,11 @@ function doGet(e) {
     return json_(getProviderByPhone_(phone));
   }
 
+  if (action === "get_provider_profile") {
+    const phone = (e.parameter.phone || "").trim();
+    return json_(getProviderProfile_(phone));
+  }
+
   // ✅ Provider Leads (GET)
   if (action === "get_provider_leads") {
     const providerId = (e.parameter.providerId || "").trim();
@@ -65,6 +70,10 @@ function doGet(e) {
 
   if (action === "debug_providerServices_headers_") {
     return json_(debug_providerServices_headers_());
+  }
+
+  if (action === "get_admin_dashboard_stats") {
+    return json_(getAdminDashboardStats_());
   }
 
   return json_({
@@ -134,6 +143,51 @@ function doPost(e) {
         const areas = Array.isArray(data.areas) ? data.areas : [];
         return json_(providerRegister(phone, name, categories, areas));
       }
+
+      case "get_provider_profile":
+        return json_(getProviderProfile_(String(data.phone || "").trim()));
+
+      case "admin_verify":
+        return json_(getAdminByPhone_(String(data.phone || "").trim()));
+
+      case "get_admin_dashboard_stats":
+        return json_(getAdminDashboardStats_());
+
+      case "approve_category_request":
+        return json_(approveCategoryRequest_(data));
+
+      case "reject_category_request":
+        return json_(rejectCategoryRequest_(data));
+
+      case "set_provider_verified":
+        return json_(setProviderVerified_(data));
+
+      case "add_category":
+        return json_(addCategory_(data));
+
+      case "edit_category":
+        return json_(editCategory_(data));
+
+      case "toggle_category":
+        return json_(toggleCategory_(data));
+
+      case "add_area":
+        return json_(addArea_(data));
+
+      case "edit_area":
+        return json_(editArea_(data));
+
+      case "get_admin_requests":
+        return json_(getAdminRequests_(data));
+
+      case "remind_providers":
+        return json_(remindProviders_(data));
+
+      case "assign_provider":
+        return json_(assignProvider_(data));
+
+      case "close_request":
+        return json_(closeRequest_(data));
 
       default:
         return json_({ ok: false, status: "error", error: "Unknown action: " + action });
