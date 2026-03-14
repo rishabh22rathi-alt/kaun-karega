@@ -8,6 +8,212 @@ function getTasksSheet_() {
   return sh;
 }
 
+function getTaskNotificationsSheet_() {
+  const sheet = getOrCreateSheet(SHEET_TASK_NOTIFICATIONS, [
+    "NotificationID",
+    "TaskID",
+    "ProviderID",
+    "Phone",
+    "TemplateName",
+    "ResponseLink",
+    "SentAt",
+    "Status",
+    "Error",
+  ]);
+
+  ensureSheetHeaders_(sheet, [
+    "NotificationID",
+    "TaskID",
+    "ProviderID",
+    "Phone",
+    "TemplateName",
+    "ResponseLink",
+    "SentAt",
+    "Status",
+    "Error",
+  ]);
+
+  return sheet;
+}
+
+function nextNotificationId_(sheet) {
+  const values = sheet.getDataRange().getValues();
+  if (values.length <= 1) return "NT-0001";
+
+  let maxSeq = 0;
+  for (let i = 1; i < values.length; i++) {
+    const notificationId = String(values[i][0] || "").trim();
+    const match = notificationId.match(/^NT-(\d+)$/i);
+    if (!match) continue;
+
+    const seq = Number(match[1]) || 0;
+    if (seq > maxSeq) maxSeq = seq;
+  }
+
+  return "NT-" + ("000" + (maxSeq + 1)).slice(-4);
+}
+
+function sendProviderLeadNotificationViaMeta_(payload) {
+  const props = PropertiesService.getScriptProperties();
+  const token = String(
+    props.getProperty("META_WA_TOKEN") ||
+      props.getProperty("META_WA_ACCESS_TOKEN") ||
+      ""
+  ).trim();
+  const phoneNumberId = String(
+    props.getProperty("META_WA_PHONE_NUMBER_ID") ||
+      props.getProperty("META_WA_PHONE_ID") ||
+      ""
+  ).trim();
+  const templateName = String(
+    props.getProperty("META_WA_PROVIDER_LEAD_TEMPLATE") ||
+      props.getProperty("META_WA_TEMPLATE") ||
+      "provider_new_lead"
+  ).trim();
+  const languageCode = String(props.getProperty("META_WA_LANG") || "en_US").trim();
+
+  if (!token) throw new Error("Missing WhatsApp token");
+  if (!phoneNumberId) throw new Error("Missing WhatsApp phone number id");
+
+  const phoneDigits = String(payload.Phone || "").replace(/\D/g, "");
+  const toPhone = phoneDigits.length === 10 ? "91" + phoneDigits : phoneDigits;
+  if (!toPhone) throw new Error("Invalid phone number");
+
+  const response = UrlFetchApp.fetch(
+    "https://graph.facebook.com/v21.0/" + phoneNumberId + "/messages",
+    {
+      method: "post",
+      contentType: "application/json",
+      headers: {
+        Authorization: "Bearer " + token,
+      },
+      muteHttpExceptions: true,
+      payload: JSON.stringify({
+        messaging_product: "whatsapp",
+        to: toPhone,
+        type: "template",
+        template: {
+          name: templateName,
+          language: {
+            code: languageCode,
+          },
+          components: [
+            {
+              type: "body",
+              parameters: [
+                { type: "text", text: String(payload.Category || "").trim() || "-" },
+                { type: "text", text: String(payload.Area || "").trim() || "-" },
+                { type: "text", text: String(payload.RequiredLabel || "").trim() || "-" },
+              ],
+            },
+          ],
+        },
+      }),
+    }
+  );
+
+  const statusCode = response.getResponseCode();
+  const bodyText = response.getContentText() || "";
+  if (statusCode >= 200 && statusCode < 300) {
+    return {
+      ok: true,
+      templateName: templateName,
+      response: bodyText,
+    };
+  }
+
+  throw new Error(bodyText || "WhatsApp API returned HTTP " + statusCode);
+}
+
+function sendProviderLeadNotification_(data) {
+  const taskId = String(data.TaskID || data.taskId || "").trim();
+  const providerId = String(data.ProviderID || data.providerId || "").trim();
+  const phone = normalizePhone10_(data.Phone || data.phone);
+  const category = String(data.Category || data.category || "").trim();
+  const area = String(data.Area || data.area || "").trim();
+  const requiredLabel = String(data.RequiredLabel || data.requiredLabel || "").trim();
+  const responseLink = String(data.ResponseLink || data.responseLink || "").trim();
+
+  if (!taskId) return { ok: false, status: "error", error: "TaskID required" };
+  if (!providerId) return { ok: false, status: "error", error: "ProviderID required" };
+  if (!phone) return { ok: false, status: "error", error: "Invalid phone number" };
+  if (!category) return { ok: false, status: "error", error: "Category required" };
+  if (!area) return { ok: false, status: "error", error: "Area required" };
+  if (!requiredLabel) return { ok: false, status: "error", error: "RequiredLabel required" };
+  if (!responseLink) return { ok: false, status: "error", error: "ResponseLink required" };
+
+  const sheet = getTaskNotificationsSheet_();
+  const notificationId = nextNotificationId_(sheet);
+  const sentAt = Utilities.formatDate(new Date(), "Asia/Kolkata", "dd/MM/yyyy HH:mm:ss");
+  let templateName = "provider_new_lead";
+  let status = "failed";
+  let errorMessage = "";
+
+  try {
+    if (typeof sendWhatsAppToProvider === "function") {
+      sendWhatsAppToProvider(
+        {
+          id: providerId,
+          providerId: providerId,
+          phone: phone,
+        },
+        {
+          taskId: taskId,
+          category: category,
+          area: area,
+          requiredLabel: requiredLabel,
+          responseLink: responseLink,
+        }
+      );
+    } else {
+      const sendResult = sendProviderLeadNotificationViaMeta_({
+        TaskID: taskId,
+        ProviderID: providerId,
+        Phone: phone,
+        Category: category,
+        Area: area,
+        RequiredLabel: requiredLabel,
+        ResponseLink: responseLink,
+      });
+      templateName = sendResult.templateName || templateName;
+    }
+
+    status = "sent";
+  } catch (err) {
+    errorMessage = String(err && err.message ? err.message : err);
+    status = "failed";
+  }
+
+  sheet.appendRow([
+    notificationId,
+    taskId,
+    providerId,
+    phone,
+    templateName,
+    responseLink,
+    sentAt,
+    status,
+    errorMessage,
+  ]);
+
+  if (status === "sent") {
+    return {
+      ok: true,
+      status: "success",
+      notificationId: notificationId,
+      taskId: taskId,
+      providerId: providerId,
+    };
+  }
+
+  return {
+    ok: false,
+    status: "error",
+    error: errorMessage || "Failed to send provider lead notification",
+    notificationId: notificationId,
+  };
+}
+
 function makeTaskId_() {
   return "TK-" + Date.now();
 }
@@ -73,6 +279,95 @@ function submitTask_(data) {
   if (iResponded >= 0) row[iResponded] = "";
 
   sh.appendRow(row);
+
+  const serviceTime = selectedTimeframe || [serviceDate, timeSlot].filter(Boolean).join(" ") || "-";
+  const matchResult = matchProviders_(category, area, 50);
+  const matchedProviders =
+    matchResult && matchResult.ok !== false && Array.isArray(matchResult.providers)
+      ? matchResult.providers
+      : [];
+  const templateName = String(
+    PropertiesService.getScriptProperties().getProperty("META_WA_PROVIDER_LEAD_TEMPLATE") || ""
+  ).trim();
+  let attemptedSends = 0;
+  let skippedMissingPhone = 0;
+  let failedSends = 0;
+
+  for (let i = 0; i < matchedProviders.length; i++) {
+    const provider = matchedProviders[i] || {};
+    const providerPhone = String(provider.phone || "").trim();
+    const providerId = String(
+      provider.providerId || provider.ProviderID || provider.id || ""
+    ).trim();
+
+    if (!providerPhone) {
+      skippedMissingPhone++;
+      continue;
+    }
+
+    attemptedSends++;
+
+    try {
+      const sendResult = sendProviderJobAlert(providerPhone, taskId, serviceTime, area);
+      if (!sendResult || sendResult.ok === false) {
+        failedSends++;
+      }
+      appendNotificationLog_({
+        TaskID: taskId,
+        ProviderID: providerId,
+        ProviderPhone: providerPhone,
+        Category: category,
+        Area: area,
+        ServiceTime: serviceTime,
+        TemplateName: templateName,
+        Status: sendResult && sendResult.status ? sendResult.status : "error",
+        StatusCode: sendResult && sendResult.statusCode ? sendResult.statusCode : "",
+        MessageId: sendResult && sendResult.messageId ? sendResult.messageId : "",
+        ErrorMessage: sendResult && sendResult.errorMessage ? sendResult.errorMessage : "",
+        RawResponse: sendResult && sendResult.responseText ? sendResult.responseText : "",
+      });
+    } catch (err) {
+      failedSends++;
+      const errorMessage = String(err && err.message ? err.message : err);
+      appendNotificationLog_({
+        TaskID: taskId,
+        ProviderID: providerId,
+        ProviderPhone: providerPhone,
+        Category: category,
+        Area: area,
+        ServiceTime: serviceTime,
+        TemplateName: templateName,
+        Status: "error",
+        StatusCode: "",
+        MessageId: "",
+        ErrorMessage: errorMessage,
+        RawResponse: errorMessage,
+      });
+      Logger.log(
+        "sendProviderJobAlert failed | TaskID=" +
+          taskId +
+          " | ProviderID=" +
+          providerId +
+          " | phone=" +
+          providerPhone +
+          " | error=" +
+          errorMessage
+      );
+    }
+  }
+
+  Logger.log(
+    "submitTask_ provider alerts summary | TaskID=" +
+      taskId +
+      " | matched=" +
+      matchedProviders.length +
+      " | attempted=" +
+      attemptedSends +
+      " | skippedMissingPhone=" +
+      skippedMissingPhone +
+      " | failed=" +
+      failedSends
+  );
 
   return { ok: true, status: "success", message: "Task submitted", taskId: taskId };
 }

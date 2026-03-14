@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getAuthSession } from "@/lib/auth";
@@ -11,6 +12,18 @@ type RequestRow = {
   details: string;
   status: string;
   createdAt: string;
+};
+
+type ThreadRow = {
+  ThreadID: string;
+  TaskID: string;
+  UserPhone: string;
+  ProviderID: string;
+  LastMessage: string;
+  LastMessageAt: string;
+  UnreadUser: number;
+  UnreadProvider: number;
+  CreatedAt: string;
 };
 
 type RawRequest = Record<string, unknown>;
@@ -31,12 +44,38 @@ const normalizeRequest = (item: RawRequest): RequestRow => ({
   createdAt: String(item.CreatedAt ?? item.createdAt ?? "") || "-",
 });
 
+const normalizeThread = (item: Record<string, unknown>): ThreadRow => ({
+  ThreadID: String(item.ThreadID ?? item.threadId ?? "") || "",
+  TaskID: String(item.TaskID ?? item.taskId ?? "") || "",
+  UserPhone: String(item.UserPhone ?? item.userPhone ?? "") || "",
+  ProviderID: String(item.ProviderID ?? item.providerId ?? "") || "-",
+  LastMessage: String(item.LastMessage ?? item.lastMessage ?? "") || "-",
+  LastMessageAt: String(item.LastMessageAt ?? item.lastMessageAt ?? "") || "",
+  UnreadUser: Number(item.UnreadUser ?? item.unreadUser ?? 0) || 0,
+  UnreadProvider: Number(item.UnreadProvider ?? item.unreadProvider ?? 0) || 0,
+  CreatedAt: String(item.CreatedAt ?? item.createdAt ?? "") || "",
+});
+
+function formatDisplayDate(value: string) {
+  if (!value) return "-";
+  const parsed = Date.parse(value);
+  if (!Number.isNaN(parsed)) {
+    return new Date(parsed).toLocaleString();
+  }
+  return value;
+}
+
 export default function MyRequestsList() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<RequestRow[]>([]);
   const [error, setError] = useState("");
   const [hasSession, setHasSession] = useState(false);
+  const [userPhone, setUserPhone] = useState("");
+  const [expandedTaskIds, setExpandedTaskIds] = useState<Record<string, boolean>>({});
+  const [threadsByTaskId, setThreadsByTaskId] = useState<Record<string, ThreadRow[]>>({});
+  const [threadsLoadingByTaskId, setThreadsLoadingByTaskId] = useState<Record<string, boolean>>({});
+  const [threadsErrorByTaskId, setThreadsErrorByTaskId] = useState<Record<string, string>>({});
 
   useEffect(() => {
     const session = getAuthSession();
@@ -47,6 +86,7 @@ export default function MyRequestsList() {
     }
 
     setHasSession(true);
+    setUserPhone(String(session.phone || "").replace(/\D/g, "").slice(-10));
 
     const loadRequests = async () => {
       try {
@@ -83,6 +123,62 @@ export default function MyRequestsList() {
   }, [router]);
 
   const total = useMemo(() => rows.length, [rows]);
+
+  const handleToggleResponses = async (taskId: string) => {
+    const isExpanded = Boolean(expandedTaskIds[taskId]);
+    setExpandedTaskIds((current) => ({
+      ...current,
+      [taskId]: !isExpanded,
+    }));
+
+    if (isExpanded || threadsByTaskId[taskId] || !userPhone) {
+      return;
+    }
+
+    setThreadsLoadingByTaskId((current) => ({
+      ...current,
+      [taskId]: true,
+    }));
+    setThreadsErrorByTaskId((current) => ({
+      ...current,
+      [taskId]: "",
+    }));
+
+    try {
+      const res = await fetch("/api/kk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "get_user_task_threads",
+          TaskID: taskId,
+          UserPhone: userPhone,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.error || "Failed to load responses");
+      }
+
+      const threads = Array.isArray(data?.threads)
+        ? data.threads.map((item: Record<string, unknown>) => normalizeThread(item))
+        : [];
+
+      setThreadsByTaskId((current) => ({
+        ...current,
+        [taskId]: threads,
+      }));
+    } catch (err) {
+      setThreadsErrorByTaskId((current) => ({
+        ...current,
+        [taskId]: err instanceof Error ? err.message : "Failed to load responses",
+      }));
+    } finally {
+      setThreadsLoadingByTaskId((current) => ({
+        ...current,
+        [taskId]: false,
+      }));
+    }
+  };
 
   if (loading) {
     return (
@@ -129,47 +225,87 @@ export default function MyRequestsList() {
             No requests yet. Create your first task from home.
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full border-collapse text-left text-sm">
-              <thead>
-                <tr className="border-b border-slate-200 text-slate-600">
-                  <th className="py-2 pr-3 font-semibold">Task ID</th>
-                  <th className="py-2 pr-3 font-semibold">Category</th>
-                  <th className="py-2 pr-3 font-semibold">Area</th>
-                  <th className="py-2 pr-3 font-semibold">Details</th>
-                  <th className="py-2 pr-3 font-semibold">Status</th>
-                  <th className="py-2 pr-3 font-semibold">Created</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((row) => (
-                  <tr
-                    key={`${row.taskId}-${row.createdAt}-${row.area}`}
-                    className="border-b border-slate-100"
-                  >
-                    <td className="py-2 pr-3 text-slate-900">{row.taskId}</td>
-                    <td className="py-2 pr-3 text-slate-900">
-                      {row.category}
-                    </td>
-                    <td className="py-2 pr-3 text-slate-700">{row.area}</td>
-                    <td className="py-2 pr-3 text-slate-700">
-                      {row.details}
-                    </td>
-                    <td className="py-2 pr-3 text-slate-700">
+          <div className="space-y-4">
+            {rows.map((row) => {
+              const isExpanded = Boolean(expandedTaskIds[row.taskId]);
+              const taskThreads = threadsByTaskId[row.taskId] || [];
+              const isResponsesLoading = Boolean(threadsLoadingByTaskId[row.taskId]);
+              const responsesError = threadsErrorByTaskId[row.taskId] || "";
+              const responseCount = taskThreads.length;
+
+              return (
+                <div
+                  key={`${row.taskId}-${row.createdAt}-${row.area}`}
+                  className="rounded-xl border border-slate-200 p-4"
+                >
+                  <div className="space-y-2 text-sm">
+                    <p className="text-slate-900"><span className="font-semibold">Task ID:</span> {row.taskId}</p>
+                    <p className="text-slate-900"><span className="font-semibold">Category:</span> {row.category}</p>
+                    <p className="text-slate-700"><span className="font-semibold">Area:</span> {row.area}</p>
+                    <p className="text-slate-700"><span className="font-semibold">Details:</span> {row.details}</p>
+                    <p className="text-slate-700">
+                      <span className="font-semibold">Status:</span>{" "}
                       <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-700">
                         {row.status}
                       </span>
-                    </td>
-                    <td className="py-2 pr-3 text-slate-700">
-                      {row.createdAt !== "-" &&
-                      !Number.isNaN(Date.parse(row.createdAt))
-                        ? new Date(row.createdAt).toLocaleString()
-                        : row.createdAt}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                    </p>
+                    <p className="text-slate-700">
+                      <span className="font-semibold">Created:</span> {formatDisplayDate(row.createdAt)}
+                    </p>
+                    <p className="text-slate-700">
+                      <span className="font-semibold">Responses:</span> {responseCount}
+                    </p>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => void handleToggleResponses(row.taskId)}
+                    className="mt-4 text-sm font-semibold text-sky-700"
+                  >
+                    {isExpanded ? "View Responses ▲" : "View Responses ▼"}
+                  </button>
+
+                  {isExpanded ? (
+                    <div className="mt-4 space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                      {isResponsesLoading ? (
+                        <p className="text-sm text-slate-600">Loading responses...</p>
+                      ) : responsesError ? (
+                        <p className="text-sm text-rose-600">{responsesError}</p>
+                      ) : taskThreads.length === 0 ? (
+                        <p className="text-sm text-slate-600">No responses yet.</p>
+                      ) : (
+                        taskThreads.map((thread) => (
+                          <div
+                            key={thread.ThreadID}
+                            className="rounded-lg border border-slate-200 bg-white p-3 text-sm"
+                          >
+                            <p className="text-slate-900">
+                              <span className="font-semibold">ProviderID:</span> {thread.ProviderID}
+                            </p>
+                            <p className="mt-1 text-slate-700">
+                              <span className="font-semibold">LastMessage:</span> {thread.LastMessage || "-"}
+                            </p>
+                            <p className="mt-1 text-slate-700">
+                              <span className="font-semibold">LastMessageAt:</span>{" "}
+                              {formatDisplayDate(thread.LastMessageAt || thread.CreatedAt)}
+                            </p>
+                            <p className="mt-1 text-slate-700">
+                              <span className="font-semibold">UnreadUser:</span> {thread.UnreadUser}
+                            </p>
+                            <Link
+                              href={`/dashboard/my-requests/chat/${encodeURIComponent(thread.ThreadID)}`}
+                              className="mt-3 inline-flex rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white"
+                            >
+                              Open Chat
+                            </Link>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>

@@ -114,6 +114,44 @@ type AdminAreaMappingsResponse = {
   error?: string;
 };
 
+type NotificationLog = {
+  LogID: string;
+  CreatedAt: string;
+  TaskID: string;
+  ProviderID: string;
+  ProviderPhone: string;
+  Category?: string;
+  Area?: string;
+  ServiceTime?: string;
+  TemplateName?: string;
+  Status: string;
+  StatusCode?: number | string;
+  MessageId: string;
+  ErrorMessage: string;
+  RawResponse?: string;
+};
+
+type NotificationSummary = {
+  taskId: string;
+  total: number;
+  accepted: number;
+  failed: number;
+  error: number;
+  latestCreatedAt: string;
+};
+
+type AdminNotificationLogsResponse = {
+  ok?: boolean;
+  logs?: NotificationLog[];
+  error?: string;
+};
+
+type AdminNotificationSummaryResponse = {
+  ok?: boolean;
+  summary?: NotificationSummary;
+  error?: string;
+};
+
 type ActionState = Record<string, boolean>;
 
 type DashboardSectionKey =
@@ -209,6 +247,9 @@ export default function AdminDashboardPage() {
   const [categories, setCategories] = useState<ManagedCategory[]>([]);
   const [areaMappings, setAreaMappings] = useState<ManagedAreaMapping[]>([]);
   const [requests, setRequests] = useState<AdminRequest[]>([]);
+  const [notificationLogs, setNotificationLogs] = useState<NotificationLog[]>([]);
+  const [selectedTaskNotificationSummary, setSelectedTaskNotificationSummary] =
+    useState<NotificationSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [feedback, setFeedback] = useState("");
@@ -303,6 +344,14 @@ export default function AdminDashboardPage() {
     return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
   };
 
+  const getNotificationStatusClass = (status: string) => {
+    const normalized = String(status || "").trim().toLowerCase();
+    if (normalized === "accepted") return "border-emerald-200 bg-emerald-50 text-emerald-700";
+    if (normalized === "failed") return "border-amber-200 bg-amber-50 text-amber-700";
+    if (normalized === "error") return "border-red-200 bg-red-50 text-red-700";
+    return "border-slate-200 bg-slate-50 text-slate-700";
+  };
+
   const normalizePhone = (value: string) => String(value || "").replace(/\D/g, "").slice(-10);
 
   const getWaitingToneClass = (minutes: number) => {
@@ -356,11 +405,33 @@ export default function AdminDashboardPage() {
     });
   };
 
+  const fetchNotificationSummary = async (taskId: string) => {
+    const normalizedTaskId = String(taskId || "").trim();
+    if (!normalizedTaskId) {
+      setSelectedTaskNotificationSummary(null);
+      return;
+    }
+
+    const res = await fetch("/api/kk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "admin_notification_summary",
+        taskId: normalizedTaskId,
+      }),
+    });
+    const data = (await res.json()) as AdminNotificationSummaryResponse;
+    if (!res.ok || !data.ok) {
+      throw new Error(data.error || "Failed to load notification summary");
+    }
+    setSelectedTaskNotificationSummary(data.summary || null);
+  };
+
   const fetchDashboard = async () => {
     setLoading(true);
     setError("");
     try {
-      const [dashboardRes, requestsRes, areaMappingsRes] = await Promise.all([
+      const [dashboardRes, requestsRes, areaMappingsRes, notificationLogsRes] = await Promise.all([
         fetch("/api/admin/stats", { cache: "no-store" }),
         fetch("/api/kk", {
           method: "POST",
@@ -372,10 +443,17 @@ export default function AdminDashboardPage() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ action: "get_admin_area_mappings" }),
         }),
+        fetch("/api/kk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "admin_notification_logs", limit: 25 }),
+        }),
       ]);
       const data = (await dashboardRes.json()) as AdminDashboardResponse;
       const requestsData = (await requestsRes.json()) as AdminRequestsResponse;
       const areaMappingsData = (await areaMappingsRes.json()) as AdminAreaMappingsResponse;
+      const notificationLogsData =
+        (await notificationLogsRes.json()) as AdminNotificationLogsResponse;
       if (!dashboardRes.ok || !data.ok) {
         throw new Error(data.error || "Failed to load admin dashboard");
       }
@@ -384,6 +462,9 @@ export default function AdminDashboardPage() {
       }
       if (!areaMappingsRes.ok || !areaMappingsData.ok) {
         throw new Error(areaMappingsData.error || "Failed to load area mappings");
+      }
+      if (!notificationLogsRes.ok || !notificationLogsData.ok) {
+        throw new Error(notificationLogsData.error || "Failed to load notification logs");
       }
 
       setStats({
@@ -401,6 +482,9 @@ export default function AdminDashboardPage() {
         sortAreaMappings(Array.isArray(areaMappingsData.mappings) ? areaMappingsData.mappings : [])
       );
       setRequests(sortRequests(Array.isArray(requestsData.requests) ? requestsData.requests : []));
+      setNotificationLogs(
+        Array.isArray(notificationLogsData.logs) ? notificationLogsData.logs : []
+      );
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Failed to load admin dashboard"
@@ -439,6 +523,21 @@ export default function AdminDashboardPage() {
   useEffect(() => {
     void fetchDashboard();
   }, []);
+
+  useEffect(() => {
+    if (!selectedRequestId) {
+      setSelectedTaskNotificationSummary(null);
+      return;
+    }
+
+    void fetchNotificationSummary(selectedRequestId).catch((err) => {
+      setSelectedTaskNotificationSummary(null);
+      showFeedback(
+        "error",
+        err instanceof Error ? err.message : "Failed to load notification summary"
+      );
+    });
+  }, [selectedRequestId]);
 
   const cards = [
     { title: "Total Providers", value: stats.totalProviders },
@@ -564,6 +663,20 @@ export default function AdminDashboardPage() {
     () => requests.find((request) => request.TaskID === selectedRequestId) || null,
     [requests, selectedRequestId]
   );
+
+  const notificationHealth = useMemo(() => {
+    return notificationLogs.reduce(
+      (acc, log) => {
+        acc.total += 1;
+        const status = String(log.Status || "").trim().toLowerCase();
+        if (status === "accepted") acc.accepted += 1;
+        if (status === "failed") acc.failed += 1;
+        if (status === "error") acc.error += 1;
+        return acc;
+      },
+      { total: 0, accepted: 0, failed: 0, error: 0 }
+    );
+  }, [notificationLogs]);
 
   const toggleAreaExpanded = (canonicalArea: string) => {
     setExpandedAreas((current) => ({
@@ -2017,6 +2130,147 @@ export default function AdminDashboardPage() {
           </table>
         </div>
       </AccordionSection>
+
+      <section className="space-y-6">
+        <div>
+          <h2 className="text-xl font-semibold text-slate-900">Notification Health</h2>
+          <p className="mt-1 text-sm text-slate-500">
+            Monitor recent WhatsApp notification delivery attempts from task creation.
+          </p>
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <p className="text-sm font-semibold text-slate-500">Recent Attempts</p>
+            <p className="mt-2 text-3xl font-bold text-slate-900">{notificationHealth.total}</p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <p className="text-sm font-semibold text-slate-500">Accepted</p>
+            <p className="mt-2 text-3xl font-bold text-emerald-700">
+              {notificationHealth.accepted}
+            </p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <p className="text-sm font-semibold text-slate-500">Failed</p>
+            <p className="mt-2 text-3xl font-bold text-amber-700">{notificationHealth.failed}</p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <p className="text-sm font-semibold text-slate-500">Errors</p>
+            <p className="mt-2 text-3xl font-bold text-red-700">{notificationHealth.error}</p>
+          </div>
+        </div>
+
+        <div className="grid gap-4 xl:grid-cols-[1.1fr,0.9fr]">
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <p className="text-sm font-semibold text-slate-500">Selected Task Summary</p>
+            {selectedTaskNotificationSummary ? (
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                <div className="rounded-xl bg-slate-50 px-4 py-3 text-sm text-slate-700">
+                  <p className="font-semibold text-slate-900">TaskID</p>
+                  <p>{selectedTaskNotificationSummary.taskId || "-"}</p>
+                </div>
+                <div className="rounded-xl bg-slate-50 px-4 py-3 text-sm text-slate-700">
+                  <p className="font-semibold text-slate-900">Latest Attempt</p>
+                  <p>{formatDateTime(selectedTaskNotificationSummary.latestCreatedAt)}</p>
+                </div>
+                <div className="rounded-xl bg-slate-50 px-4 py-3 text-sm text-slate-700">
+                  <p className="font-semibold text-slate-900">Accepted</p>
+                  <p>{selectedTaskNotificationSummary.accepted}</p>
+                </div>
+                <div className="rounded-xl bg-slate-50 px-4 py-3 text-sm text-slate-700">
+                  <p className="font-semibold text-slate-900">Failed / Error</p>
+                  <p>
+                    {selectedTaskNotificationSummary.failed} / {selectedTaskNotificationSummary.error}
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <p className="mt-3 text-sm text-slate-500">
+                Select a request to inspect notification results for that task.
+              </p>
+            )}
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <p className="text-sm font-semibold text-slate-500">Latest Activity</p>
+            <div className="mt-4 space-y-3">
+              {notificationLogs.slice(0, 5).map((log) => (
+                <div
+                  key={log.LogID}
+                  className="flex items-start justify-between gap-3 rounded-xl bg-slate-50 px-4 py-3"
+                >
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-slate-900">{log.TaskID || "-"}</p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      {log.ProviderID || "-"} • {formatDateTime(log.CreatedAt)}
+                    </p>
+                  </div>
+                  <span
+                    className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${getNotificationStatusClass(
+                      log.Status
+                    )}`}
+                  >
+                    {log.Status || "-"}
+                  </span>
+                </div>
+              ))}
+              {!loading && notificationLogs.length === 0 ? (
+                <p className="text-sm text-slate-500">No notification logs available.</p>
+              ) : null}
+            </div>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <table className="min-w-full text-left">
+            <thead className="bg-slate-50 text-xs uppercase text-slate-500">
+              <tr>
+                <th className="px-4 py-3 font-semibold">CreatedAt</th>
+                <th className="px-4 py-3 font-semibold">TaskID</th>
+                <th className="px-4 py-3 font-semibold">ProviderID</th>
+                <th className="px-4 py-3 font-semibold">ProviderPhone</th>
+                <th className="px-4 py-3 font-semibold">Status</th>
+                <th className="px-4 py-3 font-semibold">StatusCode</th>
+                <th className="px-4 py-3 font-semibold">MessageId</th>
+                <th className="px-4 py-3 font-semibold">ErrorMessage</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 text-sm text-slate-800">
+              {!loading && notificationLogs.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="px-4 py-6 text-center text-slate-500">
+                    No notification logs available.
+                  </td>
+                </tr>
+              ) : null}
+              {notificationLogs.map((log) => (
+                <tr key={log.LogID}>
+                  <td className="px-4 py-3">{formatDateTime(log.CreatedAt)}</td>
+                  <td className="px-4 py-3 font-medium text-slate-900">{log.TaskID || "-"}</td>
+                  <td className="px-4 py-3">{log.ProviderID || "-"}</td>
+                  <td className="px-4 py-3">{log.ProviderPhone || "-"}</td>
+                  <td className="px-4 py-3">
+                    <span
+                      className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${getNotificationStatusClass(
+                        log.Status
+                      )}`}
+                    >
+                      {log.Status || "-"}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3">{log.StatusCode || "-"}</td>
+                  <td className="max-w-[220px] truncate px-4 py-3" title={log.MessageId || ""}>
+                    {log.MessageId || "-"}
+                  </td>
+                  <td className="max-w-[320px] truncate px-4 py-3" title={log.ErrorMessage || ""}>
+                    {log.ErrorMessage || "-"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
 
       <section className="space-y-6">
         <div>

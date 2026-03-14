@@ -76,6 +76,20 @@ function doGet(e) {
     return json_(getAdminDashboardStats_());
   }
 
+  if (action === "admin_notification_logs") {
+    const limit = Math.min(parseInt(e.parameter.limit || "20", 10) || 20, 100);
+    return json_({ ok: true, status: "success", logs: getRecentNotificationLogs_(limit) });
+  }
+
+  if (action === "admin_notification_summary") {
+    const taskId = (e.parameter.taskId || "").trim();
+    return json_({
+      ok: true,
+      status: "success",
+      summary: getNotificationSummaryByTask_(taskId),
+    });
+  }
+
   return json_({
     ok: true,
     status: "active",
@@ -153,6 +167,18 @@ function doPost(e) {
       case "get_admin_dashboard_stats":
         return json_(getAdminDashboardStats_());
 
+      case "admin_notification_logs": {
+        const limit = Math.min(parseInt(data.limit || "20", 10) || 20, 100);
+        return json_({ ok: true, status: "success", logs: getRecentNotificationLogs_(limit) });
+      }
+
+      case "admin_notification_summary":
+        return json_({
+          ok: true,
+          status: "success",
+          summary: getNotificationSummaryByTask_(String(data.taskId || "").trim()),
+        });
+
       case "approve_category_request":
         return json_(approveCategoryRequest_(data));
 
@@ -197,6 +223,33 @@ function doPost(e) {
 
       case "close_request":
         return json_(closeRequest_(data));
+
+      case "create_chat_thread":
+        return json_(createChatThread_(data));
+
+      case "send_chat_message":
+        return json_(sendChatMessage_(data));
+
+      case "get_chat_messages":
+        return json_(getChatMessages_(data));
+
+      case "get_user_task_threads":
+        return json_(getUserTaskThreads_(data));
+
+      case "get_provider_threads":
+        return json_(getProviderThreads_(data));
+
+      case "mark_chat_read":
+        return json_(markChatRead_(data));
+
+      case "get_admin_chat_threads":
+        return json_(getAdminChatThreads_(data));
+
+      case "close_chat_thread":
+        return json_(closeChatThread_(data));
+
+      case "send_provider_lead_notification":
+        return json_(sendProviderLeadNotification_(data));
 
       default:
         return json_({ ok: false, status: "error", error: "Unknown action: " + action });
