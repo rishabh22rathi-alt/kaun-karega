@@ -315,6 +315,10 @@ function upsertCategoryApplications_(providerId, providerName, phone, categories
 
 function getProviderRecordByPhone_(phoneRaw) {
   const phone10 = normalizeIndianMobile_(phoneRaw);
+  console.log("[getProviderRecordByPhone_] lookup", {
+    rawPhone: String(phoneRaw || ""),
+    normalizedPhone: phone10,
+  });
   if (!phone10) return { ok: false, error: "INVALID_PHONE" };
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -351,6 +355,9 @@ function getProviderRecordByPhone_(phoneRaw) {
   }
 
   if (!foundRow) {
+    console.log("[getProviderRecordByPhone_] no match", {
+      normalizedPhone: phone10,
+    });
     return { ok: false, error: "PROVIDER_NOT_FOUND", phone: phone10 };
   }
 
@@ -368,6 +375,12 @@ function getProviderRecordByPhone_(phoneRaw) {
       : "no";
   const statusRaw =
     headerMap.status !== -1 ? String(foundRow[headerMap.status] || "").trim() : "";
+
+  console.log("[getProviderRecordByPhone_] matched row", {
+    ProviderID: providerId,
+    Phone: phone10,
+    rowNumber: foundRowNumber,
+  });
 
   return {
     ok: true,
@@ -772,6 +785,323 @@ function ensureCategoryExists_(categoryName) {
   return { ok: true, created: true, categoryName: normalizedCategoryName };
 }
 
+function getCategoryApplicationsState_() {
+  const sheet = getOrCreateSheet("CategoryApplications", [
+    "RequestID",
+    "ProviderID",
+    "ProviderName",
+    "Phone",
+    "RequestedCategory",
+    "Status",
+    "CreatedAt",
+  ]);
+  const headers = ensureSheetHeaders_(sheet, [
+    "RequestID",
+    "ProviderID",
+    "ProviderName",
+    "Phone",
+    "RequestedCategory",
+    "Status",
+    "CreatedAt",
+  ]);
+  const values = sheet.getDataRange().getValues();
+
+  return {
+    sheet: sheet,
+    headers: headers,
+    values: values,
+    idxRequestId: findHeaderIndexByAliases_(headers, ["RequestID"]),
+    idxProviderId: findHeaderIndexByAliases_(headers, ["ProviderID"]),
+    idxPhone: findHeaderIndexByAliases_(headers, ["Phone", "ProviderPhone"]),
+    idxCategory: findHeaderIndexByAliases_(headers, ["RequestedCategory", "Category"]),
+    idxStatus: findHeaderIndexByAliases_(headers, ["Status"]),
+  };
+}
+
+function getProviderSheetState_() {
+  const sheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(TAB_PROVIDERS);
+  if (!sheet) {
+    return {
+      sheet: null,
+      headers: [],
+      values: [],
+      headerMap: getProviderHeaderMap_([]),
+    };
+  }
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0] || [];
+
+  return {
+    sheet: sheet,
+    headers: headers,
+    values: sheet.getDataRange().getValues(),
+    headerMap: getProviderHeaderMap_(headers),
+  };
+}
+
+function findProviderSheetRowState_(providerState, providerId, phone) {
+  const normalizedProviderId = String(providerId || "").trim();
+  const normalizedPhone = normalizePhone10_(phone);
+
+  if (!providerState || !providerState.sheet || !providerState.values.length) {
+    return { ok: false, status: "error", error: "Providers sheet not found" };
+  }
+
+  for (let i = 1; i < providerState.values.length; i++) {
+    const row = providerState.values[i] || [];
+    const rowProviderId =
+      providerState.headerMap.providerId !== -1 &&
+      row[providerState.headerMap.providerId] !== undefined
+        ? String(row[providerState.headerMap.providerId]).trim()
+        : "";
+    const rowPhone =
+      providerState.headerMap.phone !== -1 && row[providerState.headerMap.phone] !== undefined
+        ? normalizePhone10_(row[providerState.headerMap.phone])
+        : "";
+
+    if (normalizedProviderId && rowProviderId === normalizedProviderId) {
+      return { ok: true, rowNumber: i + 1, row: row, matchedBy: "providerId" };
+    }
+    if (!normalizedProviderId && normalizedPhone && rowPhone === normalizedPhone) {
+      return { ok: true, rowNumber: i + 1, row: row, matchedBy: "phone" };
+    }
+  }
+
+  if (normalizedPhone) {
+    for (let i = 1; i < providerState.values.length; i++) {
+      const row = providerState.values[i] || [];
+      const rowPhone =
+        providerState.headerMap.phone !== -1 && row[providerState.headerMap.phone] !== undefined
+          ? normalizePhone10_(row[providerState.headerMap.phone])
+          : "";
+      if (rowPhone === normalizedPhone) {
+        return { ok: true, rowNumber: i + 1, row: row, matchedBy: "phone" };
+      }
+    }
+  }
+
+  return { ok: false, status: "error", error: "Provider not found for approval sync" };
+}
+
+function writeProviderVerifiedValue_(providerState, rowNumber, verifiedValue) {
+  if (!providerState || !providerState.sheet) {
+    return { ok: false, status: "error", error: "Providers sheet not found" };
+  }
+  if (providerState.headerMap.verified === -1) {
+    return { ok: false, status: "error", error: "Verified column missing in Providers sheet" };
+  }
+
+  providerState.sheet
+    .getRange(rowNumber, providerState.headerMap.verified + 1)
+    .setValue(String(verifiedValue || "").trim().toLowerCase() === "yes" ? "yes" : "no");
+
+  if (providerState.headerMap.updatedAt !== -1) {
+    providerState.sheet.getRange(rowNumber, providerState.headerMap.updatedAt + 1).setValue(new Date());
+  }
+
+  return { ok: true, status: "success" };
+}
+
+function getCategoryApplicationProviderSummary_(providerId, phone) {
+  const state = getCategoryApplicationsState_();
+  const normalizedProviderId = String(providerId || "").trim();
+  const normalizedPhone = normalizePhone10_(phone);
+  const pendingCategories = [];
+  const seenPending = {};
+
+  for (let i = 1; i < state.values.length; i++) {
+    const row = state.values[i] || [];
+    const rowProviderId =
+      state.idxProviderId !== -1 && row[state.idxProviderId] !== undefined
+        ? String(row[state.idxProviderId]).trim()
+        : "";
+    const rowPhone =
+      state.idxPhone !== -1 && row[state.idxPhone] !== undefined
+        ? normalizePhone10_(row[state.idxPhone])
+        : "";
+    const sameProvider =
+      (normalizedProviderId && rowProviderId === normalizedProviderId) ||
+      (normalizedPhone && rowPhone === normalizedPhone);
+
+    if (!sameProvider) continue;
+
+    const status =
+      state.idxStatus !== -1 && row[state.idxStatus] !== undefined
+        ? String(row[state.idxStatus]).trim().toLowerCase()
+        : "";
+    if (status !== "pending") continue;
+
+    const categoryName =
+      state.idxCategory !== -1 && row[state.idxCategory] !== undefined
+        ? normalizeCategoryName_(row[state.idxCategory])
+        : "";
+    const categoryKey = getNormalizedCategoryKey_(categoryName);
+    if (!categoryKey || seenPending[categoryKey]) continue;
+
+    seenPending[categoryKey] = true;
+    pendingCategories.push(categoryName);
+  }
+
+  return {
+    pendingCategories: pendingCategories,
+  };
+}
+
+function buildPendingCategorySummaryLookup_() {
+  const state = getCategoryApplicationsState_();
+  const byProviderId = {};
+  const byPhone = {};
+
+  for (let i = 1; i < state.values.length; i++) {
+    const row = state.values[i] || [];
+    const status =
+      state.idxStatus !== -1 && row[state.idxStatus] !== undefined
+        ? String(row[state.idxStatus]).trim().toLowerCase()
+        : "";
+    if (status !== "pending") continue;
+
+    const providerId =
+      state.idxProviderId !== -1 && row[state.idxProviderId] !== undefined
+        ? String(row[state.idxProviderId]).trim()
+        : "";
+    const phone =
+      state.idxPhone !== -1 && row[state.idxPhone] !== undefined
+        ? normalizePhone10_(row[state.idxPhone])
+        : "";
+    const categoryName =
+      state.idxCategory !== -1 && row[state.idxCategory] !== undefined
+        ? normalizeCategoryName_(row[state.idxCategory])
+        : "";
+    const categoryKey = getNormalizedCategoryKey_(categoryName);
+
+    if (!categoryKey) continue;
+
+    if (providerId) {
+      if (!byProviderId[providerId]) byProviderId[providerId] = { categories: [], seen: {} };
+      if (!byProviderId[providerId].seen[categoryKey]) {
+        byProviderId[providerId].seen[categoryKey] = true;
+        byProviderId[providerId].categories.push(categoryName);
+      }
+    }
+
+    if (phone) {
+      if (!byPhone[phone]) byPhone[phone] = { categories: [], seen: {} };
+      if (!byPhone[phone].seen[categoryKey]) {
+        byPhone[phone].seen[categoryKey] = true;
+        byPhone[phone].categories.push(categoryName);
+      }
+    }
+  }
+
+  return {
+    byProviderId: byProviderId,
+    byPhone: byPhone,
+  };
+}
+
+function syncProviderApprovalState_(providerId, phone) {
+  const providerState = getProviderSheetState_();
+  const normalizedProviderId = String(providerId || "").trim();
+  const normalizedPhone = normalizePhone10_(phone);
+
+  if (!providerState.sheet || !providerState.values.length) {
+    return { ok: false, status: "error", error: "Providers sheet not found" };
+  }
+  if (!normalizedProviderId && !normalizedPhone) {
+    return { ok: false, status: "error", error: "Provider reference required" };
+  }
+
+  const target = findProviderSheetRowState_(providerState, normalizedProviderId, normalizedPhone);
+  if (!target.ok) {
+    return target;
+  }
+
+  const summary = getCategoryApplicationProviderSummary_(normalizedProviderId, normalizedPhone);
+  const hasPendingCategories = summary.pendingCategories.length > 0;
+  const currentVerified =
+    providerState.headerMap.verified !== -1 &&
+    target.row[providerState.headerMap.verified] !== undefined
+      ? String(target.row[providerState.headerMap.verified]).trim().toLowerCase()
+      : "no";
+  const nextVerified = hasPendingCategories ? "no" : "yes";
+
+  if (currentVerified !== nextVerified) {
+    const writeResult = writeProviderVerifiedValue_(providerState, target.rowNumber, nextVerified);
+    if (!writeResult.ok) return writeResult;
+  }
+
+  return {
+    ok: true,
+    status: "success",
+    providerId:
+      providerState.headerMap.providerId !== -1 &&
+      target.row[providerState.headerMap.providerId] !== undefined
+        ? String(target.row[providerState.headerMap.providerId]).trim()
+        : normalizedProviderId,
+    verified: nextVerified,
+    pendingApproval: hasPendingCategories ? "yes" : "no",
+    approvalStatus: hasPendingCategories ? "pending" : "approved",
+    providerStatus: hasPendingCategories ? "Pending Admin Approval" : "Active",
+    pendingCategories: summary.pendingCategories,
+  };
+}
+
+function reconcileProviderApprovalStates_() {
+  const lock = LockService.getScriptLock();
+  const acquired = lock.tryLock(250);
+
+  if (!acquired) {
+    return { ok: true, status: "skipped", skipped: true, reason: "lock_unavailable" };
+  }
+
+  try {
+    const providerState = getProviderSheetState_();
+    if (!providerState.sheet || !providerState.values.length) {
+      return { ok: false, status: "error", error: "Providers sheet not found" };
+    }
+    const pendingLookup = buildPendingCategorySummaryLookup_();
+    let updatedCount = 0;
+
+    for (let i = 1; i < providerState.values.length; i++) {
+      const row = providerState.values[i] || [];
+      const providerId =
+        providerState.headerMap.providerId !== -1 &&
+        row[providerState.headerMap.providerId] !== undefined
+          ? String(row[providerState.headerMap.providerId]).trim()
+          : "";
+      const phone =
+        providerState.headerMap.phone !== -1 && row[providerState.headerMap.phone] !== undefined
+          ? normalizePhone10_(row[providerState.headerMap.phone])
+          : "";
+      const pendingSummary =
+        (providerId && pendingLookup.byProviderId[providerId]) ||
+        (phone && pendingLookup.byPhone[phone]) ||
+        null;
+      const pendingCategories = pendingSummary ? pendingSummary.categories.slice() : [];
+      const hasPendingCategories = pendingCategories.length > 0;
+
+      const currentVerified =
+        providerState.headerMap.verified !== -1 &&
+        row[providerState.headerMap.verified] !== undefined
+          ? String(row[providerState.headerMap.verified]).trim().toLowerCase()
+          : "no";
+      const nextVerified = hasPendingCategories ? "no" : "yes";
+      const requiresUpdate = currentVerified !== nextVerified;
+
+      if (!requiresUpdate) continue;
+
+      const writeResult = writeProviderVerifiedValue_(providerState, i + 1, nextVerified);
+      if (!writeResult.ok) return writeResult;
+      updatedCount += 1;
+    }
+
+    return { ok: true, status: "success", updatedCount: updatedCount };
+  } finally {
+    if (acquired) {
+      lock.releaseLock();
+    }
+  }
+}
+
 function updateCategoryApplicationStatus_(requestId, status) {
   const normalizedRequestId = String(requestId || "").trim();
   const normalizedStatus = String(status || "").trim().toLowerCase();
@@ -782,31 +1112,50 @@ function updateCategoryApplicationStatus_(requestId, status) {
     return { ok: false, status: "error", error: "Status required" };
   }
 
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("CategoryApplications");
-  if (!sheet || sheet.getLastRow() < 2) {
+  const state = getCategoryApplicationsState_();
+  if (!state.sheet || state.values.length < 2) {
     return { ok: false, status: "error", error: "CategoryApplications sheet not found" };
   }
 
-  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0] || [];
-  const values = sheet.getRange(2, 1, sheet.getLastRow() - 1, headers.length).getValues();
-  const idxRequestId = findHeaderIndexByAliases_(headers, ["RequestID"]);
-
-  if (idxRequestId === -1) {
+  if (state.idxRequestId === -1) {
     return { ok: false, status: "error", error: "RequestID column missing" };
   }
 
-  for (let i = 0; i < values.length; i++) {
+  for (let i = 1; i < state.values.length; i++) {
+    const row = state.values[i] || [];
     const rowRequestId =
-      values[i][idxRequestId] !== undefined ? String(values[i][idxRequestId]).trim() : "";
+      row[state.idxRequestId] !== undefined ? String(row[state.idxRequestId]).trim() : "";
     if (rowRequestId !== normalizedRequestId) continue;
 
+    const providerId =
+      state.idxProviderId !== -1 && row[state.idxProviderId] !== undefined
+        ? String(row[state.idxProviderId]).trim()
+        : "";
+    const phone =
+      state.idxPhone !== -1 && row[state.idxPhone] !== undefined ? String(row[state.idxPhone]).trim() : "";
+    const requestedCategory =
+      state.idxCategory !== -1 && row[state.idxCategory] !== undefined
+        ? normalizeCategoryName_(row[state.idxCategory])
+        : "";
+    const previousStatus =
+      state.idxStatus !== -1 && row[state.idxStatus] !== undefined
+        ? String(row[state.idxStatus]).trim().toLowerCase()
+        : "";
     const updates = { Status: normalizedStatus };
-    if (findHeaderIndexByAliases_(headers, ["UpdatedAt"]) !== -1) {
+    if (findHeaderIndexByAliases_(state.headers, ["UpdatedAt"]) !== -1) {
       updates.UpdatedAt = new Date();
     }
 
-    updateRowFromData_(sheet, i + 2, updates);
-    return { ok: true, requestId: normalizedRequestId, updatedStatus: normalizedStatus };
+    updateRowFromData_(state.sheet, i + 1, updates);
+    return {
+      ok: true,
+      requestId: normalizedRequestId,
+      updatedStatus: normalizedStatus,
+      previousStatus: previousStatus,
+      providerId: providerId,
+      phone: phone,
+      requestedCategory: requestedCategory,
+    };
   }
 
   return { ok: false, status: "error", error: "Category request not found" };
@@ -819,33 +1168,73 @@ function approveCategoryRequest_(data) {
   if (!requestId) return { ok: false, status: "error", error: "RequestID required" };
   if (!categoryName) return { ok: false, status: "error", error: "CategoryName required" };
 
-  const categoryResult = ensureCategoryExists_(categoryName);
-  if (!categoryResult.ok) return categoryResult;
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
 
-  const requestResult = updateCategoryApplicationStatus_(requestId, "approved");
-  if (!requestResult.ok) return requestResult;
+  try {
+    const categoryResult = ensureCategoryExists_(categoryName);
+    if (!categoryResult.ok) return categoryResult;
 
-  return {
-    ok: true,
-    status: "success",
-    requestId: requestId,
-    categoryName: categoryResult.categoryName,
-    categoryCreated: categoryResult.created === true,
-  };
+    const requestResult = updateCategoryApplicationStatus_(requestId, "approved");
+    if (!requestResult.ok) return requestResult;
+    const providerSyncResult = syncProviderApprovalState_(
+      requestResult.providerId,
+      requestResult.phone
+    );
+    if (!providerSyncResult.ok) return providerSyncResult;
+
+    return {
+      ok: true,
+      status: "success",
+      requestId: requestId,
+      categoryName: categoryResult.categoryName,
+      categoryCreated: categoryResult.created === true,
+      provider: {
+        providerId: providerSyncResult.providerId,
+        verified: providerSyncResult.verified,
+        pendingApproval: providerSyncResult.pendingApproval,
+        approvalStatus: providerSyncResult.approvalStatus,
+        status: providerSyncResult.providerStatus,
+        pendingCategories: providerSyncResult.pendingCategories,
+      },
+    };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function rejectCategoryRequest_(data) {
   const requestId = String(data.requestId || "").trim();
   if (!requestId) return { ok: false, status: "error", error: "RequestID required" };
 
-  const requestResult = updateCategoryApplicationStatus_(requestId, "rejected");
-  if (!requestResult.ok) return requestResult;
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
 
-  return {
-    ok: true,
-    status: "success",
-    requestId: requestId,
-  };
+  try {
+    const requestResult = updateCategoryApplicationStatus_(requestId, "rejected");
+    if (!requestResult.ok) return requestResult;
+    const providerSyncResult = syncProviderApprovalState_(
+      requestResult.providerId,
+      requestResult.phone
+    );
+    if (!providerSyncResult.ok) return providerSyncResult;
+
+    return {
+      ok: true,
+      status: "success",
+      requestId: requestId,
+      provider: {
+        providerId: providerSyncResult.providerId,
+        verified: providerSyncResult.verified,
+        pendingApproval: providerSyncResult.pendingApproval,
+        approvalStatus: providerSyncResult.approvalStatus,
+        status: providerSyncResult.providerStatus,
+        pendingCategories: providerSyncResult.pendingCategories,
+      },
+    };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function setProviderVerified_(data) {
@@ -857,49 +1246,29 @@ function setProviderVerified_(data) {
     return { ok: false, status: "error", error: "Verified must be yes or no" };
   }
 
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(TAB_PROVIDERS);
-  if (!sheet || sheet.getLastRow() < 2) {
-    return { ok: false, status: "error", error: "Providers sheet not found" };
-  }
+  const providerState = getProviderSheetState_();
+  const target = findProviderSheetRowState_(providerState, providerId, "");
+  if (!target.ok) return target;
+  const writeResult = writeProviderVerifiedValue_(providerState, target.rowNumber, verified);
+  if (!writeResult.ok) return writeResult;
 
-  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0] || [];
-  const values = sheet.getRange(2, 1, sheet.getLastRow() - 1, headers.length).getValues();
-  const headerMap = getProviderHeaderMap_(headers);
-
-  if (headerMap.providerId === -1 || headerMap.verified === -1) {
-    return { ok: false, status: "error", error: "Providers headers missing" };
-  }
-
-  for (let i = 0; i < values.length; i++) {
-    const rowProviderId =
-      values[i][headerMap.providerId] !== undefined
-        ? String(values[i][headerMap.providerId]).trim()
-        : "";
-    if (rowProviderId !== providerId) continue;
-
-    const updates = { Verified: verified };
-    if (headerMap.updatedAt !== -1) updates.UpdatedAt = new Date();
-    updateRowFromData_(sheet, i + 2, updates);
-
-    return {
-      ok: true,
-      status: "success",
-      providerId: providerId,
-      verified: verified,
-    };
-  }
-
-  return { ok: false, status: "error", error: "Provider not found" };
+  return {
+    ok: true,
+    status: "success",
+    providerId: providerId,
+    verified: verified,
+  };
 }
 
 function getAdminProviders_() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
   const sh = ss.getSheetByName(TAB_PROVIDERS);
   if (!sh || sh.getLastRow() < 2) return [];
 
   const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0] || [];
   const rows = sh.getRange(2, 1, sh.getLastRow() - 1, headers.length).getValues();
   const headerMap = getProviderHeaderMap_(headers);
+  const pendingLookup = buildPendingCategorySummaryLookup_();
 
   return rows
     .map((row) => {
@@ -919,14 +1288,11 @@ function getAdminProviders_() {
         headerMap.verified !== -1 && row[headerMap.verified] !== undefined
           ? String(row[headerMap.verified]).trim()
           : "no";
-      const pendingApproval =
-        headerMap.pendingApproval !== -1 && row[headerMap.pendingApproval] !== undefined
-          ? String(row[headerMap.pendingApproval]).trim()
-          : headerMap.approvalStatus !== -1 && row[headerMap.approvalStatus] !== undefined
-          ? String(row[headerMap.approvalStatus]).trim().toLowerCase() === "pending"
-            ? "yes"
-            : "no"
-          : "no";
+      const normalizedPhone = normalizePhone10_(phone);
+      const hasPendingApproval = Boolean(
+        (providerId && pendingLookup.byProviderId[providerId]) ||
+          (normalizedPhone && pendingLookup.byPhone[normalizedPhone])
+      );
       const category =
         headerMap.category !== -1 && row[headerMap.category] !== undefined
           ? String(row[headerMap.category]).trim()
@@ -941,7 +1307,7 @@ function getAdminProviders_() {
         ProviderName: providerName,
         Phone: phone,
         Verified: verified || "no",
-        PendingApproval: pendingApproval || "no",
+        PendingApproval: hasPendingApproval ? "yes" : "no",
         Category: category,
         Areas: areas,
       };
@@ -950,8 +1316,9 @@ function getAdminProviders_() {
 }
 
 function getAdminDashboardStats_() {
-  const providers = getAdminProviders_();
+  reconcileProviderApprovalStates_();
   const categoryApplications = getAdminCategoryApplications_();
+  const providers = getAdminProviders_();
   const categories = getAdminCategories_();
   const areas = getAdminAreas_();
 

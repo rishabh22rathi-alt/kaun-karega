@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getAuthSession } from "@/lib/auth";
@@ -12,6 +11,9 @@ type RequestRow = {
   details: string;
   status: string;
   createdAt: string;
+  matchedProviders: string[];
+  respondedProvider: string;
+  respondedProviderName: string;
 };
 
 type ThreadRow = {
@@ -19,41 +21,54 @@ type ThreadRow = {
   TaskID: string;
   UserPhone: string;
   ProviderID: string;
-  LastMessage: string;
-  LastMessageAt: string;
-  UnreadUser: number;
-  UnreadProvider: number;
+  ProviderPhone?: string;
+  Category?: string;
+  Area?: string;
+  Status?: string;
   CreatedAt: string;
+  UpdatedAt?: string;
+  LastMessageAt: string;
+  LastMessageBy?: string;
+  UnreadUserCount: number;
+  UnreadProviderCount: number;
 };
 
 type RawRequest = Record<string, unknown>;
 
 const normalizeRequest = (item: RawRequest): RequestRow => ({
-  taskId:
-    String(
-      item.TaskID ??
-        item.taskId ??
-        item.id ??
-        item.task_id ??
-        ""
-    ) || "-",
+  taskId: String(item.TaskID ?? item.taskId ?? item.id ?? item.task_id ?? "") || "-",
   category: String(item.Category ?? item.category ?? "") || "-",
   area: String(item.Area ?? item.area ?? "") || "-",
   details: String(item.Details ?? item.details ?? "") || "-",
   status: String(item.Status ?? item.status ?? "") || "-",
   createdAt: String(item.CreatedAt ?? item.createdAt ?? "") || "-",
+  matchedProviders: Array.isArray(item.MatchedProviders)
+    ? item.MatchedProviders.map((providerId) => String(providerId || "").trim()).filter(Boolean)
+    : [],
+  respondedProvider: String(item.RespondedProvider ?? item.respondedProvider ?? "") || "",
+  respondedProviderName:
+    String(item.RespondedProviderName ?? item.respondedProviderName ?? "") || "",
 });
 
 const normalizeThread = (item: Record<string, unknown>): ThreadRow => ({
   ThreadID: String(item.ThreadID ?? item.threadId ?? "") || "",
   TaskID: String(item.TaskID ?? item.taskId ?? "") || "",
   UserPhone: String(item.UserPhone ?? item.userPhone ?? "") || "",
-  ProviderID: String(item.ProviderID ?? item.providerId ?? "") || "-",
-  LastMessage: String(item.LastMessage ?? item.lastMessage ?? "") || "-",
-  LastMessageAt: String(item.LastMessageAt ?? item.lastMessageAt ?? "") || "",
-  UnreadUser: Number(item.UnreadUser ?? item.unreadUser ?? 0) || 0,
-  UnreadProvider: Number(item.UnreadProvider ?? item.unreadProvider ?? 0) || 0,
+  ProviderID: String(item.ProviderID ?? item.providerId ?? "") || "",
+  ProviderPhone: String(item.ProviderPhone ?? item.providerPhone ?? "") || "",
+  Category: String(item.Category ?? item.category ?? "") || "",
+  Area: String(item.Area ?? item.area ?? "") || "",
+  Status: String(item.Status ?? item.status ?? "") || "",
   CreatedAt: String(item.CreatedAt ?? item.createdAt ?? "") || "",
+  UpdatedAt: String(item.UpdatedAt ?? item.updatedAt ?? "") || "",
+  LastMessageAt: String(item.LastMessageAt ?? item.lastMessageAt ?? "") || "",
+  LastMessageBy: String(item.LastMessageBy ?? item.lastMessageBy ?? "") || "",
+  UnreadUserCount:
+    Number(item.UnreadUserCount ?? item.unreadUserCount ?? item.UnreadUser ?? item.unreadUser ?? 0) || 0,
+  UnreadProviderCount:
+    Number(
+      item.UnreadProviderCount ?? item.unreadProviderCount ?? item.UnreadProvider ?? item.unreadProvider ?? 0
+    ) || 0,
 });
 
 function formatDisplayDate(value: string) {
@@ -76,6 +91,7 @@ export default function MyRequestsList() {
   const [threadsByTaskId, setThreadsByTaskId] = useState<Record<string, ThreadRow[]>>({});
   const [threadsLoadingByTaskId, setThreadsLoadingByTaskId] = useState<Record<string, boolean>>({});
   const [threadsErrorByTaskId, setThreadsErrorByTaskId] = useState<Record<string, string>>({});
+  const [openingChatKey, setOpeningChatKey] = useState("");
 
   useEffect(() => {
     const session = getAuthSession();
@@ -93,6 +109,7 @@ export default function MyRequestsList() {
         const res = await fetch("/api/my-requests", { cache: "no-store" });
         if (res.status === 401) {
           setHasSession(false);
+          setLoading(false);
           router.replace("/login");
           return;
         }
@@ -106,20 +123,15 @@ export default function MyRequestsList() {
           : Array.isArray(data?.tasks)
             ? data.tasks
             : [];
-        const normalized = list.map((item: RawRequest) =>
-          normalizeRequest(item)
-        );
-        setRows(normalized);
+        setRows(list.map((item: RawRequest) => normalizeRequest(item)));
       } catch (err) {
-        setError(
-          err instanceof Error ? err.message : "Failed to load requests"
-        );
+        setError(err instanceof Error ? err.message : "Failed to load requests");
       } finally {
         setLoading(false);
       }
     };
 
-    loadRequests();
+    void loadRequests();
   }, [router]);
 
   const total = useMemo(() => rows.length, [rows]);
@@ -149,14 +161,15 @@ export default function MyRequestsList() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          action: "get_user_task_threads",
+          action: "chat_get_threads",
+          ActorType: "user",
           TaskID: taskId,
           UserPhone: userPhone,
         }),
       });
       const data = await res.json();
       if (!res.ok || !data?.ok) {
-        throw new Error(data?.error || "Failed to load responses");
+        throw new Error(data?.error || "Failed to load chats");
       }
 
       const threads = Array.isArray(data?.threads)
@@ -170,13 +183,53 @@ export default function MyRequestsList() {
     } catch (err) {
       setThreadsErrorByTaskId((current) => ({
         ...current,
-        [taskId]: err instanceof Error ? err.message : "Failed to load responses",
+        [taskId]: err instanceof Error ? err.message : "Failed to load chats",
       }));
     } finally {
       setThreadsLoadingByTaskId((current) => ({
         ...current,
         [taskId]: false,
       }));
+    }
+  };
+
+  const handleOpenChat = async (taskId: string, providerId: string) => {
+    if (!userPhone || !providerId) return;
+
+    const chatKey = `${taskId}:${providerId}`;
+    setOpeningChatKey(chatKey);
+    setThreadsErrorByTaskId((current) => ({
+      ...current,
+      [taskId]: "",
+    }));
+
+    try {
+      const res = await fetch("/api/kk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "chat_create_or_get_thread",
+          ActorType: "user",
+          UserPhone: userPhone,
+          TaskID: taskId,
+          ProviderID: providerId,
+        }),
+      });
+      const data = await res.json();
+      const threadId = String(data?.thread?.ThreadID || "").trim();
+
+      if (!res.ok || !data?.ok || !threadId) {
+        throw new Error(data?.error || "Failed to open chat");
+      }
+
+      router.push(`/dashboard/my-requests/chat/${encodeURIComponent(threadId)}`);
+    } catch (err) {
+      setThreadsErrorByTaskId((current) => ({
+        ...current,
+        [taskId]: err instanceof Error ? err.message : "Failed to open chat",
+      }));
+    } finally {
+      setOpeningChatKey("");
     }
   };
 
@@ -214,9 +267,7 @@ export default function MyRequestsList() {
     <main className="min-h-screen bg-slate-50 px-4 py-10">
       <div className="mx-auto w-full max-w-5xl rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <div className="mb-6">
-          <h1 className="text-2xl font-semibold text-slate-900">
-            My Requests
-          </h1>
+          <h1 className="text-2xl font-semibold text-slate-900">My Requests</h1>
           <p className="text-sm text-slate-600">Total requests: {total}</p>
         </div>
 
@@ -231,7 +282,9 @@ export default function MyRequestsList() {
               const taskThreads = threadsByTaskId[row.taskId] || [];
               const isResponsesLoading = Boolean(threadsLoadingByTaskId[row.taskId]);
               const responsesError = threadsErrorByTaskId[row.taskId] || "";
-              const responseCount = taskThreads.length;
+              const threadByProviderId = new Map(
+                taskThreads.map((thread) => [String(thread.ProviderID || "").trim(), thread])
+              );
 
               return (
                 <div
@@ -253,7 +306,7 @@ export default function MyRequestsList() {
                       <span className="font-semibold">Created:</span> {formatDisplayDate(row.createdAt)}
                     </p>
                     <p className="text-slate-700">
-                      <span className="font-semibold">Responses:</span> {responseCount}
+                      <span className="font-semibold">Matched Providers:</span> {row.matchedProviders.length}
                     </p>
                   </div>
 
@@ -271,35 +324,50 @@ export default function MyRequestsList() {
                         <p className="text-sm text-slate-600">Loading responses...</p>
                       ) : responsesError ? (
                         <p className="text-sm text-rose-600">{responsesError}</p>
-                      ) : taskThreads.length === 0 ? (
-                        <p className="text-sm text-slate-600">No responses yet.</p>
+                      ) : row.matchedProviders.length === 0 ? (
+                        <p className="text-sm text-slate-600">No matched providers yet.</p>
                       ) : (
-                        taskThreads.map((thread) => (
-                          <div
-                            key={thread.ThreadID}
-                            className="rounded-lg border border-slate-200 bg-white p-3 text-sm"
-                          >
-                            <p className="text-slate-900">
-                              <span className="font-semibold">ProviderID:</span> {thread.ProviderID}
-                            </p>
-                            <p className="mt-1 text-slate-700">
-                              <span className="font-semibold">LastMessage:</span> {thread.LastMessage || "-"}
-                            </p>
-                            <p className="mt-1 text-slate-700">
-                              <span className="font-semibold">LastMessageAt:</span>{" "}
-                              {formatDisplayDate(thread.LastMessageAt || thread.CreatedAt)}
-                            </p>
-                            <p className="mt-1 text-slate-700">
-                              <span className="font-semibold">UnreadUser:</span> {thread.UnreadUser}
-                            </p>
-                            <Link
-                              href={`/dashboard/my-requests/chat/${encodeURIComponent(thread.ThreadID)}`}
-                              className="mt-3 inline-flex rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white"
+                        row.matchedProviders.map((providerId) => {
+                          const thread = threadByProviderId.get(providerId) || null;
+                          const chatKey = `${row.taskId}:${providerId}`;
+                          const providerLabel =
+                            providerId === row.respondedProvider && row.respondedProviderName
+                              ? `${providerId} (${row.respondedProviderName})`
+                              : providerId;
+
+                          return (
+                            <div
+                              key={providerId}
+                              className="rounded-lg border border-slate-200 bg-white p-3 text-sm"
                             >
-                              Open Chat
-                            </Link>
-                          </div>
-                        ))
+                              <p className="text-slate-900">
+                                <span className="font-semibold">ProviderID:</span> {providerLabel}
+                              </p>
+                              <p className="mt-1 text-slate-700">
+                                <span className="font-semibold">Thread:</span>{" "}
+                                {thread?.ThreadID || "Not created yet"}
+                              </p>
+                              <p className="mt-1 text-slate-700">
+                                <span className="font-semibold">Last activity:</span>{" "}
+                                {formatDisplayDate(
+                                  thread?.LastMessageAt || thread?.UpdatedAt || thread?.CreatedAt || ""
+                                )}
+                              </p>
+                              <p className="mt-1 text-slate-700">
+                                <span className="font-semibold">Unread for user:</span>{" "}
+                                {thread?.UnreadUserCount || 0}
+                              </p>
+                              <button
+                                type="button"
+                                onClick={() => void handleOpenChat(row.taskId, providerId)}
+                                disabled={openingChatKey === chatKey}
+                                className="mt-3 inline-flex rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                              >
+                                {openingChatKey === chatKey ? "Opening..." : "Open Chat"}
+                              </button>
+                            </div>
+                          );
+                        })
                       )}
                     </div>
                   ) : null}

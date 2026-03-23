@@ -27,28 +27,9 @@ function PageContent() {
   const phoneDigits = useMemo(() => phone.replace(/\D/g, "").slice(0, 10), [phone]);
 
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      const role = localStorage.getItem("kk_user_role");
-      if (role === "provider") {
-        router.replace("/provider/dashboard");
-        return;
-      }
-      if (role === "receiver") {
-        router.replace("/");
-        return;
-      }
-    }
-
     const fromQuery = searchParams.get("phone");
     if (fromQuery) {
       setPhone(fromQuery);
-      return;
-    }
-    if (typeof window === "undefined") return;
-    const cached =
-      localStorage.getItem("kk_last_phone") || localStorage.getItem("kk_user_phone");
-    if (cached) {
-      setPhone(cached);
     }
   }, [router, searchParams]);
 

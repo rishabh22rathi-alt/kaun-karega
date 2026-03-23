@@ -224,29 +224,20 @@ function doPost(e) {
       case "close_request":
         return json_(closeRequest_(data));
 
-      case "create_chat_thread":
-        return json_(createChatThread_(data));
+      case "chat_create_or_get_thread":
+        return json_(chatCreateOrGetThread_(data));
 
-      case "send_chat_message":
-        return json_(sendChatMessage_(data));
+      case "chat_get_threads":
+        return json_(chatGetThreads_(data));
 
-      case "get_chat_messages":
-        return json_(getChatMessages_(data));
+      case "chat_get_messages":
+        return json_(chatGetMessages_(data));
 
-      case "get_user_task_threads":
-        return json_(getUserTaskThreads_(data));
+      case "chat_send_message":
+        return json_(chatSendMessage_(data));
 
-      case "get_provider_threads":
-        return json_(getProviderThreads_(data));
-
-      case "mark_chat_read":
-        return json_(markChatRead_(data));
-
-      case "get_admin_chat_threads":
-        return json_(getAdminChatThreads_(data));
-
-      case "close_chat_thread":
-        return json_(closeChatThread_(data));
+      case "chat_mark_read":
+        return json_(chatMarkRead_(data));
 
       case "send_provider_lead_notification":
         return json_(sendProviderLeadNotification_(data));

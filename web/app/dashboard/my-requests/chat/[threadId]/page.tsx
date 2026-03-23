@@ -16,30 +16,24 @@ type Thread = {
   TaskID: string;
   UserPhone: string;
   ProviderID: string;
-  LastMessage?: string;
   LastMessageAt?: string;
   Status?: string;
 };
 
-type UserThreadsResponse = {
-  ok?: boolean;
-  threads?: Thread[];
-  error?: string;
-};
-
 type ChatMessage = {
-  ChatID: string;
+  MessageID: string;
   ThreadID: string;
   TaskID: string;
-  UserPhone: string;
-  ProviderID: string;
   SenderType: string;
   MessageText: string;
   CreatedAt: string;
+  ReadByUser?: string;
+  ReadByProvider?: string;
 };
 
 type ChatMessagesResponse = {
   ok?: boolean;
+  thread?: Thread;
   messages?: ChatMessage[];
   error?: string;
 };
@@ -77,14 +71,17 @@ export default function UserRequestChatPage({ params }: PageProps) {
     }
 
     let ignore = false;
+    let intervalId: ReturnType<typeof setInterval> | null = null;
 
-    const loadMessages = async (targetThread: Thread) => {
+    const loadMessages = async (phone: string, shouldMarkRead = true) => {
       const res = await fetch("/api/kk", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          action: "get_chat_messages",
-          ThreadID: targetThread.ThreadID,
+          action: "chat_get_messages",
+          ActorType: "user",
+          ThreadID: threadId,
+          UserPhone: phone,
         }),
       });
       const data = (await res.json()) as ChatMessagesResponse;
@@ -94,17 +91,21 @@ export default function UserRequestChatPage({ params }: PageProps) {
       }
 
       if (ignore) return;
+      setThread(data.thread || null);
       setMessages(Array.isArray(data.messages) ? data.messages : []);
 
-      await fetch("/api/kk", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "mark_chat_read",
-          ThreadID: targetThread.ThreadID,
-          ReaderType: "user",
-        }),
-      });
+      if (shouldMarkRead) {
+        await fetch("/api/kk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "chat_mark_read",
+            ActorType: "user",
+            ThreadID: threadId,
+            UserPhone: phone,
+          }),
+        });
+      }
     };
 
     const load = async () => {
@@ -113,52 +114,22 @@ export default function UserRequestChatPage({ params }: PageProps) {
       setAccessDenied(false);
 
       try {
-        const requestsRes = await fetch("/api/my-requests", { cache: "no-store" });
-        const requestsData = await requestsRes.json();
-        if (!requestsRes.ok || requestsData?.ok !== true) {
-          throw new Error(requestsData?.error || "Unable to load requests.");
-        }
-
-        const requests = Array.isArray(requestsData?.requests) ? requestsData.requests : [];
-        let matchedThread: Thread | null = null;
-
-        for (const request of requests) {
-          const taskId = String(request?.TaskID || request?.taskId || "").trim();
-          if (!taskId) continue;
-
-          const threadsRes = await fetch("/api/kk", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              action: "get_user_task_threads",
-              TaskID: taskId,
-              UserPhone: normalizedPhone,
-            }),
-          });
-          const threadsData = (await threadsRes.json()) as UserThreadsResponse;
-
-          if (!threadsRes.ok || !threadsData.ok || !Array.isArray(threadsData.threads)) {
-            continue;
-          }
-
-          matchedThread =
-            threadsData.threads.find((item) => String(item.ThreadID || "").trim() === threadId) || null;
-
-          if (matchedThread) break;
-        }
-
-        if (!matchedThread) {
-          if (!ignore) setAccessDenied(true);
-          return;
-        }
-
         if (ignore) return;
         setUserPhone(normalizedPhone);
-        setThread(matchedThread);
-        await loadMessages(matchedThread);
+        await loadMessages(normalizedPhone, true);
+
+        intervalId = setInterval(() => {
+          void loadMessages(normalizedPhone, true).catch(() => undefined);
+        }, 5000);
       } catch (err) {
         if (ignore) return;
-        setError(err instanceof Error ? err.message : "Unable to load chat.");
+        const message = err instanceof Error ? err.message : "Unable to load chat.";
+        if (message.toLowerCase().includes("access denied")) {
+          setAccessDenied(true);
+          setError("");
+        } else {
+          setError(message);
+        }
       } finally {
         if (!ignore) setLoading(false);
       }
@@ -168,6 +139,7 @@ export default function UserRequestChatPage({ params }: PageProps) {
 
     return () => {
       ignore = true;
+      if (intervalId) clearInterval(intervalId);
     };
   }, [router, threadId]);
 
@@ -187,21 +159,16 @@ export default function UserRequestChatPage({ params }: PageProps) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          action: "send_chat_message",
+          action: "chat_send_message",
+          ActorType: "user",
           ThreadID: thread.ThreadID,
-          TaskID: thread.TaskID,
           UserPhone: userPhone,
-          ProviderID: thread.ProviderID,
-          SenderType: "user",
           MessageText: input.trim(),
         }),
       });
       const data = (await res.json()) as SendMessageResponse;
 
       if (!res.ok || !data.ok) {
-        if (data.error === "Chat is closed") {
-          setThread((current) => (current ? { ...current, Status: "closed" } : current));
-        }
         throw new Error(data.error || "Unable to send message.");
       }
 
@@ -211,12 +178,15 @@ export default function UserRequestChatPage({ params }: PageProps) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          action: "get_chat_messages",
+          action: "chat_get_messages",
+          ActorType: "user",
           ThreadID: thread.ThreadID,
+          UserPhone: userPhone,
         }),
       });
       const refreshData = (await refreshRes.json()) as ChatMessagesResponse;
       if (refreshRes.ok && refreshData.ok) {
+        setThread(refreshData.thread || thread);
         setMessages(Array.isArray(refreshData.messages) ? refreshData.messages : []);
       }
     } catch (err) {
@@ -281,9 +251,7 @@ export default function UserRequestChatPage({ params }: PageProps) {
           <p className="mt-1 text-sm text-slate-600">Task ID: {thread.TaskID}</p>
           <p className="mt-1 text-sm text-slate-600">Provider ID: {thread.ProviderID}</p>
           <p className="mt-1 text-sm text-slate-600">Status: {thread.Status || "active"}</p>
-          {isClosed ? (
-            <p className="mt-2 text-sm font-medium text-amber-700">This chat is closed.</p>
-          ) : null}
+          {isClosed ? <p className="mt-2 text-sm font-medium text-amber-700">This chat is closed.</p> : null}
           {error ? <p className="mt-2 text-sm text-rose-700">{error}</p> : null}
         </div>
 
@@ -296,7 +264,7 @@ export default function UserRequestChatPage({ params }: PageProps) {
                 const isUser = String(message.SenderType || "").trim().toLowerCase() === "user";
                 return (
                   <div
-                    key={message.ChatID}
+                    key={message.MessageID}
                     className={`flex ${isUser ? "justify-end" : "justify-start"}`}
                   >
                     <div className="max-w-[80%] rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">

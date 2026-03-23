@@ -2,670 +2,766 @@
  * CHAT SHEETS
  *************************************************/
 function getChatThreadsSheet_() {
-  const sheet = getOrCreateSheet(SHEET_CHAT_THREADS, [
+  const headers = [
     "ThreadID",
     "TaskID",
     "UserPhone",
     "ProviderID",
-    "LastMessage",
-    "LastMessageAt",
-    "UnreadUser",
-    "UnreadProvider",
-    "CreatedAt",
+    "ProviderPhone",
+    "Category",
+    "Area",
     "Status",
-    "ClosedBy",
-    "ClosedAt",
-    "BlockedFlag",
-    "BlockedReason",
-    "LastSenderType",
-  ]);
-
-  ensureSheetHeaders_(sheet, [
-    "ThreadID",
-    "TaskID",
-    "UserPhone",
-    "ProviderID",
-    "LastMessage",
-    "LastMessageAt",
-    "UnreadUser",
-    "UnreadProvider",
     "CreatedAt",
-    "Status",
-    "ClosedBy",
-    "ClosedAt",
-    "BlockedFlag",
-    "BlockedReason",
-    "LastSenderType",
-  ]);
+    "UpdatedAt",
+    "LastMessageAt",
+    "LastMessageBy",
+    "UnreadUserCount",
+    "UnreadProviderCount",
+  ];
 
+  const sheet = getOrCreateSheet(SHEET_CHAT_THREADS, headers);
+  ensureSheetHeaders_(sheet, headers);
   return sheet;
 }
 
-function getChatsSheet_() {
-  const sheet = getOrCreateSheet(SHEET_CHATS, [
-    "ChatID",
+function getChatMessagesSheet_() {
+  const headers = [
+    "MessageID",
     "ThreadID",
     "TaskID",
-    "UserPhone",
-    "ProviderID",
     "SenderType",
+    "SenderPhone",
+    "SenderName",
     "MessageText",
+    "MessageType",
     "CreatedAt",
     "ReadByUser",
     "ReadByProvider",
-  ]);
+  ];
 
-  ensureSheetHeaders_(sheet, [
-    "ChatID",
-    "ThreadID",
-    "TaskID",
-    "UserPhone",
-    "ProviderID",
-    "SenderType",
-    "MessageText",
-    "CreatedAt",
-    "ReadByUser",
-    "ReadByProvider",
-  ]);
-
+  const sheet = getOrCreateSheet(SHEET_CHAT_MESSAGES, headers);
+  ensureSheetHeaders_(sheet, headers);
   return sheet;
 }
 
-function getBlockedWordsSheet_() {
-  const sheet = getOrCreateSheet(SHEET_BLOCKED_WORDS, [
-    "Word",
-    "Active",
-    "Severity",
-  ]);
-
-  ensureSheetHeaders_(sheet, [
-    "Word",
-    "Active",
-    "Severity",
-  ]);
-
-  return sheet;
-}
-
-function nextThreadId_(sheet) {
+/*************************************************
+ * CHAT IDS / TIMESTAMPS
+ *************************************************/
+function nextChatEntityId_(sheet, prefix) {
   const values = sheet.getDataRange().getValues();
-  if (values.length <= 1) return "TH-0001";
+  if (values.length <= 1) return prefix + "-0001";
 
   let maxSeq = 0;
+  const re = new RegExp("^" + prefix + "-(\\d+)$", "i");
+
   for (let i = 1; i < values.length; i++) {
-    const threadId = String(values[i][0] || "").trim();
-    const match = threadId.match(/^TH-(\d+)$/i);
+    const id = String(values[i][0] || "").trim();
+    const match = id.match(re);
     if (!match) continue;
 
     const seq = Number(match[1]) || 0;
     if (seq > maxSeq) maxSeq = seq;
   }
 
-  return "TH-" + ("000" + (maxSeq + 1)).slice(-4);
+  return prefix + "-" + ("0000" + (maxSeq + 1)).slice(-4);
 }
 
-function nextChatId_(sheet) {
-  const values = sheet.getDataRange().getValues();
-  if (values.length <= 1) return "CH-0001";
-
-  let maxSeq = 0;
-  for (let i = 1; i < values.length; i++) {
-    const chatId = String(values[i][0] || "").trim();
-    const match = chatId.match(/^CH-(\d+)$/i);
-    if (!match) continue;
-
-    const seq = Number(match[1]) || 0;
-    if (seq > maxSeq) maxSeq = seq;
-  }
-
-  return "CH-" + ("000" + (maxSeq + 1)).slice(-4);
+function generateThreadId_(sheet) {
+  return nextChatEntityId_(sheet, "TH");
 }
 
-function createChatThread_(data) {
-  const taskId = String(data.TaskID || data.taskId || "").trim();
-  const providerId = String(data.ProviderID || data.providerId || "").trim();
-  const userPhone = normalizePhone10_(data.UserPhone || data.userPhone || data.phone);
+function generateMessageId_(sheet) {
+  return nextChatEntityId_(sheet, "MSG");
+}
 
-  if (!taskId) return { ok: false, status: "error", error: "TaskID required" };
-  if (!providerId) return { ok: false, status: "error", error: "ProviderID required" };
-  if (!userPhone) return { ok: false, status: "error", error: "Invalid phone number" };
+function getChatTimestamp_() {
+  return Utilities.formatDate(new Date(), "Asia/Kolkata", "dd/MM/yyyy HH:mm:ss");
+}
 
+function getCellValue_(row, idx) {
+  return idx !== -1 && row[idx] !== undefined ? row[idx] : "";
+}
+
+/*************************************************
+ * CHAT HEADER MAPS
+ *************************************************/
+function getChatThreadHeaderMap_(headers) {
+  return {
+    threadId: findHeaderIndexByAliases_(headers, ["ThreadID"]),
+    taskId: findHeaderIndexByAliases_(headers, ["TaskID"]),
+    userPhone: findHeaderIndexByAliases_(headers, ["UserPhone"]),
+    providerId: findHeaderIndexByAliases_(headers, ["ProviderID"]),
+    providerPhone: findHeaderIndexByAliases_(headers, ["ProviderPhone"]),
+    category: findHeaderIndexByAliases_(headers, ["Category"]),
+    area: findHeaderIndexByAliases_(headers, ["Area"]),
+    status: findHeaderIndexByAliases_(headers, ["Status"]),
+    createdAt: findHeaderIndexByAliases_(headers, ["CreatedAt"]),
+    updatedAt: findHeaderIndexByAliases_(headers, ["UpdatedAt"]),
+    lastMessageAt: findHeaderIndexByAliases_(headers, ["LastMessageAt"]),
+    lastMessageBy: findHeaderIndexByAliases_(headers, ["LastMessageBy"]),
+    unreadUserCount: findHeaderIndexByAliases_(headers, ["UnreadUserCount"]),
+    unreadProviderCount: findHeaderIndexByAliases_(headers, ["UnreadProviderCount"]),
+  };
+}
+
+function getChatMessageHeaderMap_(headers) {
+  return {
+    messageId: findHeaderIndexByAliases_(headers, ["MessageID"]),
+    threadId: findHeaderIndexByAliases_(headers, ["ThreadID"]),
+    taskId: findHeaderIndexByAliases_(headers, ["TaskID"]),
+    senderType: findHeaderIndexByAliases_(headers, ["SenderType"]),
+    senderPhone: findHeaderIndexByAliases_(headers, ["SenderPhone"]),
+    senderName: findHeaderIndexByAliases_(headers, ["SenderName"]),
+    messageText: findHeaderIndexByAliases_(headers, ["MessageText"]),
+    messageType: findHeaderIndexByAliases_(headers, ["MessageType"]),
+    createdAt: findHeaderIndexByAliases_(headers, ["CreatedAt"]),
+    readByUser: findHeaderIndexByAliases_(headers, ["ReadByUser"]),
+    readByProvider: findHeaderIndexByAliases_(headers, ["ReadByProvider"]),
+  };
+}
+
+/*************************************************
+ * CHAT ROW MAPPERS
+ *************************************************/
+function mapChatThreadRow_(headers, row) {
+  const idx = getChatThreadHeaderMap_(headers);
+
+  return {
+    ThreadID: String(getCellValue_(row, idx.threadId) || "").trim(),
+    TaskID: String(getCellValue_(row, idx.taskId) || "").trim(),
+    UserPhone: normalizePhone10_(getCellValue_(row, idx.userPhone)),
+    ProviderID: String(getCellValue_(row, idx.providerId) || "").trim(),
+    ProviderPhone: normalizePhone10_(getCellValue_(row, idx.providerPhone)),
+    Category: String(getCellValue_(row, idx.category) || "").trim(),
+    Area: String(getCellValue_(row, idx.area) || "").trim(),
+    Status: String(getCellValue_(row, idx.status) || "").trim(),
+    CreatedAt: getCellValue_(row, idx.createdAt),
+    UpdatedAt: getCellValue_(row, idx.updatedAt),
+    LastMessageAt: getCellValue_(row, idx.lastMessageAt),
+    LastMessageBy: String(getCellValue_(row, idx.lastMessageBy) || "").trim(),
+    UnreadUserCount: Number(getCellValue_(row, idx.unreadUserCount)) || 0,
+    UnreadProviderCount: Number(getCellValue_(row, idx.unreadProviderCount)) || 0,
+  };
+}
+
+function mapChatMessageRow_(headers, row) {
+  const idx = getChatMessageHeaderMap_(headers);
+
+  return {
+    MessageID: String(getCellValue_(row, idx.messageId) || "").trim(),
+    ThreadID: String(getCellValue_(row, idx.threadId) || "").trim(),
+    TaskID: String(getCellValue_(row, idx.taskId) || "").trim(),
+    SenderType: String(getCellValue_(row, idx.senderType) || "").trim().toLowerCase(),
+    SenderPhone: normalizePhone10_(getCellValue_(row, idx.senderPhone)),
+    SenderName: String(getCellValue_(row, idx.senderName) || "").trim(),
+    MessageText: String(getCellValue_(row, idx.messageText) || "").trim(),
+    MessageType: String(getCellValue_(row, idx.messageType) || "").trim().toLowerCase(),
+    CreatedAt: getCellValue_(row, idx.createdAt),
+    ReadByUser: String(getCellValue_(row, idx.readByUser) || "").trim().toLowerCase(),
+    ReadByProvider: String(getCellValue_(row, idx.readByProvider) || "").trim().toLowerCase(),
+  };
+}
+
+/*************************************************
+ * CHAT THREAD LOOKUPS
+ *************************************************/
+function getChatThreadStateByThreadId_(threadId) {
   const sheet = getChatThreadsSheet_();
   const values = sheet.getDataRange().getValues();
-  const headers = values.length ? values[0].map(function (header) {
-    return String(header).trim();
-  }) : [];
-  const idxTaskId = headers.indexOf("TaskID");
-  const idxProviderId = headers.indexOf("ProviderID");
-  const idxThreadId = headers.indexOf("ThreadID");
+  const headers = values.length ? values[0] : [];
+  const idx = getChatThreadHeaderMap_(headers);
 
   for (let i = 1; i < values.length; i++) {
     const row = values[i] || [];
-    const rowTaskId = idxTaskId >= 0 ? String(row[idxTaskId] || "").trim() : "";
-    const rowProviderId = idxProviderId >= 0 ? String(row[idxProviderId] || "").trim() : "";
+    const rowThreadId = String(getCellValue_(row, idx.threadId) || "").trim();
+    if (rowThreadId !== threadId) continue;
 
-    if (rowTaskId === taskId && rowProviderId === providerId) {
+    return {
+      sheet: sheet,
+      headers: headers,
+      rowNumber: i + 1,
+      row: row,
+      thread: mapChatThreadRow_(headers, row),
+    };
+  }
+
+  return null;
+}
+
+function getChatThreadStateByTaskProvider_(taskId, providerId) {
+  const sheet = getChatThreadsSheet_();
+  const values = sheet.getDataRange().getValues();
+  const headers = values.length ? values[0] : [];
+  const idx = getChatThreadHeaderMap_(headers);
+
+  for (let i = 1; i < values.length; i++) {
+    const row = values[i] || [];
+    const rowTaskId = String(getCellValue_(row, idx.taskId) || "").trim();
+    const rowProviderId = String(getCellValue_(row, idx.providerId) || "").trim();
+    if (rowTaskId !== taskId || rowProviderId !== providerId) continue;
+
+    return {
+      sheet: sheet,
+      headers: headers,
+      rowNumber: i + 1,
+      row: row,
+      thread: mapChatThreadRow_(headers, row),
+    };
+  }
+
+  return null;
+}
+
+/*************************************************
+ * TASK / PROVIDER / MATCH LOOKUPS
+ *************************************************/
+function getTaskRecordForChat_(taskId) {
+  const state = getAdminTaskSheetState_();
+  if (!state || !state.values || state.idxTaskId === -1) return null;
+
+  for (let i = 1; i < state.values.length; i++) {
+    const row = state.values[i] || [];
+    const rowTaskId =
+      state.idxTaskId !== -1 && row[state.idxTaskId] !== undefined
+        ? String(row[state.idxTaskId]).trim()
+        : "";
+    if (rowTaskId !== taskId) continue;
+
+    return {
+      TaskID: rowTaskId,
+      UserPhone:
+        state.idxUserPhone !== -1 ? normalizePhone10_(row[state.idxUserPhone]) : "",
+      Category:
+        state.idxCategory !== -1 && row[state.idxCategory] !== undefined
+          ? String(row[state.idxCategory]).trim()
+          : "",
+      Area:
+        state.idxArea !== -1 && row[state.idxArea] !== undefined
+          ? String(row[state.idxArea]).trim()
+          : "",
+      Status:
+        state.idxStatus !== -1 && row[state.idxStatus] !== undefined
+          ? String(row[state.idxStatus]).trim()
+          : "",
+    };
+  }
+
+  return null;
+}
+
+function getProviderRecordById_(providerId) {
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const sheet = ss.getSheetByName(SHEET_PROVIDERS);
+  if (!sheet || sheet.getLastRow() < 2) return null;
+
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0] || [];
+  const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, headers.length).getValues();
+  const headerMap = getProviderHeaderMap_(headers);
+
+  if (!headerMap || headerMap.providerId === -1) return null;
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i] || [];
+    const rowProviderId =
+      row[headerMap.providerId] !== undefined ? String(row[headerMap.providerId]).trim() : "";
+    if (rowProviderId !== providerId) continue;
+
+    const providerName =
+      headerMap.providerName !== -1 && row[headerMap.providerName] !== undefined
+        ? String(row[headerMap.providerName]).trim()
+        : "";
+    const phone =
+      headerMap.phone !== -1 && row[headerMap.phone] !== undefined
+        ? normalizePhone10_(row[headerMap.phone])
+        : "";
+
+    return {
+      ProviderID: rowProviderId,
+      ProviderName: providerName,
+      Phone: phone,
+    };
+  }
+
+  return null;
+}
+
+function getTaskProviderMatchRecord_(taskId, providerId) {
+  const sheet = getProviderTaskMatchesSheet_();
+  const values = sheet.getDataRange().getValues();
+  if (values.length <= 1) return null;
+
+  const headers = values[0] || [];
+  const idxTaskId = findHeaderIndexByAliases_(headers, ["TaskID"]);
+  const idxProviderId = findHeaderIndexByAliases_(headers, ["ProviderID"]);
+  const idxProviderPhone = findHeaderIndexByAliases_(headers, ["ProviderPhone", "Phone"]);
+  const idxProviderName = findHeaderIndexByAliases_(headers, ["ProviderName", "Name"]);
+  const idxCategory = findHeaderIndexByAliases_(headers, ["Category"]);
+  const idxArea = findHeaderIndexByAliases_(headers, ["Area"]);
+  const idxStatus = findHeaderIndexByAliases_(headers, ["Status"]);
+
+  for (let i = 1; i < values.length; i++) {
+    const row = values[i] || [];
+    const rowTaskId = idxTaskId !== -1 ? String(row[idxTaskId] || "").trim() : "";
+    const rowProviderId = idxProviderId !== -1 ? String(row[idxProviderId] || "").trim() : "";
+    if (rowTaskId !== taskId || rowProviderId !== providerId) continue;
+
+    return {
+      TaskID: rowTaskId,
+      ProviderID: rowProviderId,
+      ProviderPhone: idxProviderPhone !== -1 ? normalizePhone10_(row[idxProviderPhone]) : "",
+      ProviderName: idxProviderName !== -1 ? String(row[idxProviderName] || "").trim() : "",
+      Category: idxCategory !== -1 ? String(row[idxCategory] || "").trim() : "",
+      Area: idxArea !== -1 ? String(row[idxArea] || "").trim() : "",
+      Status: idxStatus !== -1 ? String(row[idxStatus] || "").trim() : "",
+    };
+  }
+
+  return null;
+}
+
+/*************************************************
+ * CHAT ACCESS CONTROL
+ *************************************************/
+function resolveProviderActor_(data) {
+  const providerPhone = normalizePhone10_(
+    data.ProviderPhone ||
+      data.providerPhone ||
+      data.phone ||
+      data.requesterPhone ||
+      data.loggedInProviderPhone
+  );
+  const requestedProviderId = String(data.ProviderID || data.providerId || "").trim();
+
+  if (!providerPhone) {
+    return {
+      ok: false,
+      error: "Trusted logged-in provider phone is required for provider context",
+    };
+  }
+
+  const byPhone = getProviderByPhone_(providerPhone);
+  if (!byPhone || !byPhone.ok || !byPhone.provider || !byPhone.provider.ProviderID) {
+    return { ok: false, error: "Logged-in provider not found" };
+  }
+
+  const resolvedProviderId = String(byPhone.provider.ProviderID || "").trim();
+  if (requestedProviderId && requestedProviderId !== resolvedProviderId) {
+    return { ok: false, error: "ProviderID does not match logged-in provider context" };
+  }
+
+  return {
+    ok: true,
+    provider: {
+      ProviderID: resolvedProviderId,
+      ProviderName: String(byPhone.provider.ProviderName || "").trim(),
+      Phone: normalizePhone10_(byPhone.provider.Phone),
+    },
+  };
+}
+
+function resolveChatActor_(data) {
+  const actorType = String(data.ActorType || data.actorType || "")
+    .trim()
+    .toLowerCase();
+
+  if (actorType !== "user" && actorType !== "provider") {
+    return { ok: false, error: "ActorType must be user or provider" };
+  }
+
+  if (actorType === "user") {
+    const userPhone = normalizePhone10_(
+      data.UserPhone || data.userPhone || data.phone || data.requesterPhone
+    );
+    if (!userPhone) {
+      return { ok: false, error: "UserPhone required for user context" };
+    }
+
+    return {
+      ok: true,
+      actorType: "user",
+      userPhone: userPhone,
+      senderPhone: userPhone,
+      senderName: String(data.SenderName || data.senderName || "User").trim() || "User",
+    };
+  }
+
+  const providerResult = resolveProviderActor_(data);
+  if (!providerResult.ok) return providerResult;
+
+  return {
+    ok: true,
+    actorType: "provider",
+    providerId: providerResult.provider.ProviderID,
+    providerPhone: providerResult.provider.Phone,
+    senderPhone: providerResult.provider.Phone,
+    senderName:
+      String(
+        data.SenderName ||
+          data.senderName ||
+          providerResult.provider.ProviderName ||
+          "Provider"
+      ).trim() || "Provider",
+  };
+}
+
+function canChatActorAccessThread_(actor, thread) {
+  if (!actor || !actor.ok || !thread) return false;
+
+  if (actor.actorType === "user") {
+    return normalizePhone10_(thread.UserPhone) === normalizePhone10_(actor.userPhone);
+  }
+
+  if (actor.actorType === "provider") {
+    const sameProviderId =
+      String(thread.ProviderID || "").trim() === String(actor.providerId || "").trim();
+    const sameProviderPhone =
+      normalizePhone10_(thread.ProviderPhone) === normalizePhone10_(actor.providerPhone);
+
+    return sameProviderId || sameProviderPhone;
+  }
+
+  return false;
+}
+
+/*************************************************
+ * CHAT ACTIONS
+ *************************************************/
+function chatCreateOrGetThread_(data) {
+  const taskId = String(data.TaskID || data.taskId || "").trim();
+  if (!taskId) return { ok: false, status: "error", error: "TaskID required" };
+
+  const actor = resolveChatActor_(data);
+  if (!actor.ok) return { ok: false, status: "error", error: actor.error };
+
+  const task = getTaskRecordForChat_(taskId);
+  if (!task) return { ok: false, status: "error", error: "Task not found" };
+  if (!task.UserPhone) return { ok: false, status: "error", error: "Task user phone missing" };
+
+  let providerId = "";
+  let providerContext = null;
+
+  if (actor.actorType === "user") {
+    providerId = String(data.ProviderID || data.providerId || "").trim();
+    if (!providerId) {
+      return { ok: false, status: "error", error: "ProviderID required for user flow" };
+    }
+
+    providerContext = getProviderRecordById_(providerId);
+    if (!providerContext || !providerContext.ProviderID) {
+      return { ok: false, status: "error", error: "Provider not found" };
+    }
+
+    if (actor.userPhone !== task.UserPhone) {
+      return { ok: false, status: "error", error: "Access denied for this task" };
+    }
+  } else {
+    providerId = String(actor.providerId || "").trim();
+    if (!providerId) {
+      return { ok: false, status: "error", error: "Logged-in provider context missing" };
+    }
+
+    providerContext = {
+      ProviderID: providerId,
+      ProviderName: actor.senderName,
+      Phone: actor.providerPhone,
+    };
+  }
+
+  const match = getTaskProviderMatchRecord_(taskId, providerId);
+  if (!match) {
+    return { ok: false, status: "error", error: "Provider is not matched to this task" };
+  }
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(5000);
+
+  try {
+    const existing = getChatThreadStateByTaskProvider_(taskId, providerId);
+    if (existing) {
+      if (!canChatActorAccessThread_(actor, existing.thread)) {
+        return { ok: false, status: "error", error: "Access denied" };
+      }
+
       return {
         ok: true,
         status: "success",
-        threadId: idxThreadId >= 0 ? String(row[idxThreadId] || "").trim() : "",
+        created: false,
+        thread: existing.thread,
       };
     }
+
+    const sheet = getChatThreadsSheet_();
+    const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0] || [];
+    const now = getChatTimestamp_();
+
+    const thread = {
+      ThreadID: generateThreadId_(sheet),
+      TaskID: taskId,
+      UserPhone: task.UserPhone,
+      ProviderID: providerId,
+      ProviderPhone: providerContext.Phone || match.ProviderPhone || "",
+      Category: task.Category || match.Category || "",
+      Area: task.Area || match.Area || "",
+      Status: "active",
+      CreatedAt: now,
+      UpdatedAt: now,
+      LastMessageAt: "",
+      LastMessageBy: "",
+      UnreadUserCount: 0,
+      UnreadProviderCount: 0,
+    };
+
+    sheet.appendRow(buildRowFromData_(headers, thread));
+
+    return {
+      ok: true,
+      status: "success",
+      created: true,
+      thread: thread,
+    };
+  } finally {
+    lock.releaseLock();
   }
-
-  const threadId = nextThreadId_(sheet);
-  const createdAt = Utilities.formatDate(new Date(), "Asia/Kolkata", "dd/MM/yyyy HH:mm:ss");
-
-  sheet.appendRow([
-    threadId,
-    taskId,
-    userPhone,
-    providerId,
-    "",
-    "",
-    0,
-    0,
-    createdAt,
-    "active",
-    "",
-    "",
-    "no",
-    "",
-    "",
-  ]);
-
-  return { ok: true, status: "success", threadId: threadId };
 }
 
-function sendChatMessage_(data) {
-  const threadId = String(data.ThreadID || data.threadId || "").trim();
-  const taskId = String(data.TaskID || data.taskId || "").trim();
-  const providerId = String(data.ProviderID || data.providerId || "").trim();
-  const userPhone = normalizePhone10_(data.UserPhone || data.userPhone || data.phone);
-  const senderType = String(data.SenderType || data.senderType || "").trim().toLowerCase();
-  const messageText = String(data.MessageText || data.messageText || "").trim();
+function chatGetThreads_(data) {
+  const actor = resolveChatActor_(data);
+  if (!actor.ok) return { ok: false, status: "error", error: actor.error };
 
-  if (!threadId) return { ok: false, status: "error", error: "ThreadID required" };
-  if (!taskId) return { ok: false, status: "error", error: "TaskID required" };
-  if (!providerId) return { ok: false, status: "error", error: "ProviderID required" };
-  if (!userPhone) return { ok: false, status: "error", error: "Invalid phone number" };
-  if (senderType !== "user" && senderType !== "provider") {
-    return { ok: false, status: "error", error: "SenderType must be user or provider" };
+  const taskIdFilter = String(data.TaskID || data.taskId || "").trim();
+  const statusFilter = String(data.Status || data.status || "").trim().toLowerCase();
+
+  const sheet = getChatThreadsSheet_();
+  const values = sheet.getDataRange().getValues();
+  if (values.length <= 1) {
+    return { ok: true, status: "success", threads: [] };
   }
-  if (!messageText) return { ok: false, status: "error", error: "MessageText required" };
 
-  const threadsSheet = getChatThreadsSheet_();
-  const values = threadsSheet.getDataRange().getValues();
-  const headers = values.length ? values[0].map(function (header) {
-    return String(header).trim();
-  }) : [];
-  const idxThreadId = headers.indexOf("ThreadID");
-  const idxLastMessage = headers.indexOf("LastMessage");
-  const idxLastMessageAt = headers.indexOf("LastMessageAt");
-  const idxUnreadUser = headers.indexOf("UnreadUser");
-  const idxUnreadProvider = headers.indexOf("UnreadProvider");
-  const idxStatus = headers.indexOf("Status");
-  const idxBlockedFlag = headers.indexOf("BlockedFlag");
-  const idxBlockedReason = headers.indexOf("BlockedReason");
-  const idxLastSenderType = headers.indexOf("LastSenderType");
-  let threadRowNumber = 0;
-  let threadRow = null;
+  const headers = values[0] || [];
+  const threads = [];
 
   for (let i = 1; i < values.length; i++) {
     const row = values[i] || [];
-    const rowThreadId = idxThreadId >= 0 ? String(row[idxThreadId] || "").trim() : "";
-    if (rowThreadId !== threadId) continue;
-    threadRowNumber = i + 1;
-    threadRow = row.slice();
-    break;
+    const thread = mapChatThreadRow_(headers, row);
+
+    if (taskIdFilter && thread.TaskID !== taskIdFilter) continue;
+    if (statusFilter && String(thread.Status || "").toLowerCase() !== statusFilter) continue;
+    if (!canChatActorAccessThread_(actor, thread)) continue;
+
+    threads.push(thread);
   }
 
-  if (!threadRowNumber || !threadRow) {
-    return { ok: false, status: "error", error: "Chat thread not found" };
-  }
+  threads.sort(function (a, b) {
+    const aMs = parseTaskDateMs_(a.LastMessageAt || a.UpdatedAt || a.CreatedAt);
+    const bMs = parseTaskDateMs_(b.LastMessageAt || b.UpdatedAt || b.CreatedAt);
+    return bMs - aMs;
+  });
 
-  if (idxStatus >= 0 && String(threadRow[idxStatus] || "").trim().toLowerCase() === "closed") {
-    return { ok: false, status: "error", error: "Chat is closed" };
-  }
-
-  const blockedWordsSheet = getBlockedWordsSheet_();
-  const blockedWordValues = blockedWordsSheet.getDataRange().getValues();
-  const blockedWordHeaders = blockedWordValues.length ? blockedWordValues[0].map(function (header) {
-    return String(header).trim();
-  }) : [];
-  const idxWord = blockedWordHeaders.indexOf("Word");
-  const idxActive = blockedWordHeaders.indexOf("Active");
-  const normalizedMessage = messageText.toLowerCase();
-  let hasBlockedLanguage = false;
-
-  for (let i = 1; i < blockedWordValues.length; i++) {
-    const row = blockedWordValues[i] || [];
-    const isActive =
-      idxActive >= 0 ? String(row[idxActive] || "").trim().toLowerCase() === "yes" : false;
-    const blockedWord = idxWord >= 0 ? String(row[idxWord] || "").trim().toLowerCase() : "";
-
-    if (!isActive || !blockedWord) continue;
-    if (normalizedMessage.indexOf(blockedWord) === -1) continue;
-
-    hasBlockedLanguage = true;
-    break;
-  }
-
-  if (hasBlockedLanguage) {
-    while (threadRow.length < headers.length) threadRow.push("");
-    if (idxBlockedFlag >= 0) threadRow[idxBlockedFlag] = "yes";
-    if (idxBlockedReason >= 0) threadRow[idxBlockedReason] = "offensive language detected";
-    threadsSheet.getRange(threadRowNumber, 1, 1, headers.length).setValues([threadRow]);
-    return { ok: false, status: "error", error: "Message contains restricted language" };
-  }
-
-  const chatsSheet = getChatsSheet_();
-  const chatId = nextChatId_(chatsSheet);
-  const createdAt = Utilities.formatDate(new Date(), "Asia/Kolkata", "dd/MM/yyyy HH:mm:ss");
-  const readByUser = senderType === "user" ? "yes" : "no";
-  const readByProvider = senderType === "provider" ? "yes" : "no";
-
-  chatsSheet.appendRow([
-    chatId,
-    threadId,
-    taskId,
-    userPhone,
-    providerId,
-    senderType,
-    messageText,
-    createdAt,
-    readByUser,
-    readByProvider,
-  ]);
-
-  while (threadRow.length < headers.length) threadRow.push("");
-
-  if (idxLastMessage >= 0) threadRow[idxLastMessage] = messageText;
-  if (idxLastMessageAt >= 0) threadRow[idxLastMessageAt] = createdAt;
-  if (idxLastSenderType >= 0) threadRow[idxLastSenderType] = senderType;
-
-  if (senderType === "provider" && idxUnreadUser >= 0) {
-    threadRow[idxUnreadUser] = (Number(threadRow[idxUnreadUser]) || 0) + 1;
-  }
-
-  if (senderType === "user" && idxUnreadProvider >= 0) {
-    threadRow[idxUnreadProvider] = (Number(threadRow[idxUnreadProvider]) || 0) + 1;
-  }
-
-  threadsSheet.getRange(threadRowNumber, 1, 1, headers.length).setValues([threadRow]);
-
-  return { ok: true, status: "success", chatId: chatId, threadId: threadId };
+  return {
+    ok: true,
+    status: "success",
+    threads: threads,
+  };
 }
 
-function getChatMessages_(data) {
+function chatGetMessages_(data) {
   const threadId = String(data.ThreadID || data.threadId || "").trim();
   if (!threadId) return { ok: false, status: "error", error: "ThreadID required" };
 
-  const sheet = getChatsSheet_();
-  const values = sheet.getDataRange().getValues();
-  if (values.length <= 1) {
-    return { ok: true, status: "success", messages: [] };
+  const actor = resolveChatActor_(data);
+  if (!actor.ok) return { ok: false, status: "error", error: actor.error };
+
+  const threadState = getChatThreadStateByThreadId_(threadId);
+  if (!threadState) return { ok: false, status: "error", error: "Thread not found" };
+  if (!canChatActorAccessThread_(actor, threadState.thread)) {
+    return { ok: false, status: "error", error: "Access denied" };
   }
 
-  const headers = values[0].map(function (header) {
-    return String(header).trim();
-  });
-  const idxThreadId = headers.indexOf("ThreadID");
-  const idxChatId = headers.indexOf("ChatID");
-  const idxTaskId = headers.indexOf("TaskID");
-  const idxUserPhone = headers.indexOf("UserPhone");
-  const idxProviderId = headers.indexOf("ProviderID");
-  const idxSenderType = headers.indexOf("SenderType");
-  const idxMessageText = headers.indexOf("MessageText");
-  const idxCreatedAt = headers.indexOf("CreatedAt");
-  const idxReadByUser = headers.indexOf("ReadByUser");
-  const idxReadByProvider = headers.indexOf("ReadByProvider");
+  const sheet = getChatMessagesSheet_();
+  const values = sheet.getDataRange().getValues();
+  if (values.length <= 1) {
+    return {
+      ok: true,
+      status: "success",
+      thread: threadState.thread,
+      messages: [],
+    };
+  }
+
+  const headers = values[0] || [];
+  const idx = getChatMessageHeaderMap_(headers);
   const messages = [];
 
   for (let i = 1; i < values.length; i++) {
     const row = values[i] || [];
-    const rowThreadId = idxThreadId >= 0 ? String(row[idxThreadId] || "").trim() : "";
+    const rowThreadId = String(getCellValue_(row, idx.threadId) || "").trim();
     if (rowThreadId !== threadId) continue;
 
-    messages.push({
-      ChatID: idxChatId >= 0 ? row[idxChatId] : "",
-      ThreadID: rowThreadId,
-      TaskID: idxTaskId >= 0 ? row[idxTaskId] : "",
-      UserPhone: idxUserPhone >= 0 ? row[idxUserPhone] : "",
-      ProviderID: idxProviderId >= 0 ? row[idxProviderId] : "",
-      SenderType: idxSenderType >= 0 ? row[idxSenderType] : "",
-      MessageText: idxMessageText >= 0 ? row[idxMessageText] : "",
-      CreatedAt: idxCreatedAt >= 0 ? row[idxCreatedAt] : "",
-      ReadByUser: idxReadByUser >= 0 ? row[idxReadByUser] : "",
-      ReadByProvider: idxReadByProvider >= 0 ? row[idxReadByProvider] : "",
-    });
+    messages.push(mapChatMessageRow_(headers, row));
   }
 
   messages.sort(function (a, b) {
     return parseTaskDateMs_(a.CreatedAt) - parseTaskDateMs_(b.CreatedAt);
   });
 
-  return { ok: true, status: "success", messages: messages };
-}
-
-function getUserTaskThreads_(data) {
-  const taskId = String(data.TaskID || data.taskId || "").trim();
-  const userPhone = normalizePhone10_(data.UserPhone || data.userPhone || data.phone);
-
-  if (!taskId) return { ok: false, status: "error", error: "TaskID required" };
-  if (!userPhone) return { ok: false, status: "error", error: "Invalid phone number" };
-
-  const sheet = getChatThreadsSheet_();
-  const values = sheet.getDataRange().getValues();
-  if (values.length <= 1) {
-    return { ok: true, status: "success", threads: [] };
-  }
-
-  const headers = values[0].map(function (header) {
-    return String(header).trim();
-  });
-  const idxThreadId = headers.indexOf("ThreadID");
-  const idxTaskId = headers.indexOf("TaskID");
-  const idxUserPhone = headers.indexOf("UserPhone");
-  const idxProviderId = headers.indexOf("ProviderID");
-  const idxLastMessage = headers.indexOf("LastMessage");
-  const idxLastMessageAt = headers.indexOf("LastMessageAt");
-  const idxUnreadUser = headers.indexOf("UnreadUser");
-  const idxUnreadProvider = headers.indexOf("UnreadProvider");
-  const idxCreatedAt = headers.indexOf("CreatedAt");
-  const idxStatus = headers.indexOf("Status");
-  const idxClosedBy = headers.indexOf("ClosedBy");
-  const idxClosedAt = headers.indexOf("ClosedAt");
-  const idxBlockedFlag = headers.indexOf("BlockedFlag");
-  const idxBlockedReason = headers.indexOf("BlockedReason");
-  const idxLastSenderType = headers.indexOf("LastSenderType");
-  const threads = [];
-
-  for (let i = 1; i < values.length; i++) {
-    const row = values[i] || [];
-    const rowTaskId = idxTaskId >= 0 ? String(row[idxTaskId] || "").trim() : "";
-    const rowUserPhone = idxUserPhone >= 0 ? String(row[idxUserPhone] || "").trim() : "";
-
-    if (rowTaskId !== taskId || rowUserPhone !== userPhone) continue;
-
-    threads.push({
-      ThreadID: idxThreadId >= 0 ? row[idxThreadId] : "",
-      TaskID: rowTaskId,
-      UserPhone: rowUserPhone,
-      ProviderID: idxProviderId >= 0 ? row[idxProviderId] : "",
-      LastMessage: idxLastMessage >= 0 ? row[idxLastMessage] : "",
-      LastMessageAt: idxLastMessageAt >= 0 ? row[idxLastMessageAt] : "",
-      UnreadUser: idxUnreadUser >= 0 ? row[idxUnreadUser] : "",
-      UnreadProvider: idxUnreadProvider >= 0 ? row[idxUnreadProvider] : "",
-      CreatedAt: idxCreatedAt >= 0 ? row[idxCreatedAt] : "",
-      Status: idxStatus >= 0 ? row[idxStatus] : "",
-      ClosedBy: idxClosedBy >= 0 ? row[idxClosedBy] : "",
-      ClosedAt: idxClosedAt >= 0 ? row[idxClosedAt] : "",
-      BlockedFlag: idxBlockedFlag >= 0 ? row[idxBlockedFlag] : "",
-      BlockedReason: idxBlockedReason >= 0 ? row[idxBlockedReason] : "",
-      LastSenderType: idxLastSenderType >= 0 ? row[idxLastSenderType] : "",
-    });
-  }
-
-  threads.sort(function (a, b) {
-    const aTime = parseTaskDateMs_(a.LastMessageAt || a.CreatedAt);
-    const bTime = parseTaskDateMs_(b.LastMessageAt || b.CreatedAt);
-    return bTime - aTime;
-  });
-
-  return { ok: true, status: "success", threads: threads };
-}
-
-function getProviderThreads_(data) {
-  const providerId = String(data.ProviderID || data.providerId || "").trim();
-  if (!providerId) return { ok: false, status: "error", error: "ProviderID required" };
-
-  const sheet = getChatThreadsSheet_();
-  const values = sheet.getDataRange().getValues();
-  if (values.length <= 1) {
-    return { ok: true, status: "success", threads: [] };
-  }
-
-  const headers = values[0].map(function (header) {
-    return String(header).trim();
-  });
-  const idxThreadId = headers.indexOf("ThreadID");
-  const idxTaskId = headers.indexOf("TaskID");
-  const idxUserPhone = headers.indexOf("UserPhone");
-  const idxProviderId = headers.indexOf("ProviderID");
-  const idxLastMessage = headers.indexOf("LastMessage");
-  const idxLastMessageAt = headers.indexOf("LastMessageAt");
-  const idxUnreadUser = headers.indexOf("UnreadUser");
-  const idxUnreadProvider = headers.indexOf("UnreadProvider");
-  const idxCreatedAt = headers.indexOf("CreatedAt");
-  const threads = [];
-
-  for (let i = 1; i < values.length; i++) {
-    const row = values[i] || [];
-    const rowProviderId = idxProviderId >= 0 ? String(row[idxProviderId] || "").trim() : "";
-    if (rowProviderId !== providerId) continue;
-
-    threads.push({
-      ThreadID: idxThreadId >= 0 ? row[idxThreadId] : "",
-      TaskID: idxTaskId >= 0 ? row[idxTaskId] : "",
-      UserPhone: idxUserPhone >= 0 ? row[idxUserPhone] : "",
-      ProviderID: rowProviderId,
-      LastMessage: idxLastMessage >= 0 ? row[idxLastMessage] : "",
-      LastMessageAt: idxLastMessageAt >= 0 ? row[idxLastMessageAt] : "",
-      UnreadUser: idxUnreadUser >= 0 ? row[idxUnreadUser] : "",
-      UnreadProvider: idxUnreadProvider >= 0 ? row[idxUnreadProvider] : "",
-      CreatedAt: idxCreatedAt >= 0 ? row[idxCreatedAt] : "",
-    });
-  }
-
-  threads.sort(function (a, b) {
-    const aTime = parseTaskDateMs_(a.LastMessageAt || a.CreatedAt);
-    const bTime = parseTaskDateMs_(b.LastMessageAt || b.CreatedAt);
-    return bTime - aTime;
-  });
-
-  return { ok: true, status: "success", threads: threads };
-}
-
-function markChatRead_(data) {
-  const threadId = String(data.ThreadID || data.threadId || "").trim();
-  const readerType = String(data.ReaderType || data.readerType || "").trim().toLowerCase();
-
-  if (!threadId) return { ok: false, status: "error", error: "ThreadID required" };
-  if (readerType !== "user" && readerType !== "provider") {
-    return { ok: false, status: "error", error: "ReaderType must be user or provider" };
-  }
-
-  const threadsSheet = getChatThreadsSheet_();
-  const threadValues = threadsSheet.getDataRange().getValues();
-  const threadHeaders = threadValues.length ? threadValues[0].map(function (header) {
-    return String(header).trim();
-  }) : [];
-  const idxThreadId = threadHeaders.indexOf("ThreadID");
-  const idxUnreadUser = threadHeaders.indexOf("UnreadUser");
-  const idxUnreadProvider = threadHeaders.indexOf("UnreadProvider");
-  let threadRowNumber = 0;
-  let threadRow = null;
-
-  for (let i = 1; i < threadValues.length; i++) {
-    const row = threadValues[i] || [];
-    const rowThreadId = idxThreadId >= 0 ? String(row[idxThreadId] || "").trim() : "";
-    if (rowThreadId !== threadId) continue;
-    threadRowNumber = i + 1;
-    threadRow = row.slice();
-    break;
-  }
-
-  if (!threadRowNumber || !threadRow) {
-    return { ok: false, status: "error", error: "Chat thread not found" };
-  }
-
-  while (threadRow.length < threadHeaders.length) threadRow.push("");
-
-  if (readerType === "user" && idxUnreadUser >= 0) {
-    threadRow[idxUnreadUser] = 0;
-  }
-
-  if (readerType === "provider" && idxUnreadProvider >= 0) {
-    threadRow[idxUnreadProvider] = 0;
-  }
-
-  threadsSheet.getRange(threadRowNumber, 1, 1, threadHeaders.length).setValues([threadRow]);
-
-  const chatsSheet = getChatsSheet_();
-  const chatValues = chatsSheet.getDataRange().getValues();
-  if (chatValues.length > 1) {
-    const chatHeaders = chatValues[0].map(function (header) {
-      return String(header).trim();
-    });
-    const idxChatThreadId = chatHeaders.indexOf("ThreadID");
-    const idxReadByUser = chatHeaders.indexOf("ReadByUser");
-    const idxReadByProvider = chatHeaders.indexOf("ReadByProvider");
-    const updatedRows = [];
-    const updatedRowNumbers = [];
-
-    for (let i = 1; i < chatValues.length; i++) {
-      const row = chatValues[i] || [];
-      const rowThreadId = idxChatThreadId >= 0 ? String(row[idxChatThreadId] || "").trim() : "";
-      if (rowThreadId !== threadId) continue;
-
-      const updatedRow = row.slice();
-      while (updatedRow.length < chatHeaders.length) updatedRow.push("");
-
-      if (readerType === "user" && idxReadByUser >= 0) {
-        updatedRow[idxReadByUser] = "yes";
-      }
-
-      if (readerType === "provider" && idxReadByProvider >= 0) {
-        updatedRow[idxReadByProvider] = "yes";
-      }
-
-      updatedRows.push(updatedRow);
-      updatedRowNumbers.push(i + 1);
-    }
-
-    for (let i = 0; i < updatedRows.length; i++) {
-      chatsSheet.getRange(updatedRowNumbers[i], 1, 1, chatHeaders.length).setValues([updatedRows[i]]);
-    }
-  }
-
   return {
     ok: true,
     status: "success",
-    threadId: threadId,
-    readerType: readerType,
+    thread: threadState.thread,
+    messages: messages,
   };
 }
 
-function getAdminChatThreads_(data) {
-  const statusFilter = String(data.Status || data.status || "").trim().toLowerCase();
-  const sheet = getChatThreadsSheet_();
-  const values = sheet.getDataRange().getValues();
-  if (values.length <= 1) {
-    return { ok: true, status: "success", threads: [] };
-  }
-
-  const headers = values[0].map(function (header) {
-    return String(header).trim();
-  });
-  const idxThreadId = headers.indexOf("ThreadID");
-  const idxTaskId = headers.indexOf("TaskID");
-  const idxUserPhone = headers.indexOf("UserPhone");
-  const idxProviderId = headers.indexOf("ProviderID");
-  const idxLastMessage = headers.indexOf("LastMessage");
-  const idxLastMessageAt = headers.indexOf("LastMessageAt");
-  const idxUnreadUser = headers.indexOf("UnreadUser");
-  const idxUnreadProvider = headers.indexOf("UnreadProvider");
-  const idxCreatedAt = headers.indexOf("CreatedAt");
-  const idxStatus = headers.indexOf("Status");
-  const idxClosedBy = headers.indexOf("ClosedBy");
-  const idxClosedAt = headers.indexOf("ClosedAt");
-  const idxBlockedFlag = headers.indexOf("BlockedFlag");
-  const idxBlockedReason = headers.indexOf("BlockedReason");
-  const idxLastSenderType = headers.indexOf("LastSenderType");
-  const threads = [];
-
-  for (let i = 1; i < values.length; i++) {
-    const row = values[i] || [];
-    const rowStatus = idxStatus >= 0 ? String(row[idxStatus] || "").trim() : "";
-    if (statusFilter && rowStatus.toLowerCase() !== statusFilter) continue;
-
-    threads.push({
-      ThreadID: idxThreadId >= 0 ? row[idxThreadId] : "",
-      TaskID: idxTaskId >= 0 ? row[idxTaskId] : "",
-      UserPhone: idxUserPhone >= 0 ? row[idxUserPhone] : "",
-      ProviderID: idxProviderId >= 0 ? row[idxProviderId] : "",
-      LastMessage: idxLastMessage >= 0 ? row[idxLastMessage] : "",
-      LastMessageAt: idxLastMessageAt >= 0 ? row[idxLastMessageAt] : "",
-      UnreadUser: idxUnreadUser >= 0 ? row[idxUnreadUser] : "",
-      UnreadProvider: idxUnreadProvider >= 0 ? row[idxUnreadProvider] : "",
-      CreatedAt: idxCreatedAt >= 0 ? row[idxCreatedAt] : "",
-      Status: rowStatus,
-      ClosedBy: idxClosedBy >= 0 ? row[idxClosedBy] : "",
-      ClosedAt: idxClosedAt >= 0 ? row[idxClosedAt] : "",
-      BlockedFlag: idxBlockedFlag >= 0 ? row[idxBlockedFlag] : "",
-      BlockedReason: idxBlockedReason >= 0 ? row[idxBlockedReason] : "",
-      LastSenderType: idxLastSenderType >= 0 ? row[idxLastSenderType] : "",
-    });
-  }
-
-  threads.sort(function (a, b) {
-    const aTime = parseTaskDateMs_(a.LastMessageAt || a.CreatedAt);
-    const bTime = parseTaskDateMs_(b.LastMessageAt || b.CreatedAt);
-    return bTime - aTime;
-  });
-
-  return { ok: true, status: "success", threads: threads };
-}
-
-function closeChatThread_(data) {
+function chatSendMessage_(data) {
   const threadId = String(data.ThreadID || data.threadId || "").trim();
-  const closedBy = String(data.ClosedBy || data.closedBy || "").trim().toLowerCase();
+  const messageText = String(data.MessageText || data.messageText || "").trim();
+  const messageType = String(data.MessageType || data.messageType || "text").trim().toLowerCase();
 
   if (!threadId) return { ok: false, status: "error", error: "ThreadID required" };
-  if (closedBy !== "admin" && closedBy !== "user" && closedBy !== "provider") {
-    return { ok: false, status: "error", error: "ClosedBy must be admin, user or provider" };
+  if (!messageText) return { ok: false, status: "error", error: "MessageText required" };
+  if (messageText.length > 2000) {
+    return { ok: false, status: "error", error: "MessageText too long" };
+  }
+  if (messageType !== "text") {
+    return { ok: false, status: "error", error: "Only text messages are supported" };
   }
 
-  const sheet = getChatThreadsSheet_();
-  const values = sheet.getDataRange().getValues();
-  const headers = values.length ? values[0].map(function (header) {
-    return String(header).trim();
-  }) : [];
-  const idxThreadId = headers.indexOf("ThreadID");
-  const idxStatus = headers.indexOf("Status");
-  const idxClosedBy = headers.indexOf("ClosedBy");
-  const idxClosedAt = headers.indexOf("ClosedAt");
-  let rowNumber = 0;
-  let row = null;
+  const actor = resolveChatActor_(data);
+  if (!actor.ok) return { ok: false, status: "error", error: actor.error };
 
-  for (let i = 1; i < values.length; i++) {
-    const currentRow = values[i] || [];
-    const rowThreadId = idxThreadId >= 0 ? String(currentRow[idxThreadId] || "").trim() : "";
-    if (rowThreadId !== threadId) continue;
-    rowNumber = i + 1;
-    row = currentRow.slice();
-    break;
+  const lock = LockService.getScriptLock();
+  lock.waitLock(5000);
+
+  try {
+    const threadState = getChatThreadStateByThreadId_(threadId);
+    if (!threadState) return { ok: false, status: "error", error: "Thread not found" };
+    if (!canChatActorAccessThread_(actor, threadState.thread)) {
+      return { ok: false, status: "error", error: "Access denied" };
+    }
+    if (String(threadState.thread.Status || "").toLowerCase() === "closed") {
+      return { ok: false, status: "error", error: "Thread is closed" };
+    }
+
+    const now = getChatTimestamp_();
+    const messageSheet = getChatMessagesSheet_();
+    const messageHeaders =
+      messageSheet.getRange(1, 1, 1, messageSheet.getLastColumn()).getValues()[0] || [];
+
+    const message = {
+      MessageID: generateMessageId_(messageSheet),
+      ThreadID: threadState.thread.ThreadID,
+      TaskID: threadState.thread.TaskID,
+      SenderType: actor.actorType,
+      SenderPhone:
+        actor.actorType === "user"
+          ? threadState.thread.UserPhone
+          : actor.providerPhone || threadState.thread.ProviderPhone,
+      SenderName: actor.senderName,
+      MessageText: messageText,
+      MessageType: "text",
+      CreatedAt: now,
+      ReadByUser: actor.actorType === "user" ? "yes" : "no",
+      ReadByProvider: actor.actorType === "provider" ? "yes" : "no",
+    };
+
+    messageSheet.appendRow(buildRowFromData_(messageHeaders, message));
+
+    const threadUpdates = {
+      UpdatedAt: now,
+      LastMessageAt: now,
+      LastMessageBy: actor.actorType,
+      UnreadUserCount:
+        actor.actorType === "provider"
+          ? (Number(threadState.thread.UnreadUserCount) || 0) + 1
+          : Number(threadState.thread.UnreadUserCount) || 0,
+      UnreadProviderCount:
+        actor.actorType === "user"
+          ? (Number(threadState.thread.UnreadProviderCount) || 0) + 1
+          : Number(threadState.thread.UnreadProviderCount) || 0,
+    };
+
+    updateRowFromData_(threadState.sheet, threadState.rowNumber, threadUpdates);
+
+    const updatedThreadState = getChatThreadStateByThreadId_(threadId);
+
+    return {
+      ok: true,
+      status: "success",
+      thread: updatedThreadState ? updatedThreadState.thread : threadState.thread,
+      message: message,
+    };
+  } finally {
+    lock.releaseLock();
   }
+}
 
-  if (!rowNumber || !row) {
-    return { ok: false, status: "error", error: "Chat thread not found" };
+function chatMarkRead_(data) {
+  const threadId = String(data.ThreadID || data.threadId || "").trim();
+  if (!threadId) return { ok: false, status: "error", error: "ThreadID required" };
+
+  const actor = resolveChatActor_(data);
+  if (!actor.ok) return { ok: false, status: "error", error: actor.error };
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(5000);
+
+  try {
+    const threadState = getChatThreadStateByThreadId_(threadId);
+    if (!threadState) return { ok: false, status: "error", error: "Thread not found" };
+    if (!canChatActorAccessThread_(actor, threadState.thread)) {
+      return { ok: false, status: "error", error: "Access denied" };
+    }
+
+    const now = getChatTimestamp_();
+    const threadUpdates =
+      actor.actorType === "user"
+        ? { UpdatedAt: now, UnreadUserCount: 0 }
+        : { UpdatedAt: now, UnreadProviderCount: 0 };
+
+    updateRowFromData_(threadState.sheet, threadState.rowNumber, threadUpdates);
+
+    const messageSheet = getChatMessagesSheet_();
+    const values = messageSheet.getDataRange().getValues();
+    let updatedCount = 0;
+
+    if (values.length > 1) {
+      const headers = values[0] || [];
+      const idx = getChatMessageHeaderMap_(headers);
+
+      for (let i = 1; i < values.length; i++) {
+        const row = values[i] || [];
+        const rowThreadId = String(getCellValue_(row, idx.threadId) || "").trim();
+        if (rowThreadId !== threadId) continue;
+
+        const senderType = String(getCellValue_(row, idx.senderType) || "").trim().toLowerCase();
+
+        if (actor.actorType === "user") {
+          if (senderType === "user") continue;
+          const readByUser = String(getCellValue_(row, idx.readByUser) || "").trim().toLowerCase();
+          if (readByUser !== "yes" && idx.readByUser !== -1) {
+            messageSheet.getRange(i + 1, idx.readByUser + 1).setValue("yes");
+            updatedCount += 1;
+          }
+        } else {
+          if (senderType === "provider") continue;
+          const readByProvider = String(getCellValue_(row, idx.readByProvider) || "").trim().toLowerCase();
+          if (readByProvider !== "yes" && idx.readByProvider !== -1) {
+            messageSheet.getRange(i + 1, idx.readByProvider + 1).setValue("yes");
+            updatedCount += 1;
+          }
+        }
+      }
+    }
+
+    const updatedThreadState = getChatThreadStateByThreadId_(threadId);
+
+    return {
+      ok: true,
+      status: "success",
+      thread: updatedThreadState ? updatedThreadState.thread : threadState.thread,
+      markedCount: updatedCount,
+    };
+  } finally {
+    lock.releaseLock();
   }
-
-  while (row.length < headers.length) row.push("");
-
-  if (idxStatus >= 0) row[idxStatus] = "closed";
-  if (idxClosedBy >= 0) row[idxClosedBy] = closedBy;
-  if (idxClosedAt >= 0) {
-    row[idxClosedAt] = Utilities.formatDate(new Date(), "Asia/Kolkata", "dd/MM/yyyy HH:mm:ss");
-  }
-
-  sheet.getRange(rowNumber, 1, 1, headers.length).setValues([row]);
-
-  return {
-    ok: true,
-    status: "success",
-    threadId: threadId,
-    Status: "closed",
-  };
 }

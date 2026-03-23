@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useMemo, useState, FormEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { setAuthSession } from "@/lib/auth";
+import { getAuthSession, setAuthSession } from "@/lib/auth";
 
 type UserStatus = "provider" | "receiver" | "new";
 
@@ -35,16 +35,10 @@ function PageContent() {
   const redirectTo = searchParams.get("redirectTo") || "";
 
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      const role = localStorage.getItem("kk_user_role");
-      if (role === "provider") {
-        router.replace(redirectTo || "/provider/dashboard");
-        return;
-      }
-      if (role === "receiver") {
-        router.replace(redirectTo || "/");
-        return;
-      }
+    const session = getAuthSession();
+    if (session?.phone && redirectTo) {
+      router.replace(redirectTo);
+      return;
     }
 
     const initialPhone = searchParams.get("phone");
@@ -52,30 +46,7 @@ function PageContent() {
       setPhone(initialPhone);
       return;
     }
-    if (typeof window === "undefined") return;
-    const cached =
-      localStorage.getItem("kk_last_phone") || localStorage.getItem("kk_user_phone");
-    if (cached) {
-      setPhone(cached);
-    }
   }, [router, searchParams, redirectTo]);
-
-  const persistSession = (status: UserStatus, digits: string) => {
-    if (typeof window === "undefined") return;
-    const normalized = digits.length === 10 ? `91${digits}` : digits;
-    localStorage.setItem("kk_user_role", status);
-    localStorage.setItem("kk_user_phone", normalized);
-    localStorage.setItem("kk_last_phone", digits);
-    if (status === "provider") {
-      localStorage.setItem("kk_provider_id", normalized);
-    } else {
-      localStorage.removeItem("kk_provider_id");
-    }
-    const token = btoa(
-      JSON.stringify({ role: status, phone: normalized, ts: Date.now() })
-    );
-    localStorage.setItem("kk_auth_token", token);
-  };
 
   const handleVerify = async (e: FormEvent) => {
     e.preventDefault();
@@ -116,7 +87,6 @@ function PageContent() {
       }
 
       const status: UserStatus = statusData.status;
-      persistSession(status, phoneDigits);
 
       if (redirectTo) {
         router.push(redirectTo);

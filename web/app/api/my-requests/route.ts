@@ -38,7 +38,48 @@ export async function GET(request: Request) {
     }
 
     const result = JSON.parse(text);
-    return NextResponse.json(result);
+    if (!response.ok || result?.ok !== true) {
+      return NextResponse.json(result, { status: response.status || 500 });
+    }
+
+    const adminResponse = await fetch(scriptUrl, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify({
+        action: "get_admin_requests",
+      }),
+    });
+
+    const adminText = await adminResponse.text();
+    const adminResult = adminText.startsWith("{") ? JSON.parse(adminText) : null;
+    const adminRequests = Array.isArray(adminResult?.requests) ? adminResult.requests : [];
+    const byTaskId = new Map(
+      adminRequests.map((item: any) => [String(item?.TaskID || "").trim(), item || {}])
+    );
+
+    const requests = Array.isArray(result?.requests) ? result.requests : [];
+    const mergedRequests = requests.map((item: any) => {
+      const taskId = String(item?.TaskID || item?.taskId || "").trim();
+      const adminItem = (byTaskId.get(taskId) || {}) as {
+        MatchedProviders?: unknown[];
+        RespondedProvider?: string;
+        RespondedProviderName?: string;
+      };
+
+      return {
+        ...item,
+        MatchedProviders: Array.isArray(adminItem?.MatchedProviders)
+          ? adminItem.MatchedProviders
+          : [],
+        RespondedProvider: String(adminItem?.RespondedProvider || "").trim(),
+        RespondedProviderName: String(adminItem?.RespondedProviderName || "").trim(),
+      };
+    });
+
+    return NextResponse.json({
+      ...result,
+      requests: mergedRequests,
+    });
   } catch (error: any) {
     console.error("My requests error:", error);
     return NextResponse.json(

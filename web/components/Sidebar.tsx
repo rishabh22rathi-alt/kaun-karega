@@ -75,7 +75,6 @@ export default function Sidebar() {
   const [providerProfile, setProviderProfile] = useState<ProviderProfile | null>(
     null
   );
-  const [userRole, setUserRole] = useState("");
   const [providerExists, setProviderExists] = useState<boolean | null>(null);
   const isLoggedIn = Boolean(session?.phone);
   const shouldHide = pathname?.startsWith("/admin");
@@ -133,7 +132,6 @@ export default function Sidebar() {
     if (typeof window === "undefined") return;
     const onStorage = () => {
       setSession(getAuthSession());
-      setUserRole(window.localStorage.getItem("kk_user_role") || "");
       try {
         const raw = window.localStorage.getItem(PROVIDER_PROFILE_STORAGE_KEY);
         setProviderProfile(raw ? (JSON.parse(raw) as ProviderProfile) : null);
@@ -147,13 +145,7 @@ export default function Sidebar() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    setUserRole(window.localStorage.getItem("kk_user_role") || "");
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
     const onProviderProfileUpdated = () => {
-      setUserRole(window.localStorage.getItem("kk_user_role") || "");
       try {
         const raw = window.localStorage.getItem(PROVIDER_PROFILE_STORAGE_KEY);
         setProviderProfile(raw ? (JSON.parse(raw) as ProviderProfile) : null);
@@ -223,13 +215,7 @@ export default function Sidebar() {
     let ignore = false;
 
     const resolveProviderExists = async () => {
-      const lookupPhone = normalizePhoneToTen(
-        window.localStorage.getItem("kk_provider_phone") ||
-          window.localStorage.getItem("provider_phone") ||
-          window.localStorage.getItem("kk_phone") ||
-          session?.phone ||
-          ""
-      );
+      const lookupPhone = normalizePhoneToTen(session?.phone || "");
 
       if (!lookupPhone) {
         if (!ignore) setProviderExists(false);
@@ -317,6 +303,10 @@ export default function Sidebar() {
   const handleLogout = () => {
     clearAuthSession();
     setSession(null);
+    setProviderProfile(null);
+    if (typeof window !== "undefined") {
+      window.localStorage.removeItem(PROVIDER_PROFILE_STORAGE_KEY);
+    }
     setIsOpen(false);
     window.dispatchEvent(
       new CustomEvent(SIDEBAR_TOGGLE_EVENT, {

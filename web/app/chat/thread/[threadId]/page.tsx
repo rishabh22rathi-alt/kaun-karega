@@ -14,7 +14,7 @@ type PageProps = {
 type ProviderProfileResponse = {
   ok?: boolean;
   provider?: {
-    ProviderID?: string;
+    Phone?: string;
   };
 };
 
@@ -23,23 +23,14 @@ type Thread = {
   TaskID: string;
   UserPhone: string;
   ProviderID: string;
-  LastMessage?: string;
   LastMessageAt?: string;
   Status?: string;
 };
 
-type ProviderThreadsResponse = {
-  ok?: boolean;
-  threads?: Thread[];
-  error?: string;
-};
-
 type ChatMessage = {
-  ChatID: string;
+  MessageID: string;
   ThreadID: string;
   TaskID: string;
-  UserPhone: string;
-  ProviderID: string;
   SenderType: string;
   MessageText: string;
   CreatedAt: string;
@@ -49,6 +40,7 @@ type ChatMessage = {
 
 type ChatMessagesResponse = {
   ok?: boolean;
+  thread?: Thread;
   messages?: ChatMessage[];
   error?: string;
 };
@@ -61,7 +53,7 @@ type SendMessageResponse = {
 export default function ChatThreadPage({ params }: PageProps) {
   const threadId = decodeURIComponent(params.threadId || "").trim();
   const router = useRouter();
-  const [providerId, setProviderId] = useState("");
+  const [providerPhone, setProviderPhone] = useState("");
   const [thread, setThread] = useState<Thread | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -88,13 +80,15 @@ export default function ChatThreadPage({ params }: PageProps) {
     let ignore = false;
     let intervalId: ReturnType<typeof setInterval> | null = null;
 
-    const loadMessages = async (targetThread: Thread, shouldMarkRead = true) => {
+    const loadMessages = async (trustedProviderPhone: string, shouldMarkRead = true) => {
       const messageRes = await fetch("/api/kk", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          action: "get_chat_messages",
-          ThreadID: targetThread.ThreadID,
+          action: "chat_get_messages",
+          ActorType: "provider",
+          ThreadID: threadId,
+          loggedInProviderPhone: trustedProviderPhone,
         }),
       });
       const messageData = (await messageRes.json()) as ChatMessagesResponse;
@@ -104,6 +98,7 @@ export default function ChatThreadPage({ params }: PageProps) {
       }
 
       if (ignore) return;
+      setThread(messageData.thread || null);
       setMessages(Array.isArray(messageData.messages) ? messageData.messages : []);
 
       if (shouldMarkRead) {
@@ -111,44 +106,13 @@ export default function ChatThreadPage({ params }: PageProps) {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            action: "mark_chat_read",
-            ThreadID: targetThread.ThreadID,
-            ReaderType: "provider",
+            action: "chat_mark_read",
+            ActorType: "provider",
+            ThreadID: threadId,
+            loggedInProviderPhone: trustedProviderPhone,
           }),
         });
       }
-    };
-
-    const loadThread = async (resolvedProviderId: string) => {
-      const threadsRes = await fetch("/api/kk", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "get_provider_threads",
-          ProviderID: resolvedProviderId,
-        }),
-      });
-      const threadsData = (await threadsRes.json()) as ProviderThreadsResponse;
-
-      if (!threadsRes.ok || !threadsData.ok) {
-        throw new Error(threadsData.error || "Unable to load chat thread.");
-      }
-
-      const matchedThread = Array.isArray(threadsData.threads)
-        ? threadsData.threads.find((item) => String(item.ThreadID || "").trim() === threadId) || null
-        : null;
-
-      if (!matchedThread) {
-        if (!ignore) setAccessDenied(true);
-        return null;
-      }
-
-      if (!ignore) {
-        setAccessDenied(false);
-        setThread(matchedThread);
-      }
-
-      return matchedThread;
     };
 
     const load = async () => {
@@ -162,29 +126,29 @@ export default function ChatThreadPage({ params }: PageProps) {
           { cache: "no-store" }
         );
         const profileData = (await profileRes.json()) as ProviderProfileResponse;
-        const resolvedProviderId = String(profileData.provider?.ProviderID || "").trim();
+        const trustedProviderPhone = String(profileData.provider?.Phone || "").replace(/\D/g, "").slice(-10);
 
-        if (!profileRes.ok || !profileData.ok || !resolvedProviderId) {
+        if (!profileRes.ok || !profileData.ok || !trustedProviderPhone) {
           router.replace(`/provider/login?next=${encodeURIComponent(`/chat/thread/${threadId}`)}`);
           return;
         }
 
         if (ignore) return;
-        setProviderId(resolvedProviderId);
-        const matchedThread = await loadThread(resolvedProviderId);
-        if (!matchedThread) return;
-        await loadMessages(matchedThread, true);
+        setProviderPhone(trustedProviderPhone);
+        await loadMessages(trustedProviderPhone, true);
 
         intervalId = setInterval(() => {
-          void (async () => {
-            const latestThread = await loadThread(resolvedProviderId);
-            if (!latestThread) return;
-            await loadMessages(latestThread, true);
-          })();
+          void loadMessages(trustedProviderPhone, true).catch(() => undefined);
         }, 5000);
       } catch (err) {
         if (ignore) return;
-        setError(err instanceof Error ? err.message : "Unable to load chat thread.");
+        const message = err instanceof Error ? err.message : "Unable to load chat thread.";
+        if (message.toLowerCase().includes("access denied")) {
+          setAccessDenied(true);
+          setError("");
+        } else {
+          setError(message);
+        }
       } finally {
         if (!ignore) setLoading(false);
       }
@@ -204,7 +168,7 @@ export default function ChatThreadPage({ params }: PageProps) {
   }, [messages]);
 
   const handleSend = async () => {
-    if (!thread || !providerId || !input.trim() || sending) return;
+    if (!thread || !providerPhone || !input.trim() || sending) return;
 
     setSending(true);
     setError("");
@@ -214,55 +178,35 @@ export default function ChatThreadPage({ params }: PageProps) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          action: "send_chat_message",
+          action: "chat_send_message",
+          ActorType: "provider",
           ThreadID: thread.ThreadID,
-          TaskID: thread.TaskID,
-          UserPhone: thread.UserPhone,
-          ProviderID: providerId,
-          SenderType: "provider",
+          loggedInProviderPhone: providerPhone,
           MessageText: input.trim(),
         }),
       });
       const data = (await res.json()) as SendMessageResponse;
 
       if (!res.ok || !data.ok) {
-        if (data.error === "Chat is closed") {
-          setThread((current) => (current ? { ...current, Status: "closed" } : current));
-        }
         throw new Error(data.error || "Unable to send message.");
       }
 
       setInput("");
 
-      const refreshThreadRes = await fetch("/api/kk", {
+      const refreshRes = await fetch("/api/kk", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          action: "get_provider_threads",
-          ProviderID: providerId,
-        }),
-      });
-      const refreshThreadData = (await refreshThreadRes.json()) as ProviderThreadsResponse;
-      if (refreshThreadRes.ok && refreshThreadData.ok && Array.isArray(refreshThreadData.threads)) {
-        const refreshedThread =
-          refreshThreadData.threads.find((item) => String(item.ThreadID || "").trim() === thread.ThreadID) ||
-          null;
-        if (refreshedThread) {
-          setThread(refreshedThread);
-        }
-      }
-
-      const refreshMessagesRes = await fetch("/api/kk", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "get_chat_messages",
+          action: "chat_get_messages",
+          ActorType: "provider",
           ThreadID: thread.ThreadID,
+          loggedInProviderPhone: providerPhone,
         }),
       });
-      const refreshMessagesData = (await refreshMessagesRes.json()) as ChatMessagesResponse;
-      if (refreshMessagesRes.ok && refreshMessagesData.ok) {
-        setMessages(Array.isArray(refreshMessagesData.messages) ? refreshMessagesData.messages : []);
+      const refreshData = (await refreshRes.json()) as ChatMessagesResponse;
+      if (refreshRes.ok && refreshData.ok) {
+        setThread(refreshData.thread || thread);
+        setMessages(Array.isArray(refreshData.messages) ? refreshData.messages : []);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to send message.");
@@ -325,9 +269,7 @@ export default function ChatThreadPage({ params }: PageProps) {
           <p className="mt-1 text-sm text-slate-600">Thread ID: {thread.ThreadID}</p>
           <p className="mt-1 text-sm text-slate-600">Task ID: {thread.TaskID}</p>
           <p className="mt-1 text-sm text-slate-600">Status: {thread.Status || "active"}</p>
-          {isClosed ? (
-            <p className="mt-2 text-sm font-medium text-amber-700">This chat is closed.</p>
-          ) : null}
+          {isClosed ? <p className="mt-2 text-sm font-medium text-amber-700">This chat is closed.</p> : null}
           {error ? <p className="mt-2 text-sm text-rose-700">{error}</p> : null}
         </div>
 
@@ -340,7 +282,7 @@ export default function ChatThreadPage({ params }: PageProps) {
                 const isProvider = String(message.SenderType || "").trim().toLowerCase() === "provider";
                 return (
                   <div
-                    key={message.ChatID}
+                    key={message.MessageID}
                     className={`flex ${isProvider ? "justify-end" : "justify-start"}`}
                   >
                     <div className="max-w-[80%] rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">

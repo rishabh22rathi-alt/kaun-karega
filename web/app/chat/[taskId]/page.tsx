@@ -39,7 +39,9 @@ type AdminRequestsResponse = {
 
 type CreateThreadResponse = {
   ok?: boolean;
-  threadId?: string;
+  thread?: {
+    ThreadID?: string;
+  };
   error?: string;
 };
 
@@ -59,7 +61,7 @@ function buildRequiredTime(task: AdminRequest | null): string {
 export default function ProviderChatEntryPage({ params }: PageProps) {
   const taskId = decodeURIComponent(params.taskId || "").trim();
   const router = useRouter();
-  const [providerId, setProviderId] = useState("");
+  const [providerPhone, setProviderPhone] = useState("");
   const [task, setTask] = useState<AdminRequest | null>(null);
   const [loading, setLoading] = useState(true);
   const [startingChat, setStartingChat] = useState(false);
@@ -92,21 +94,9 @@ export default function ProviderChatEntryPage({ params }: PageProps) {
         );
         const profileData = (await profileRes.json()) as ProviderProfileResponse;
 
-        if (!profileRes.ok || !profileData.ok || !profileData.provider?.ProviderID) {
+        if (!profileRes.ok || !profileData.ok || !profileData.provider?.Phone) {
           router.replace(`/provider/login?next=${encodeURIComponent(`/chat/${taskId}`)}`);
           return;
-        }
-
-        const resolvedProviderId = String(profileData.provider.ProviderID || "").trim();
-        if (!resolvedProviderId) {
-          router.replace(`/provider/login?next=${encodeURIComponent(`/chat/${taskId}`)}`);
-          return;
-        }
-
-        if (typeof window !== "undefined") {
-          window.localStorage.setItem("kk_provider_id", resolvedProviderId);
-          window.localStorage.setItem("kk_provider_phone", phone);
-          window.localStorage.setItem("kk_user_role", "provider");
         }
 
         const taskRes = await fetch("/api/kk", {
@@ -124,7 +114,7 @@ export default function ProviderChatEntryPage({ params }: PageProps) {
         }
 
         if (ignore) return;
-        setProviderId(resolvedProviderId);
+        setProviderPhone(String(profileData.provider.Phone || "").replace(/\D/g, "").slice(-10));
         setTask(matchedTask);
       } catch (err) {
         if (ignore) return;
@@ -144,7 +134,7 @@ export default function ProviderChatEntryPage({ params }: PageProps) {
   const requiredTime = useMemo(() => buildRequiredTime(task), [task]);
 
   const handleStartChat = async () => {
-    if (!task || !providerId || startingChat) return;
+    if (!task || !providerPhone || startingChat) return;
 
     setStartingChat(true);
     setError("");
@@ -154,19 +144,20 @@ export default function ProviderChatEntryPage({ params }: PageProps) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          action: "create_chat_thread",
+          action: "chat_create_or_get_thread",
+          ActorType: "provider",
           TaskID: task.TaskID,
-          ProviderID: providerId,
-          UserPhone: task.UserPhone,
+          loggedInProviderPhone: providerPhone,
         }),
       });
       const data = (await res.json()) as CreateThreadResponse;
+      const threadId = String(data.thread?.ThreadID || "").trim();
 
-      if (!res.ok || !data.ok || !data.threadId) {
+      if (!res.ok || !data.ok || !threadId) {
         throw new Error(data.error || "Unable to start chat.");
       }
 
-      router.push(`/chat/thread/${encodeURIComponent(data.threadId)}`);
+      router.push(`/chat/thread/${encodeURIComponent(threadId)}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to start chat.");
       setStartingChat(false);
@@ -230,7 +221,7 @@ export default function ProviderChatEntryPage({ params }: PageProps) {
           disabled={startingChat}
           className="mt-8 inline-flex rounded-lg bg-sky-500 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-sky-600 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {startingChat ? "Starting..." : "Start Chat"}
+          {startingChat ? "Opening..." : "Open Chat"}
         </button>
       </div>
     </main>

@@ -14,7 +14,7 @@ const SHEET_PROVIDER_SERVICES = "ProviderServices";
 const SHEET_PROVIDERS = "Providers";
 const SHEET_PROVIDER_TASK_MATCHES = "ProviderTaskMatches";
 const SHEET_CHAT_THREADS = "ChatThreads";
-const SHEET_CHATS = "Chats";
+const SHEET_CHAT_MESSAGES = "ChatMessages";
 const SHEET_BLOCKED_WORDS = "BlockedWords";
 const SHEET_TASK_NOTIFICATIONS = "TaskNotifications";
 

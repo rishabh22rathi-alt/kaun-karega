@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { PROVIDER_PROFILE_UPDATED_EVENT } from "@/components/sidebarEvents";
+import { getAuthSession } from "@/lib/auth";
 
 const MAX_SERVICES = 3;
 const MAX_AREAS = 5;
@@ -67,6 +68,7 @@ type ProviderByPhoneResponse = {
   ok?: boolean;
   provider?: ProviderProfile;
   error?: string;
+  message?: string;
   debug?: unknown;
 };
 
@@ -169,16 +171,34 @@ export default function ProviderDashboardPage() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const storedPhone =
-      window.localStorage.getItem("kk_provider_phone") ||
-      window.localStorage.getItem("kk_user_phone") ||
-      window.localStorage.getItem("kk_last_phone") ||
-      window.localStorage.getItem("kk_phone") ||
-      "";
-    const phone10 = normalizePhone10(storedPhone);
+    const session = getAuthSession();
+    const cookieNames = document.cookie
+      .split(";")
+      .map((entry) => entry.trim().split("=")[0])
+      .filter(Boolean);
+    const phone10 = normalizePhone10(String(session?.phone || ""));
+
+    console.log("[provider/dashboard] auth source debug", {
+      session: session
+        ? {
+            phone: String(session.phone || ""),
+            verified: session.verified,
+            createdAt: session.createdAt,
+          }
+        : null,
+      cookieNames,
+      sessionStorageProviderAuthKeys: [],
+      usesLocalStorageForProviderAuthFallback: false,
+      usesSessionStorageForProviderAuthFallback: false,
+      rawProviderPhone: String(session?.phone || ""),
+      normalizedProviderPhone: phone10,
+    });
+
     if (phone10) {
       setPhone(phone10);
       setDebugPhone(maskPhoneForDebug(phone10));
+    } else {
+      setError("Provider session missing. Please log in again.");
     }
     setLoading(false);
   }, []);
@@ -193,14 +213,20 @@ export default function ProviderDashboardPage() {
       setApiError("");
       setApiDebug(null);
       try {
-        const profileRes = await fetch(
-          `/api/kk?action=get_provider_by_phone&phone=${encodeURIComponent(phone)}`,
-          { cache: "no-store" }
-        );
+        console.log("[provider/dashboard] api request", {
+          endpoint: "/api/provider/dashboard-profile",
+          payload: null,
+          phoneFromSession: phone,
+        });
+        const profileRes = await fetch("/api/provider/dashboard-profile", { cache: "no-store" });
         const profileText = await profileRes.text();
         const profileData = parseJsonSafe<ProviderByPhoneResponse>(profileText);
         if (!profileRes.ok) {
-          throw new Error(`HTTP ${profileRes.status} while loading provider profile.`);
+          throw new Error(
+            profileData?.message ||
+              profileData?.error ||
+              `HTTP ${profileRes.status} while loading provider profile.`
+          );
         }
         if (!profileData) {
           throw new Error("Invalid JSON from provider profile API.");
@@ -221,9 +247,6 @@ export default function ProviderDashboardPage() {
         setProfile(profileData.provider);
 
         if (typeof window !== "undefined") {
-          window.localStorage.setItem("kk_provider_phone", phone);
-          window.localStorage.setItem("kk_provider_id", profileData.provider.ProviderID || "");
-          window.localStorage.setItem("kk_user_role", "provider");
           window.localStorage.setItem(
             "kk_provider_profile",
             JSON.stringify({
@@ -851,6 +874,12 @@ export default function ProviderDashboardPage() {
                         >
                           {request.Accepted ? "Accepted" : "Not accepted"}
                         </span>
+                        <Link
+                          href={`/chat/${encodeURIComponent(request.TaskID)}`}
+                          className="inline-flex rounded-full border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
+                        >
+                          Open Chat
+                        </Link>
                       </div>
                     </div>
                   </div>

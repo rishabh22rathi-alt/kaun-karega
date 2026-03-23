@@ -28,24 +28,6 @@ function PageContent() {
   const phoneDigits = useMemo(() => phone.replace(/\D/g, "").slice(0, 10), [phone]);
   const redirectTo = searchParams.get("redirectTo");
 
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const role = localStorage.getItem("kk_user_role");
-    if (role === "provider") {
-      router.replace(redirectTo || "/provider-dashboard");
-    } else if (role === "receiver") {
-      router.replace(redirectTo || "/");
-    }
-  }, [redirectTo, router]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const cached = localStorage.getItem("kk_last_phone") || localStorage.getItem("kk_user_phone");
-    if (cached) {
-      setPhone(cached);
-    }
-  }, []);
-
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setError("");
@@ -82,10 +64,6 @@ function PageContent() {
       if (!data.success) {
         setError(data.error || "Failed to send OTP. Try again.");
         return;
-      }
-
-      if (typeof window !== "undefined") {
-        localStorage.setItem("kk_last_phone", phoneDigits);
       }
       const query = new URLSearchParams({ phone: phoneDigits });
       if (redirectTo) query.set("redirectTo", redirectTo);

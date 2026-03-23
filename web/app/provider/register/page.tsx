@@ -71,20 +71,10 @@ function normalizePhone10(phoneRaw: string): string {
   return phone10.length === 10 ? phone10 : "";
 }
 
-// Phone source matches protected pages: cookie session via getAuthSession().
-// localStorage fallback covers older flows that persist kk_user_phone/kk_phone.
 function getUserPhone(): string {
   const session = getAuthSession();
   if (session?.phone) return normalizePhoneToTen(session.phone);
-  if (typeof window === "undefined") return "";
-
-  const fallback =
-    window.localStorage.getItem("kk_user_phone") ||
-    window.localStorage.getItem("kk_last_phone") ||
-    window.localStorage.getItem("kk_phone") ||
-    "";
-
-  return normalizePhoneToTen(fallback);
+  return "";
 }
 
 function uniqueStrings(items: unknown[]): string[] {
@@ -607,14 +597,7 @@ export default function ProviderRegisterPage() {
       setSubmittedRequiresApproval(requiresAdminApproval);
       if (typeof window !== "undefined") {
         const canonicalPhone = normalizePhone10(phone);
-        window.localStorage.setItem("kk_provider_phone", canonicalPhone);
         const responseProviderId = data?.providerId || "";
-        window.localStorage.setItem("kk_provider_id", responseProviderId);
-        window.localStorage.setItem("kk_user_role", "provider");
-        window.localStorage.setItem(
-          "kk_provider_verified",
-          String(data?.verified || data?.provider?.Verified || "no").trim() || "no"
-        );
         const fallbackProfile = {
           ProviderID: responseProviderId,
           Name: name.trim().toUpperCase(),

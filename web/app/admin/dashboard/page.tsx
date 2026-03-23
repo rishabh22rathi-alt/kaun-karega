@@ -719,13 +719,7 @@ export default function AdminDashboardPage() {
         throw new Error(data.error || "Failed to update");
       }
 
-      setCategoryApplications((current) => {
-        const nextCategoryApplications = current.filter(
-          (item) => String(item.RequestID || "").trim() !== requestId
-        );
-        recalculateStats(providers, nextCategoryApplications);
-        return nextCategoryApplications;
-      });
+      await fetchDashboard();
       showFeedback("success", "Action completed successfully");
     } catch {
       showFeedback("error", "Failed to update");
