@@ -228,7 +228,7 @@ function doPost(e) {
         return json_(chatCreateOrGetThread_(data));
 
       case "chat_get_threads":
-        return json_(chatGetThreads_(data));
+        return json_(chatGetThreadsSafe_(data));
 
       case "chat_get_messages":
         return json_(chatGetMessages_(data));
@@ -252,6 +252,147 @@ function doPost(e) {
       error: String(err && err.message ? err.message : err),
     });
   }
+}
+
+function chatGetThreadsSafe_(data) {
+  const actorType = String(data.ActorType || data.actorType || "")
+    .trim()
+    .toLowerCase();
+  const rawPhone =
+    actorType === "provider"
+      ? data.ProviderPhone || data.providerPhone || data.phone || ""
+      : data.UserPhone || data.userPhone || data.phone || data.requesterPhone || "";
+  const normalizedPhone = normalizePhone10_(rawPhone);
+
+  Logger.log(
+    "[chat_get_threads] request %s",
+    JSON.stringify({
+      actorType: actorType,
+      incomingPhone: normalizedPhone || String(rawPhone || "").trim(),
+      taskId: String(data.TaskID || data.taskId || "").trim(),
+    })
+  );
+
+  const result =
+    typeof chatGetThreads_ === "function"
+      ? chatGetThreads_(data)
+      : chatGetThreadsFallback_(data, actorType, normalizedPhone);
+
+  Logger.log(
+    "[chat_get_threads] result %s",
+    JSON.stringify({
+      actorType: actorType,
+      incomingPhone: normalizedPhone || String(rawPhone || "").trim(),
+      threadsFound: Array.isArray(result && result.threads) ? result.threads.length : 0,
+      ok: Boolean(result && result.ok),
+      usedFallback: typeof chatGetThreads_ !== "function",
+    })
+  );
+
+  return result;
+}
+
+function chatGetThreadsFallback_(data, actorType, normalizedPhone) {
+  if (actorType !== "user" && actorType !== "provider") {
+    return {
+      ok: false,
+      status: "error",
+      error: "ActorType must be user or provider",
+    };
+  }
+
+  if (!normalizedPhone) {
+    return {
+      ok: false,
+      status: "error",
+      error:
+        actorType === "provider"
+          ? "ProviderPhone required for provider context"
+          : "UserPhone required for user context",
+    };
+  }
+
+  const taskIdFilter = String(data.TaskID || data.taskId || "").trim();
+  const statusFilter = String(data.Status || data.status || "")
+    .trim()
+    .toLowerCase();
+  const sheet = getOrCreateSheet(SHEET_CHAT_THREADS, [
+    "ThreadID",
+    "TaskID",
+    "UserPhone",
+    "ProviderID",
+    "ProviderPhone",
+    "Category",
+    "Area",
+    "Status",
+    "CreatedAt",
+    "UpdatedAt",
+    "LastMessageAt",
+    "LastMessageBy",
+    "UnreadUserCount",
+    "UnreadProviderCount",
+  ]);
+  const values = sheet.getDataRange().getValues();
+
+  if (values.length <= 1) {
+    return { ok: true, status: "success", threads: [] };
+  }
+
+  const headers = values[0] || [];
+  const threads = [];
+
+  for (let i = 1; i < values.length; i++) {
+    const row = values[i] || [];
+    const thread = chatThreadRowToObjectFallback_(headers, row);
+
+    if (taskIdFilter && String(thread.TaskID || "").trim() !== taskIdFilter) continue;
+    if (
+      statusFilter &&
+      String(thread.Status || "")
+        .trim()
+        .toLowerCase() !== statusFilter
+    ) {
+      continue;
+    }
+
+    const matchesActor =
+      actorType === "provider"
+        ? normalizePhone10_(thread.ProviderPhone) === normalizedPhone
+        : normalizePhone10_(thread.UserPhone) === normalizedPhone;
+
+    if (!matchesActor) continue;
+
+    threads.push(thread);
+  }
+
+  threads.sort(function (a, b) {
+    return (
+      chatThreadSortMsFallback_(b.LastMessageAt || b.UpdatedAt || b.CreatedAt) -
+      chatThreadSortMsFallback_(a.LastMessageAt || a.UpdatedAt || a.CreatedAt)
+    );
+  });
+
+  return {
+    ok: true,
+    status: "success",
+    threads: threads,
+  };
+}
+
+function chatThreadRowToObjectFallback_(headers, row) {
+  const result = {};
+  for (var i = 0; i < headers.length; i++) {
+    const key = String(headers[i] || "").trim();
+    if (!key) continue;
+    result[key] = row[i];
+  }
+  return result;
+}
+
+function chatThreadSortMsFallback_(value) {
+  if (!value) return 0;
+  const ms = new Date(value).getTime();
+  return isNaN(ms) ? 0 : ms;
 }
 
 

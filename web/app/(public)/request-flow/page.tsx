@@ -75,6 +75,27 @@ export default function RequestFlowPage() {
   );
 }
 
+function getTodayLocalDateString() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function normalizeDateOnly(value: string) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+
+  const isoMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoMatch) return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
+
+  const dmyMatch = raw.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  if (dmyMatch) return `${dmyMatch[3]}-${dmyMatch[2]}-${dmyMatch[1]}`;
+
+  return "";
+}
+
 function PageContent() {
   const params = useSearchParams();
   const router = useRouter();
@@ -102,6 +123,15 @@ function PageContent() {
     () => category.trim() !== "" && time.trim() !== "" && area.trim() !== "",
     [area, category, time]
   );
+  const todayDate = useMemo(() => getTodayLocalDateString(), []);
+  const normalizedServiceDate = useMemo(() => normalizeDateOnly(serviceDate), [serviceDate]);
+  const serviceDateError = useMemo(() => {
+    if (time !== "Schedule later" || !serviceDate) return "";
+    if (!normalizedServiceDate || normalizedServiceDate < todayDate) {
+      return "Please select today or a future date.";
+    }
+    return "";
+  }, [normalizedServiceDate, serviceDate, time, todayDate]);
 
   const handleSubmit = async () => {
     setError("");
@@ -121,6 +151,16 @@ function PageContent() {
       setError("Please select both date and time slot.");
       return;
     }
+    if (serviceDateError) {
+      console.log("[request-flow] rejected past service date", {
+        rawDate: serviceDate,
+        normalizedDate: normalizedServiceDate,
+        todayDate,
+        reason: serviceDateError,
+      });
+      setError(serviceDateError);
+      return;
+    }
     setLoading(true);
     try {
       const cleanDetails = (details ?? "").trim();
@@ -131,7 +171,7 @@ function PageContent() {
           category,
           area: normalizedArea,
           time,
-          serviceDate,
+          serviceDate: normalizedServiceDate,
           timeSlot,
           details: cleanDetails,
           createdAt: new Date().toISOString(),
@@ -147,12 +187,12 @@ function PageContent() {
       } catch {}
 
       if (!res.ok) {
-        setError(json?.error || "Request failed (non-200). Check debug.");
+        setError(json?.message || json?.error || "Request failed (non-200). Check debug.");
         return;
       }
 
       if (!json?.ok) {
-        setError(json?.error || "Apps Script rejected request. Check debug.");
+        setError(json?.message || json?.error || "Apps Script rejected request. Check debug.");
         return;
       }
 
@@ -192,11 +232,20 @@ function PageContent() {
             selectedTime={time}
             serviceDate={serviceDate}
             timeSlot={timeSlot}
+            minDate={todayDate}
+            dateError={serviceDateError}
             onSelect={(value) => {
               setTime(value);
+              if (error) setError("");
             }}
-            onServiceDateChange={setServiceDate}
-            onTimeSlotChange={setTimeSlot}
+            onServiceDateChange={(value) => {
+              setServiceDate(value);
+              if (error) setError("");
+            }}
+            onTimeSlotChange={(value) => {
+              setTimeSlot(value);
+              if (error) setError("");
+            }}
           />
 
           <AreaSelection
@@ -222,7 +271,7 @@ function PageContent() {
           <button
             type="button"
             onClick={handleSubmit}
-            disabled={loading || isRedirecting}
+            disabled={loading || isRedirecting || Boolean(serviceDateError)}
             className="w-full rounded-full bg-[#0EA5E9] px-4 py-3 text-white font-semibold shadow-md transition hover:shadow-lg disabled:opacity-60"
           >
             {loading || isRedirecting ? "Submitting..." : "Submit Request"}

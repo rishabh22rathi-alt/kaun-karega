@@ -2,6 +2,28 @@ import { NextResponse } from "next/server";
 import { getAuthSession } from "@/lib/auth";
 import { fetchProviderMatches } from "@/lib/api/providerMatching";
 
+function getTodayDateInKolkata() {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
+
+function normalizeDateOnly(value: string) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+
+  const isoMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoMatch) return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
+
+  const dmyMatch = raw.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  if (dmyMatch) return `${dmyMatch[3]}-${dmyMatch[2]}-${dmyMatch[1]}`;
+
+  return "";
+}
+
 export async function POST(request: Request) {
   try {
     const body = await request.json();
@@ -16,6 +38,7 @@ export async function POST(request: Request) {
           : "";
     const serviceDate =
       typeof body?.serviceDate === "string" ? body.serviceDate.trim() : "";
+    const normalizedServiceDate = normalizeDateOnly(serviceDate);
     const timeSlot =
       typeof body?.timeSlot === "string" ? body.timeSlot.trim() : "";
     let details = (body?.details ?? body?.description ?? "").toString().trim();
@@ -49,6 +72,22 @@ export async function POST(request: Request) {
       );
     }
 
+    const todayDate = getTodayDateInKolkata();
+    if (serviceDate && (!normalizedServiceDate || normalizedServiceDate < todayDate)) {
+      console.log("submit-request rejected past date", {
+        rawDate: serviceDate,
+        normalizedDate: normalizedServiceDate,
+        todayDate,
+        reason: !normalizedServiceDate
+          ? "INVALID_SERVICE_DATE_FORMAT"
+          : "SERVICE_DATE_BEFORE_TODAY",
+      });
+      return NextResponse.json(
+        { ok: false, message: "Please select today or a future date." },
+        { status: 400 }
+      );
+    }
+
     const GOOGLE_SCRIPT_URL = process.env.NEXT_PUBLIC_APPS_SCRIPT_URL;
 
     if (!GOOGLE_SCRIPT_URL) {
@@ -66,7 +105,7 @@ export async function POST(request: Request) {
         details,
         phone: session.phone,
         selectedTimeframe,
-        serviceDate,
+        serviceDate: normalizedServiceDate,
         timeSlot,
       }),
     });
@@ -101,9 +140,15 @@ export async function POST(request: Request) {
     }
 
     if (result?.ok !== true) {
+      const validationMessage =
+        result?.message === "Please select today or a future date."
+          ? result.message
+          : "";
       return NextResponse.json(
-        { error: result?.error || result?.message || "Apps Script returned failure." },
-        { status: 500 }
+        validationMessage
+          ? { ok: false, message: validationMessage }
+          : { error: result?.error || result?.message || "Apps Script returned failure." },
+        { status: validationMessage ? 400 : 500 }
       );
     }
 

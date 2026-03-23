@@ -39,11 +39,14 @@ type AdminRequestsResponse = {
 
 type CreateThreadResponse = {
   ok?: boolean;
+  created?: boolean;
   thread?: {
     ThreadID?: string;
   };
   error?: string;
 };
+
+const PROVIDER_AUTO_START_MESSAGE = "Yes, mai karunga ye kaam";
 
 function buildRequiredTime(task: AdminRequest | null): string {
   if (!task) return "-";
@@ -155,6 +158,20 @@ export default function ProviderChatEntryPage({ params }: PageProps) {
 
       if (!res.ok || !data.ok || !threadId) {
         throw new Error(data.error || "Unable to start chat.");
+      }
+
+      if (data.created === true) {
+        await fetch("/api/kk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "chat_send_message",
+            ActorType: "provider",
+            ThreadID: threadId,
+            loggedInProviderPhone: providerPhone,
+            MessageText: PROVIDER_AUTO_START_MESSAGE,
+          }),
+        });
       }
 
       router.push(`/chat/thread/${encodeURIComponent(threadId)}`);

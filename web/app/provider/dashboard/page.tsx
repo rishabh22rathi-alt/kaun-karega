@@ -1,7 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import InAppToastStack, { type InAppToast } from "@/components/InAppToastStack";
 import { PROVIDER_PROFILE_UPDATED_EVENT } from "@/components/sidebarEvents";
 import { getAuthSession } from "@/lib/auth";
 
@@ -37,7 +39,25 @@ type RecentMatchedRequest = {
   CreatedAt?: string;
   Accepted?: boolean;
   Responded?: boolean;
+  ThreadID?: string;
 };
+
+type ProviderThreadRow = {
+  ThreadID: string;
+  TaskID: string;
+  UnreadProviderCount: number;
+  LastMessageAt?: string;
+  UpdatedAt?: string;
+  CreatedAt?: string;
+};
+
+type ProviderThreadSummaryByTaskId = Record<
+  string,
+  {
+    unreadProviderCount: number;
+    lastMessageAt: string;
+  }
+>;
 
 type ProviderAnalytics = {
   Summary?: {
@@ -72,6 +92,21 @@ type ProviderByPhoneResponse = {
   debug?: unknown;
 };
 
+type CreateThreadResponse = {
+  ok?: boolean;
+  error?: string;
+  message?: string;
+  created?: boolean;
+  ThreadID?: string;
+  threadId?: string;
+  thread?: {
+    ThreadID?: string;
+    threadId?: string;
+  };
+};
+
+const PROVIDER_AUTO_START_MESSAGE = "Yes, mai karunga ye kaam";
+
 function normalizePhone10(phoneRaw: string): string {
   const digits = String(phoneRaw || "").replace(/\D/g, "");
   if (!digits) return "";
@@ -98,6 +133,47 @@ function formatDateTime(value: string) {
   if (!value) return "-";
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("en-IN");
+}
+
+function normalizeProviderThread(item: Record<string, unknown>): ProviderThreadRow {
+  return {
+    ThreadID: String(item.ThreadID ?? item.threadId ?? "") || "",
+    TaskID: String(item.TaskID ?? item.taskId ?? "") || "",
+    UnreadProviderCount:
+      Number(item.UnreadProviderCount ?? item.unreadProviderCount ?? item.UnreadProvider ?? 0) || 0,
+    LastMessageAt: String(item.LastMessageAt ?? item.lastMessageAt ?? "") || "",
+    UpdatedAt: String(item.UpdatedAt ?? item.updatedAt ?? "") || "",
+    CreatedAt: String(item.CreatedAt ?? item.createdAt ?? "") || "",
+  };
+}
+
+function summarizeProviderThreads(threads: ProviderThreadRow[]): ProviderThreadSummaryByTaskId {
+  return threads.reduce<ProviderThreadSummaryByTaskId>((acc, thread) => {
+    const taskId = String(thread.TaskID || "").trim();
+    if (!taskId) return acc;
+
+    const current = acc[taskId] || { unreadProviderCount: 0, lastMessageAt: "" };
+    const candidateTime = String(thread.LastMessageAt || thread.UpdatedAt || thread.CreatedAt || "").trim();
+    const currentTime = String(current.lastMessageAt || "").trim();
+
+    acc[taskId] = {
+      unreadProviderCount: current.unreadProviderCount + (Number(thread.UnreadProviderCount) || 0),
+      lastMessageAt:
+        Date.parse(candidateTime || "") > Date.parse(currentTime || "") ? candidateTime : currentTime,
+    };
+
+    return acc;
+  }, {});
+}
+
+function extractThreadIdFromCreateThreadResponse(data: CreateThreadResponse | null): string {
+  return String(
+    data?.thread?.ThreadID ||
+      data?.thread?.threadId ||
+      data?.ThreadID ||
+      data?.threadId ||
+      ""
+  ).trim();
 }
 
 function getDemandLevel(count: number, maxCount: number) {
@@ -159,6 +235,7 @@ ${joinLink}`;
 }
 
 export default function ProviderDashboardPage() {
+  const router = useRouter();
   const [phone, setPhone] = useState("");
   const [profile, setProfile] = useState<ProviderProfile | null>(null);
   const [loading, setLoading] = useState(true);
@@ -168,6 +245,23 @@ export default function ProviderDashboardPage() {
   const [debugPhone, setDebugPhone] = useState("");
   const [categoryDemandRange, setCategoryDemandRange] = useState<DemandRangeKey>("today");
   const [shareFeedback, setShareFeedback] = useState("");
+  const [openingChatTaskId, setOpeningChatTaskId] = useState("");
+  const [chatErrorByTaskId, setChatErrorByTaskId] = useState<Record<string, string>>({});
+  const [providerThreadSummaryByTaskId, setProviderThreadSummaryByTaskId] =
+    useState<ProviderThreadSummaryByTaskId>({});
+  const [toasts, setToasts] = useState<InAppToast[]>([]);
+  const previousProviderThreadSnapshotRef = useRef<ProviderThreadSummaryByTaskId | null>(null);
+
+  const enqueueToast = (title: string, message: string, id: string) => {
+    setToasts((current) => {
+      if (current.some((toast) => toast.id === id)) return current;
+      return [...current, { id, title, message }].slice(-4);
+    });
+
+    window.setTimeout(() => {
+      setToasts((current) => current.filter((toast) => toast.id !== id));
+    }, 5000);
+  };
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -281,6 +375,68 @@ export default function ProviderDashboardPage() {
     };
   }, [phone]);
 
+  useEffect(() => {
+    if (!phone) return;
+
+    let ignore = false;
+
+    const pollProviderThreads = async (showAlerts: boolean) => {
+      try {
+        const res = await fetch("/api/kk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "chat_get_threads",
+            ActorType: "provider",
+            loggedInProviderPhone: phone,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data?.ok) {
+          throw new Error(data?.error || "Failed to load provider chat alerts");
+        }
+
+        const normalizedThreads = Array.isArray(data?.threads)
+          ? data.threads.map((item: Record<string, unknown>) => normalizeProviderThread(item))
+          : [];
+        const nextSummary = summarizeProviderThreads(normalizedThreads);
+
+        if (!ignore) {
+          setProviderThreadSummaryByTaskId(nextSummary);
+        }
+
+        if (showAlerts && previousProviderThreadSnapshotRef.current) {
+          for (const [taskId, summary] of Object.entries(nextSummary)) {
+            const previousSummary = previousProviderThreadSnapshotRef.current[taskId];
+            if (!previousSummary) continue;
+            if (summary.unreadProviderCount > previousSummary.unreadProviderCount && summary.lastMessageAt) {
+              enqueueToast(
+                "New message from customer",
+                `Task ${taskId} has ${summary.unreadProviderCount} unread customer message${summary.unreadProviderCount === 1 ? "" : "s"}.`,
+                `provider-message:${taskId}:${summary.unreadProviderCount}:${summary.lastMessageAt}`
+              );
+            }
+          }
+        }
+
+        previousProviderThreadSnapshotRef.current = nextSummary;
+      } catch {
+        // Silent polling failure for MVP alerts.
+      }
+    };
+
+    void pollProviderThreads(false);
+
+    const intervalId = window.setInterval(() => {
+      void pollProviderThreads(true);
+    }, 18000);
+
+    return () => {
+      ignore = true;
+      window.clearInterval(intervalId);
+    };
+  }, [phone]);
+
   const verified = useMemo(
     () => String(profile?.Verified || "").trim().toLowerCase() === "yes",
     [profile]
@@ -325,6 +481,102 @@ export default function ProviderDashboardPage() {
       ),
     [analytics]
   );
+
+  const handleOpenChat = async (request: RecentMatchedRequest) => {
+    const taskId = String(request.TaskID || "").trim();
+    const existingThreadId = String(request.ThreadID || "").trim();
+    const requestKey = taskId || `missing-task-${request.CreatedAt || request.Category || "unknown"}`;
+
+    console.log("[provider/dashboard] matched request item shape", {
+      request,
+      taskId,
+      threadId: existingThreadId,
+      keys: Object.keys(request || {}),
+    });
+
+    if (!taskId) {
+      console.log("[provider/dashboard] open chat blocked", {
+        reason: "missing_task_id",
+        request,
+      });
+      setChatErrorByTaskId((current) => ({
+        ...current,
+        [requestKey]: "Chat unavailable: missing task ID for this request.",
+      }));
+      return;
+    }
+
+    if (!phone) {
+      setChatErrorByTaskId((current) => ({
+        ...current,
+        [requestKey]: "Chat unavailable: provider session missing.",
+      }));
+      return;
+    }
+
+    setOpeningChatTaskId(taskId);
+    setChatErrorByTaskId((current) => ({
+      ...current,
+      [requestKey]: "",
+      [taskId]: "",
+    }));
+
+    try {
+      const res = await fetch("/api/kk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "chat_create_or_get_thread",
+          ActorType: "provider",
+          TaskID: taskId,
+          loggedInProviderPhone: phone,
+        }),
+      });
+      const data = (await res.json()) as CreateThreadResponse;
+      const threadId = extractThreadIdFromCreateThreadResponse(data);
+      const finalHref = threadId ? `/chat/thread/${encodeURIComponent(threadId)}` : "";
+
+      console.log("[provider/dashboard] open chat raw response", {
+        status: res.status,
+        ok: res.ok,
+        data,
+      });
+
+      console.log("[provider/dashboard] open chat selection", {
+        taskId,
+        existingThreadId,
+        extractedThreadId: threadId,
+        created: Boolean(data?.created),
+        finalHref,
+      });
+
+      if (!res.ok || !data?.ok || !threadId || !finalHref) {
+        throw new Error(data?.error || data?.message || "Unable to open chat.");
+      }
+
+      if (data.created === true) {
+        await fetch("/api/kk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "chat_send_message",
+            ActorType: "provider",
+            ThreadID: threadId,
+            loggedInProviderPhone: phone,
+            MessageText: PROVIDER_AUTO_START_MESSAGE,
+          }),
+        });
+      }
+
+      router.push(finalHref);
+    } catch (err) {
+      setChatErrorByTaskId((current) => ({
+        ...current,
+        [taskId]: err instanceof Error ? err.message : "Unable to open chat.",
+      }));
+      setOpeningChatTaskId("");
+    }
+  };
   const categoryDemand = useMemo(
     () =>
       Array.isArray(categoryDemandByRange[categoryDemandRange])
@@ -839,14 +1091,23 @@ export default function ProviderDashboardPage() {
             </div>
             {recentMatchedRequests.length ? (
               <div className="mt-5 grid gap-3">
-                {recentMatchedRequests.map((request) => (
+                {recentMatchedRequests.map((request) => {
+                  const taskAlertSummary = providerThreadSummaryByTaskId[String(request.TaskID || "").trim()];
+                  return (
                   <div
                     key={request.TaskID}
                     className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-4"
                   >
                     <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                       <div>
-                        <p className="text-sm font-semibold text-slate-900">{request.TaskID}</p>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="text-sm font-semibold text-slate-900">{request.TaskID}</p>
+                          {taskAlertSummary?.unreadProviderCount ? (
+                            <span className="inline-flex rounded-full bg-rose-600 px-2.5 py-0.5 text-xs font-semibold text-white">
+                              {taskAlertSummary.unreadProviderCount} unread
+                            </span>
+                          ) : null}
+                        </div>
                         <p className="mt-1 text-sm text-slate-700">
                           {request.Category || "-"} in {request.Area || "-"}
                         </p>
@@ -874,16 +1135,33 @@ export default function ProviderDashboardPage() {
                         >
                           {request.Accepted ? "Accepted" : "Not accepted"}
                         </span>
-                        <Link
-                          href={`/chat/${encodeURIComponent(request.TaskID)}`}
-                          className="inline-flex rounded-full border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
+                        <button
+                          type="button"
+                          onClick={() => void handleOpenChat(request)}
+                          disabled={!String(request.TaskID || "").trim() || openingChatTaskId === request.TaskID}
+                          className="inline-flex rounded-full border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          Open Chat
-                        </Link>
+                          {taskAlertSummary?.unreadProviderCount ? (
+                            <span className="mr-2 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-sky-600 px-1.5 text-[11px] text-white">
+                              {taskAlertSummary.unreadProviderCount}
+                            </span>
+                          ) : null}
+                          {openingChatTaskId === request.TaskID ? "Opening..." : "Open Chat"}
+                        </button>
                       </div>
                     </div>
+                    {!String(request.TaskID || "").trim() ? (
+                      <p className="mt-2 text-xs text-amber-700">
+                        Chat unavailable: missing task ID for this request.
+                      </p>
+                    ) : null}
+                    {chatErrorByTaskId[String(request.TaskID || "").trim()] ? (
+                      <p className="mt-2 text-xs text-rose-700">
+                        {chatErrorByTaskId[String(request.TaskID || "").trim()]}
+                      </p>
+                    ) : null}
                   </div>
-                ))}
+                )})}
               </div>
             ) : (
               <div className="mt-5 rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
@@ -961,6 +1239,10 @@ export default function ProviderDashboardPage() {
           </section>
         </div>
       </div>
+      <InAppToastStack
+        toasts={toasts}
+        onDismiss={(id) => setToasts((current) => current.filter((toast) => toast.id !== id))}
+      />
     </main>
   );
 }

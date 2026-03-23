@@ -115,6 +115,27 @@ const CATEGORY_GROUPS: CategoryGroup[] = [
 const ITEMS_PER_PAGE = 4;
 const ROTATION_INTERVAL_MS = 3500;
 
+function getTodayLocalDateString() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function normalizeDateOnly(value: string) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+
+  const isoMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoMatch) return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
+
+  const dmyMatch = raw.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  if (dmyMatch) return `${dmyMatch[3]}-${dmyMatch[2]}-${dmyMatch[1]}`;
+
+  return "";
+}
+
 const toGroupKey = (title: string) =>
   title
     .toLowerCase()
@@ -708,6 +729,15 @@ function PageContent() {
     () => category.trim() !== "" && time.trim() !== "" && area.trim() !== "",
     [category, time, area]
   );
+  const todayDate = useMemo(() => getTodayLocalDateString(), []);
+  const normalizedServiceDate = useMemo(() => normalizeDateOnly(serviceDate), [serviceDate]);
+  const serviceDateError = useMemo(() => {
+    if (time !== "Schedule later" || !serviceDate) return "";
+    if (!normalizedServiceDate || normalizedServiceDate < todayDate) {
+      return "Please select today or a future date.";
+    }
+    return "";
+  }, [normalizedServiceDate, serviceDate, time, todayDate]);
 
   const activeCategories = useMemo(() => {
     return categoryList
@@ -976,6 +1006,16 @@ const handleSubmit = async () => {
     setError("Please select both date and time slot.");
     return;
   }
+  if (serviceDateError) {
+    console.log("[home] rejected past service date", {
+      rawDate: serviceDate,
+      normalizedDate: normalizedServiceDate,
+      todayDate,
+      reason: serviceDateError,
+    });
+    setError(serviceDateError);
+    return;
+  }
 
   const session = getAuthSession();
   if (session?.phone) {
@@ -1031,7 +1071,7 @@ const submitResolvedRequest = async (resolution: CategoryResolution) => {
           bestMatch: resolution.bestMatch || "",
           confidence: resolution.confidence,
           area: normalizedArea,
-          serviceDate,
+          serviceDate: normalizedServiceDate,
           timeSlot,
           details: cleanDetails,
           createdAt: new Date().toISOString(),
@@ -1063,12 +1103,12 @@ const submitResolvedRequest = async (resolution: CategoryResolution) => {
   const resolvedCategory = resolution.resolvedName || category;
   try {
     const payload = {
-      category: resolvedCategory,
-      area: normalizedArea,
-      serviceDate,
-      timeSlot,
-      details: cleanDetails,
-      createdAt: new Date().toISOString(),
+        category: resolvedCategory,
+        area: normalizedArea,
+        serviceDate: normalizedServiceDate,
+        timeSlot,
+        details: cleanDetails,
+        createdAt: new Date().toISOString(),
     };
     console.log("submit payload", {
       category: payload.category,
@@ -1093,12 +1133,12 @@ const submitResolvedRequest = async (resolution: CategoryResolution) => {
     } catch {}
 
     if (!res.ok) {
-      setError(json?.error || "Non-200 response");
+      setError(json?.message || json?.error || "Non-200 response");
       return;
     }
 
     if (!json?.ok) {
-      setError(json?.error || "ok=false");
+      setError(json?.message || json?.error || "ok=false");
       return;
     }
 
@@ -1341,9 +1381,20 @@ const hasArea = area.trim() !== "";
               selectedTime={time}
               serviceDate={serviceDate}
               timeSlot={timeSlot}
-              onSelect={(value) => setTime(value)}
-              onServiceDateChange={setServiceDate}
-              onTimeSlotChange={setTimeSlot}
+              minDate={todayDate}
+              dateError={serviceDateError}
+              onSelect={(value) => {
+                setTime(value);
+                if (error) setError("");
+              }}
+              onServiceDateChange={(value) => {
+                setServiceDate(value);
+                if (error) setError("");
+              }}
+              onTimeSlotChange={(value) => {
+                setTimeSlot(value);
+                if (error) setError("");
+              }}
             />
             </div>
         )}
@@ -1432,7 +1483,7 @@ const hasArea = area.trim() !== "";
             <button
               type="button"
               onClick={handleSubmit}
-              disabled={loading || isRedirecting || !canSubmit}
+              disabled={loading || isRedirecting || !canSubmit || Boolean(serviceDateError)}
               className="w-full rounded-full bg-sky-500 px-4 py-3 text-sm font-semibold text-white shadow-md transition hover:bg-sky-600 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-60 md:text-base"
             >
               {loading || isRedirecting

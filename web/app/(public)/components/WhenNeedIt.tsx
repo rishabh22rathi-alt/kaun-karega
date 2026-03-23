@@ -6,6 +6,8 @@ type WhenNeedItProps = {
   selectedTime: string;
   serviceDate: string;
   timeSlot: string;
+  minDate?: string;
+  dateError?: string;
   onSelect: (timeValue: string) => void;
   onServiceDateChange: (date: string) => void;
   onTimeSlotChange: (slot: string) => void;
@@ -32,6 +34,8 @@ export default function WhenNeedIt({
   selectedTime,
   serviceDate,
   timeSlot,
+  minDate = "",
+  dateError = "",
   onSelect,
   onServiceDateChange,
   onTimeSlotChange,
@@ -84,9 +88,13 @@ export default function WhenNeedIt({
           <input
             type="date"
             value={serviceDate}
+            min={minDate}
             onChange={(e) => onServiceDateChange(e.target.value)}
             className="mt-2 w-full rounded-lg border border-emerald-200 px-3 py-2 text-sm text-slate-800 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
           />
+          {dateError ? (
+            <p className="mt-2 text-xs font-medium text-red-600">{dateError}</p>
+          ) : null}
 
           <p className="mt-3 text-xs font-semibold text-slate-700">
             Select time slot

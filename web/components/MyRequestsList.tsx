@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import InAppToastStack, { type InAppToast } from "@/components/InAppToastStack";
 import { getAuthSession } from "@/lib/auth";
 
 type RequestRow = {
@@ -34,6 +35,26 @@ type ThreadRow = {
 };
 
 type RawRequest = Record<string, unknown>;
+type ThreadSummaryByTaskId = Record<
+  string,
+  {
+    unreadUserCount: number;
+    lastMessageAt: string;
+    providerCount: number;
+  }
+>;
+
+type CreateThreadResponse = {
+  ok?: boolean;
+  error?: string;
+  message?: string;
+  ThreadID?: string;
+  threadId?: string;
+  thread?: {
+    ThreadID?: string;
+    threadId?: string;
+  };
+};
 
 const normalizeRequest = (item: RawRequest): RequestRow => ({
   taskId: String(item.TaskID ?? item.taskId ?? item.id ?? item.task_id ?? "") || "-",
@@ -80,6 +101,44 @@ function formatDisplayDate(value: string) {
   return value;
 }
 
+function extractThreadIdFromCreateThreadResponse(data: CreateThreadResponse | null): string {
+  return String(
+    data?.thread?.ThreadID ||
+      data?.thread?.threadId ||
+      data?.ThreadID ||
+      data?.threadId ||
+      ""
+  ).trim();
+}
+
+function summarizeUserThreads(threads: ThreadRow[]): ThreadSummaryByTaskId {
+  return threads.reduce<ThreadSummaryByTaskId>((acc, thread) => {
+    const taskId = String(thread.TaskID || "").trim();
+    if (!taskId) return acc;
+
+    const current = acc[taskId] || {
+      unreadUserCount: 0,
+      lastMessageAt: "",
+      providerCount: 0,
+    };
+    const candidateTime = String(thread.LastMessageAt || thread.UpdatedAt || thread.CreatedAt || "").trim();
+    const currentTime = String(current.lastMessageAt || "").trim();
+
+    acc[taskId] = {
+      unreadUserCount: current.unreadUserCount + (Number(thread.UnreadUserCount) || 0),
+      lastMessageAt:
+        Date.parse(candidateTime || "") > Date.parse(currentTime || "") ? candidateTime : currentTime,
+      providerCount: current.providerCount + 1,
+    };
+
+    return acc;
+  }, {});
+}
+
+function buildToastId(prefix: string, taskId: string, suffix: string): string {
+  return `${prefix}:${taskId}:${suffix}`;
+}
+
 export default function MyRequestsList() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
@@ -92,6 +151,21 @@ export default function MyRequestsList() {
   const [threadsLoadingByTaskId, setThreadsLoadingByTaskId] = useState<Record<string, boolean>>({});
   const [threadsErrorByTaskId, setThreadsErrorByTaskId] = useState<Record<string, string>>({});
   const [openingChatKey, setOpeningChatKey] = useState("");
+  const [threadSummaryByTaskId, setThreadSummaryByTaskId] = useState<ThreadSummaryByTaskId>({});
+  const [toasts, setToasts] = useState<InAppToast[]>([]);
+  const previousRequestSnapshotRef = useRef<Record<string, string> | null>(null);
+  const previousThreadSnapshotRef = useRef<ThreadSummaryByTaskId | null>(null);
+
+  const enqueueToast = (title: string, message: string, id: string) => {
+    setToasts((current) => {
+      if (current.some((toast) => toast.id === id)) return current;
+      return [...current, { id, title, message }].slice(-4);
+    });
+
+    window.setTimeout(() => {
+      setToasts((current) => current.filter((toast) => toast.id !== id));
+    }, 5000);
+  };
 
   useEffect(() => {
     const session = getAuthSession();
@@ -102,11 +176,25 @@ export default function MyRequestsList() {
     }
 
     setHasSession(true);
-    setUserPhone(String(session.phone || "").replace(/\D/g, "").slice(-10));
+    const normalizedPhone = String(session.phone || "").replace(/\D/g, "").slice(-10);
+    setUserPhone(normalizedPhone);
 
-    const loadRequests = async () => {
+    let ignore = false;
+
+    const loadRequests = async (showAlerts: boolean) => {
       try {
-        const res = await fetch("/api/my-requests", { cache: "no-store" });
+        const [res, threadRes] = await Promise.all([
+          fetch("/api/my-requests", { cache: "no-store" }),
+          fetch("/api/kk", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "chat_get_threads",
+              ActorType: "user",
+              UserPhone: normalizedPhone,
+            }),
+          }),
+        ]);
         if (res.status === 401) {
           setHasSession(false);
           setLoading(false);
@@ -123,15 +211,75 @@ export default function MyRequestsList() {
           : Array.isArray(data?.tasks)
             ? data.tasks
             : [];
-        setRows(list.map((item: RawRequest) => normalizeRequest(item)));
+        const normalizedRows: RequestRow[] = list.map((item: RawRequest) => normalizeRequest(item));
+        const requestSnapshot = normalizedRows.reduce((acc: Record<string, string>, row: RequestRow) => {
+          acc[row.taskId] = row.respondedProvider;
+          return acc;
+        }, {});
+
+        const threadData = await threadRes.json();
+        if (!threadRes.ok || !threadData?.ok) {
+          throw new Error(threadData?.error || "Failed to load chats");
+        }
+
+        const normalizedThreads = Array.isArray(threadData?.threads)
+          ? threadData.threads.map((item: Record<string, unknown>) => normalizeThread(item))
+          : [];
+        const nextThreadSummary = summarizeUserThreads(normalizedThreads);
+
+        if (!ignore) {
+          setRows(normalizedRows);
+          setThreadSummaryByTaskId(nextThreadSummary);
+        }
+
+        if (showAlerts && previousRequestSnapshotRef.current) {
+          for (const row of normalizedRows) {
+            const previousRespondedProvider = previousRequestSnapshotRef.current[row.taskId] || "";
+            if (!previousRespondedProvider && row.respondedProvider) {
+              enqueueToast(
+                "A provider responded to your request",
+                `Task ${row.taskId} now has a provider response.`,
+                buildToastId("response", row.taskId, row.respondedProvider)
+              );
+            }
+          }
+        }
+
+        if (showAlerts && previousThreadSnapshotRef.current) {
+          for (const [taskId, summary] of Object.entries(nextThreadSummary)) {
+            const previousSummary = previousThreadSnapshotRef.current[taskId];
+            if (!previousSummary) continue;
+            if (summary.unreadUserCount > previousSummary.unreadUserCount && summary.lastMessageAt) {
+              enqueueToast(
+                "New message from provider",
+                `You have ${summary.unreadUserCount} unread message${summary.unreadUserCount === 1 ? "" : "s"} on task ${taskId}.`,
+                buildToastId("message", taskId, `${summary.unreadUserCount}:${summary.lastMessageAt}`)
+              );
+            }
+          }
+        }
+
+        previousRequestSnapshotRef.current = requestSnapshot;
+        previousThreadSnapshotRef.current = nextThreadSummary;
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load requests");
+        if (!ignore) {
+          setError(err instanceof Error ? err.message : "Failed to load requests");
+        }
       } finally {
-        setLoading(false);
+        if (!ignore) setLoading(false);
       }
     };
 
-    void loadRequests();
+    void loadRequests(false);
+
+    const intervalId = window.setInterval(() => {
+      void loadRequests(true);
+    }, 18000);
+
+    return () => {
+      ignore = true;
+      window.clearInterval(intervalId);
+    };
   }, [router]);
 
   const total = useMemo(() => rows.length, [rows]);
@@ -193,10 +341,29 @@ export default function MyRequestsList() {
     }
   };
 
-  const handleOpenChat = async (taskId: string, providerId: string) => {
-    if (!userPhone || !providerId) return;
+  const handleOpenChat = async (row: RequestRow, providerId: string, thread: ThreadRow | null) => {
+    const taskId = String(row.taskId || "").trim();
+    const selectedProviderId = String(providerId || "").trim();
 
-    const chatKey = `${taskId}:${providerId}`;
+    console.log("[my-requests] selected request item shape", {
+      row,
+      taskId,
+      keys: Object.keys(row || {}),
+    });
+    console.log("[my-requests] selected provider info", {
+      providerId: selectedProviderId,
+      existingThread: thread,
+    });
+
+    if (!userPhone || !taskId || !selectedProviderId) {
+      setThreadsErrorByTaskId((current) => ({
+        ...current,
+        [taskId || row.taskId || "unknown"]: "Chat unavailable: missing task or provider context.",
+      }));
+      return;
+    }
+
+    const chatKey = `${taskId}:${selectedProviderId}`;
     setOpeningChatKey(chatKey);
     setThreadsErrorByTaskId((current) => ({
       ...current,
@@ -212,17 +379,32 @@ export default function MyRequestsList() {
           ActorType: "user",
           UserPhone: userPhone,
           TaskID: taskId,
-          ProviderID: providerId,
+          ProviderID: selectedProviderId,
         }),
       });
-      const data = await res.json();
-      const threadId = String(data?.thread?.ThreadID || "").trim();
+      const data = (await res.json()) as CreateThreadResponse;
+      const threadId = extractThreadIdFromCreateThreadResponse(data);
+      const finalHref = threadId
+        ? `/chat/thread/${encodeURIComponent(threadId)}?actor=user`
+        : "";
 
-      if (!res.ok || !data?.ok || !threadId) {
-        throw new Error(data?.error || "Failed to open chat");
+      console.log("[my-requests] open chat raw response", {
+        status: res.status,
+        ok: res.ok,
+        data,
+      });
+      console.log("[my-requests] open chat selection", {
+        taskId,
+        providerId: selectedProviderId,
+        extractedThreadId: threadId,
+        finalHref,
+      });
+
+      if (!res.ok || !data?.ok || !threadId || !finalHref) {
+        throw new Error(data?.error || data?.message || "Failed to open chat");
       }
 
-      router.push(`/dashboard/my-requests/chat/${encodeURIComponent(threadId)}`);
+      router.push(finalHref);
     } catch (err) {
       setThreadsErrorByTaskId((current) => ({
         ...current,
@@ -282,6 +464,7 @@ export default function MyRequestsList() {
               const taskThreads = threadsByTaskId[row.taskId] || [];
               const isResponsesLoading = Boolean(threadsLoadingByTaskId[row.taskId]);
               const responsesError = threadsErrorByTaskId[row.taskId] || "";
+              const taskThreadSummary = threadSummaryByTaskId[row.taskId];
               const threadByProviderId = new Map(
                 taskThreads.map((thread) => [String(thread.ProviderID || "").trim(), thread])
               );
@@ -292,7 +475,21 @@ export default function MyRequestsList() {
                   className="rounded-xl border border-slate-200 p-4"
                 >
                   <div className="space-y-2 text-sm">
-                    <p className="text-slate-900"><span className="font-semibold">Task ID:</span> {row.taskId}</p>
+                    <p className="flex flex-wrap items-center gap-2 text-slate-900">
+                      <span>
+                        <span className="font-semibold">Task ID:</span> {row.taskId}
+                      </span>
+                      {taskThreadSummary?.unreadUserCount ? (
+                        <span className="inline-flex rounded-full bg-rose-600 px-2.5 py-0.5 text-xs font-semibold text-white">
+                          {taskThreadSummary.unreadUserCount} unread
+                        </span>
+                      ) : null}
+                      {row.respondedProvider ? (
+                        <span className="inline-flex rounded-full bg-emerald-100 px-2.5 py-0.5 text-xs font-semibold text-emerald-700">
+                          Provider responded
+                        </span>
+                      ) : null}
+                    </p>
                     <p className="text-slate-900"><span className="font-semibold">Category:</span> {row.category}</p>
                     <p className="text-slate-700"><span className="font-semibold">Area:</span> {row.area}</p>
                     <p className="text-slate-700"><span className="font-semibold">Details:</span> {row.details}</p>
@@ -313,8 +510,13 @@ export default function MyRequestsList() {
                   <button
                     type="button"
                     onClick={() => void handleToggleResponses(row.taskId)}
-                    className="mt-4 text-sm font-semibold text-sky-700"
+                    className="mt-4 inline-flex items-center gap-2 text-sm font-semibold text-sky-700"
                   >
+                    {taskThreadSummary?.unreadUserCount ? (
+                      <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-sky-600 px-1.5 text-[11px] text-white">
+                        {taskThreadSummary.unreadUserCount}
+                      </span>
+                    ) : null}
                     {isExpanded ? "View Responses ▲" : "View Responses ▼"}
                   </button>
 
@@ -356,15 +558,25 @@ export default function MyRequestsList() {
                               <p className="mt-1 text-slate-700">
                                 <span className="font-semibold">Unread for user:</span>{" "}
                                 {thread?.UnreadUserCount || 0}
+                                {thread?.UnreadUserCount ? (
+                                  <span className="ml-2 inline-flex rounded-full bg-rose-100 px-2 py-0.5 text-[11px] font-semibold text-rose-700">
+                                    New
+                                  </span>
+                                ) : null}
                               </p>
                               <button
                                 type="button"
-                                onClick={() => void handleOpenChat(row.taskId, providerId)}
-                                disabled={openingChatKey === chatKey}
+                                onClick={() => void handleOpenChat(row, providerId, thread)}
+                                disabled={openingChatKey === chatKey || !row.taskId || !providerId}
                                 className="mt-3 inline-flex rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white disabled:opacity-60"
                               >
                                 {openingChatKey === chatKey ? "Opening..." : "Open Chat"}
                               </button>
+                              {!row.taskId || !providerId ? (
+                                <p className="mt-2 text-xs text-rose-600">
+                                  Chat unavailable: missing task or provider identifier.
+                                </p>
+                              ) : null}
                             </div>
                           );
                         })
@@ -377,6 +589,10 @@ export default function MyRequestsList() {
           </div>
         )}
       </div>
+      <InAppToastStack
+        toasts={toasts}
+        onDismiss={(id) => setToasts((current) => current.filter((toast) => toast.id !== id))}
+      />
     </main>
   );
 }

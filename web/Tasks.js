@@ -218,6 +218,26 @@ function makeTaskId_() {
   return "TK-" + Date.now();
 }
 
+function getTodayDateString_() {
+  return Utilities.formatDate(new Date(), "Asia/Kolkata", "yyyy-MM-dd");
+}
+
+function normalizeTaskDateOnly_(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+
+  const isoMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoMatch) return isoMatch[1] + "-" + isoMatch[2] + "-" + isoMatch[3];
+
+  const dmyDashMatch = raw.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  if (dmyDashMatch) return dmyDashMatch[3] + "-" + dmyDashMatch[2] + "-" + dmyDashMatch[1];
+
+  const dmySlashMatch = raw.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (dmySlashMatch) return dmySlashMatch[3] + "-" + dmySlashMatch[2] + "-" + dmySlashMatch[1];
+
+  return "";
+}
+
 function submitTask_(data) {
   const phone = normalizePhone10_(data.userPhone || data.phone);
   if (!phone) return { ok: false, status: "error", error: "Invalid phone number" };
@@ -230,10 +250,27 @@ function submitTask_(data) {
   ).trim();
 
   const serviceDate = String(data.serviceDate || "").trim();
+  const normalizedServiceDate = normalizeTaskDateOnly_(serviceDate);
   const timeSlot = String(data.timeSlot || "").trim();
 
   if (!category) return { ok: false, status: "error", error: "Category required" };
   if (!area) return { ok: false, status: "error", error: "Area required" };
+  const todayDate = getTodayDateString_();
+  if (serviceDate && (!normalizedServiceDate || normalizedServiceDate < todayDate)) {
+    console.log("[submitTask_] rejected past date", {
+      rawDate: serviceDate,
+      normalizedDate: normalizedServiceDate,
+      todayDate: todayDate,
+      reason: !normalizedServiceDate
+        ? "INVALID_SERVICE_DATE_FORMAT"
+        : "SERVICE_DATE_BEFORE_TODAY",
+    });
+    return {
+      ok: false,
+      status: "error",
+      message: "Please select today or a future date.",
+    };
+  }
 
   const sh = getTasksSheet_();
   const headers = ensureSheetHeaders_(sh, [
@@ -273,14 +310,15 @@ function submitTask_(data) {
   const iNotified = idx("notified_at");
   const iResponded = idx("responded_at");
 
-  if (iServiceDate >= 0) row[iServiceDate] = serviceDate;
+  if (iServiceDate >= 0) row[iServiceDate] = normalizedServiceDate;
   if (iTimeSlot >= 0) row[iTimeSlot] = timeSlot;
   if (iNotified >= 0) row[iNotified] = "";
   if (iResponded >= 0) row[iResponded] = "";
 
   sh.appendRow(row);
 
-  const serviceTime = selectedTimeframe || [serviceDate, timeSlot].filter(Boolean).join(" ") || "-";
+  const serviceTime =
+    selectedTimeframe || [normalizedServiceDate, timeSlot].filter(Boolean).join(" ") || "-";
   const matchResult = matchProviders_(category, area, 50);
   const matchedProviders =
     matchResult && matchResult.ok !== false && Array.isArray(matchResult.providers)
