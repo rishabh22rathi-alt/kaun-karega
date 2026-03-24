@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { getAuthSession } from "@/lib/auth";
-import { fetchProviderMatches } from "@/lib/api/providerMatching";
 
 function getTodayDateInKolkata() {
   return new Intl.DateTimeFormat("en-CA", {
@@ -25,8 +24,10 @@ function normalizeDateOnly(value: string) {
 }
 
 export async function POST(request: Request) {
+  const routeStartMs = Date.now();
   try {
     const body = await request.json();
+    const bodyParsedMs = Date.now();
     // Destructure the data coming from your frontend component
     const category = typeof body?.category === "string" ? body.category.trim() : "";
     const area = typeof body?.area === "string" ? body.area.trim() : "";
@@ -109,12 +110,18 @@ export async function POST(request: Request) {
         timeSlot,
       }),
     });
+    const scriptResponseMs = Date.now();
 
     const scriptStatus = response.status;
     const scriptBodyText = await response.text();
+    const scriptBodyReadMs = Date.now();
     console.log("submit-request Apps Script response", {
       status: scriptStatus,
       body: scriptBodyText,
+      bodyParseElapsedMs: bodyParsedMs - routeStartMs,
+      appsScriptFetchElapsedMs: scriptResponseMs - bodyParsedMs,
+      appsScriptBodyReadElapsedMs: scriptBodyReadMs - scriptResponseMs,
+      routeElapsedMsSoFar: scriptBodyReadMs - routeStartMs,
     });
 
     if (!response.ok) {
@@ -161,48 +168,16 @@ export async function POST(request: Request) {
       );
     }
 
-    try {
-      const matched = await fetchProviderMatches({
-        category,
-        area,
-        taskId,
-        userPhone: session.phone,
-        limit: 20,
-      });
-
-      const persistResponse = await fetch(GOOGLE_SCRIPT_URL, {
-        method: "POST",
-        headers: { "Content-Type": "text/plain" },
-        body: JSON.stringify({
-          action: "save_provider_matches",
-          taskId,
-          category,
-          area,
-          details,
-          providers: matched.providers,
-        }),
-      });
-
-      if (!persistResponse.ok) {
-        const persistBody = await persistResponse.text();
-        console.error("save_provider_matches failed", {
-          taskId,
-          status: persistResponse.status,
-          body: persistBody,
-        });
-      } else {
-        const persistText = await persistResponse.text();
-        console.log("save_provider_matches response", {
-          taskId,
-          body: persistText,
-        });
-      }
-    } catch (persistError) {
-      console.error("Provider match persistence failed", {
-        taskId,
-        error: persistError instanceof Error ? persistError.message : persistError,
-      });
-    }
+    console.log("submit-request route timing", {
+      taskId,
+      category,
+      area,
+      bodyParseElapsedMs: bodyParsedMs - routeStartMs,
+      appsScriptFetchElapsedMs: scriptResponseMs - bodyParsedMs,
+      appsScriptBodyReadElapsedMs: scriptBodyReadMs - scriptResponseMs,
+      totalElapsedMsBeforeResponse: Date.now() - routeStartMs,
+      deferredNotificationProcessing: true,
+    });
 
     return NextResponse.json({
       ok: true,
@@ -210,7 +185,11 @@ export async function POST(request: Request) {
     });
 
   } catch (error: any) {
+    const routeErrorMs = Date.now();
     console.error("API Route Error:", error);
+    console.error("submit-request route timing failed", {
+      totalElapsedMs: routeErrorMs - routeStartMs,
+    });
     return NextResponse.json(
       { error: error?.message || "Internal Server Error" },
       { status: 500 }

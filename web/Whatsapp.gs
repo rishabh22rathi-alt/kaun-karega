@@ -1,4 +1,5 @@
 function sendProviderJobAlert(phone, taskId, serviceTime, area) {
+  var sendStartMs = Date.now();
   var scriptProperties = PropertiesService.getScriptProperties();
 
   var accessToken = String(
@@ -128,6 +129,15 @@ function sendProviderJobAlert(phone, taskId, serviceTime, area) {
 
   var ok = statusCode >= 200 && statusCode < 300 && !(data && data.error);
   var status = ok ? "accepted" : (data && data.error ? "failed" : "error");
+
+  Logger.log(
+    "sendProviderJobAlert timing | taskId=%s | phone=%s | status=%s | statusCode=%s | elapsedMs=%s",
+    String(taskId || "").trim(),
+    String(phone || "").trim(),
+    status,
+    statusCode,
+    Date.now() - sendStartMs
+  );
 
   Logger.log(responseText);
   return {

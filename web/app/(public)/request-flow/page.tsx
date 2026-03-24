@@ -96,6 +96,17 @@ function normalizeDateOnly(value: string) {
   return "";
 }
 
+function buildSuccessRedirect(service: string, area: string, taskId = "") {
+  const params = new URLSearchParams();
+  const trimmedService = service.trim();
+  const normalizedArea = normalizeAreaValue(area);
+  if (trimmedService) params.set("service", trimmedService);
+  if (normalizedArea) params.set("area", normalizedArea);
+  if (taskId.trim()) params.set("taskId", taskId.trim());
+  const query = params.toString();
+  return query ? `/success?${query}` : "/success";
+}
+
 function PageContent() {
   const params = useSearchParams();
   const router = useRouter();
@@ -200,7 +211,7 @@ function PageContent() {
         window.localStorage.setItem("kk_last_area", normalizedArea);
       }
       setIsRedirecting(true);
-      router.push("/my-tasks");
+      router.push(buildSuccessRedirect(category, normalizedArea, json?.taskId || ""));
       router.refresh();
       return;
     } catch (err: any) {

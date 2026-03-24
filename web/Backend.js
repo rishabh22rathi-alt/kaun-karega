@@ -137,6 +137,9 @@ function doPost(e) {
       case "submit_task":
         return json_(submitTask_(data));
 
+      case "process_task_notifications":
+        return json_(processTaskNotifications_(data));
+
       case "get_user_requests":
         return json_(getUserRequests_(data));
 

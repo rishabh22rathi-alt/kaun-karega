@@ -16,7 +16,6 @@ const SHEET_PROVIDER_TASK_MATCHES = "ProviderTaskMatches";
 const SHEET_CHAT_THREADS = "ChatThreads";
 const SHEET_CHAT_MESSAGES = "ChatMessages";
 const SHEET_BLOCKED_WORDS = "BlockedWords";
-const SHEET_TASK_NOTIFICATIONS = "TaskNotifications";
 
 const MAIN_SPREADSHEET_ID = "1xCgM4HnsnYj7XEH6786urLH-V2SmOdmi6koijia_zQo";
 const PROVIDER_SHEET = "Providers";

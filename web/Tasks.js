@@ -8,51 +8,6 @@ function getTasksSheet_() {
   return sh;
 }
 
-function getTaskNotificationsSheet_() {
-  const sheet = getOrCreateSheet(SHEET_TASK_NOTIFICATIONS, [
-    "NotificationID",
-    "TaskID",
-    "ProviderID",
-    "Phone",
-    "TemplateName",
-    "ResponseLink",
-    "SentAt",
-    "Status",
-    "Error",
-  ]);
-
-  ensureSheetHeaders_(sheet, [
-    "NotificationID",
-    "TaskID",
-    "ProviderID",
-    "Phone",
-    "TemplateName",
-    "ResponseLink",
-    "SentAt",
-    "Status",
-    "Error",
-  ]);
-
-  return sheet;
-}
-
-function nextNotificationId_(sheet) {
-  const values = sheet.getDataRange().getValues();
-  if (values.length <= 1) return "NT-0001";
-
-  let maxSeq = 0;
-  for (let i = 1; i < values.length; i++) {
-    const notificationId = String(values[i][0] || "").trim();
-    const match = notificationId.match(/^NT-(\d+)$/i);
-    if (!match) continue;
-
-    const seq = Number(match[1]) || 0;
-    if (seq > maxSeq) maxSeq = seq;
-  }
-
-  return "NT-" + ("000" + (maxSeq + 1)).slice(-4);
-}
-
 function sendProviderLeadNotificationViaMeta_(payload) {
   const props = PropertiesService.getScriptProperties();
   const token = String(
@@ -125,6 +80,41 @@ function sendProviderLeadNotificationViaMeta_(payload) {
   throw new Error(bodyText || "WhatsApp API returned HTTP " + statusCode);
 }
 
+function formatTaskServiceDateForDisplay_(value) {
+  const normalized = normalizeTaskDateOnly_(value);
+  if (!normalized) return "";
+
+  const parts = normalized.split("-");
+  if (parts.length !== 3) return normalized;
+  return parts[2] + "/" + parts[1] + "/" + parts[0];
+}
+
+function buildProviderFacingServiceTime_(selectedTimeframe, serviceDate, timeSlot, fallbackLabel) {
+  const timeframe = String(selectedTimeframe || "").trim();
+  const slot = String(timeSlot || "").trim();
+  const fallback = String(fallbackLabel || "").trim();
+  const formattedDate = formatTaskServiceDateForDisplay_(serviceDate);
+
+  if (timeframe && timeframe.toLowerCase() !== "schedule later") {
+    return timeframe;
+  }
+
+  const scheduledParts = [formattedDate, slot].filter(Boolean);
+  if (scheduledParts.length > 0) {
+    return scheduledParts.join(" ");
+  }
+
+  if (timeframe) {
+    return timeframe;
+  }
+
+  if (fallback) {
+    return fallback;
+  }
+
+  return "Not specified";
+}
+
 function sendProviderLeadNotification_(data) {
   const taskId = String(data.TaskID || data.taskId || "").trim();
   const providerId = String(data.ProviderID || data.providerId || "").trim();
@@ -142,12 +132,25 @@ function sendProviderLeadNotification_(data) {
   if (!requiredLabel) return { ok: false, status: "error", error: "RequiredLabel required" };
   if (!responseLink) return { ok: false, status: "error", error: "ResponseLink required" };
 
-  const sheet = getTaskNotificationsSheet_();
-  const notificationId = nextNotificationId_(sheet);
-  const sentAt = Utilities.formatDate(new Date(), "Asia/Kolkata", "dd/MM/yyyy HH:mm:ss");
+  const templateNameFromProps = String(
+    PropertiesService.getScriptProperties().getProperty("META_WA_PROVIDER_LEAD_TEMPLATE") || ""
+  ).trim();
   let templateName = "provider_new_lead";
   let status = "failed";
   let errorMessage = "";
+  let statusCode = "";
+  let messageId = "";
+  let rawResponse = "";
+  const serviceTime = buildProviderFacingServiceTime_(
+    data.SelectedTimeframe || data.selectedTimeframe || data.time || data.urgency || "",
+    data.ServiceDate || data.serviceDate || "",
+    data.TimeSlot || data.timeSlot || "",
+    data.ServiceTime || data.serviceTime || requiredLabel
+  );
+
+  if (templateNameFromProps) {
+    templateName = templateNameFromProps;
+  }
 
   try {
     if (typeof sendWhatsAppToProvider === "function") {
@@ -176,6 +179,7 @@ function sendProviderLeadNotification_(data) {
         ResponseLink: responseLink,
       });
       templateName = sendResult.templateName || templateName;
+      rawResponse = String(sendResult.response || "").trim();
     }
 
     status = "sent";
@@ -184,23 +188,26 @@ function sendProviderLeadNotification_(data) {
     status = "failed";
   }
 
-  sheet.appendRow([
-    notificationId,
+  const logResult = appendNotificationLog_({
     taskId,
     providerId,
-    phone,
+    providerPhone: phone,
+    category,
+    area,
+    serviceTime,
     templateName,
-    responseLink,
-    sentAt,
     status,
+    statusCode,
+    messageId,
     errorMessage,
-  ]);
+    rawResponse: rawResponse || responseLink,
+  });
 
   if (status === "sent") {
     return {
       ok: true,
       status: "success",
-      notificationId: notificationId,
+      notificationId: logResult.logId,
       taskId: taskId,
       providerId: providerId,
     };
@@ -210,7 +217,7 @@ function sendProviderLeadNotification_(data) {
     ok: false,
     status: "error",
     error: errorMessage || "Failed to send provider lead notification",
-    notificationId: notificationId,
+    notificationId: logResult.logId,
   };
 }
 
@@ -239,6 +246,7 @@ function normalizeTaskDateOnly_(value) {
 }
 
 function submitTask_(data) {
+  var submitStartMs = Date.now();
   const phone = normalizePhone10_(data.userPhone || data.phone);
   if (!phone) return { ok: false, status: "error", error: "Invalid phone number" };
 
@@ -316,98 +324,239 @@ function submitTask_(data) {
   if (iResponded >= 0) row[iResponded] = "";
 
   sh.appendRow(row);
-
-  const serviceTime =
-    selectedTimeframe || [normalizedServiceDate, timeSlot].filter(Boolean).join(" ") || "-";
-  const matchResult = matchProviders_(category, area, 50);
-  const matchedProviders =
-    matchResult && matchResult.ok !== false && Array.isArray(matchResult.providers)
-      ? matchResult.providers
-      : [];
-  const templateName = String(
-    PropertiesService.getScriptProperties().getProperty("META_WA_PROVIDER_LEAD_TEMPLATE") || ""
-  ).trim();
-  let attemptedSends = 0;
-  let skippedMissingPhone = 0;
-  let failedSends = 0;
-
-  for (let i = 0; i < matchedProviders.length; i++) {
-    const provider = matchedProviders[i] || {};
-    const providerPhone = String(provider.phone || "").trim();
-    const providerId = String(
-      provider.providerId || provider.ProviderID || provider.id || ""
-    ).trim();
-
-    if (!providerPhone) {
-      skippedMissingPhone++;
-      continue;
-    }
-
-    attemptedSends++;
-
-    try {
-      const sendResult = sendProviderJobAlert(providerPhone, taskId, serviceTime, area);
-      if (!sendResult || sendResult.ok === false) {
-        failedSends++;
-      }
-      appendNotificationLog_({
-        TaskID: taskId,
-        ProviderID: providerId,
-        ProviderPhone: providerPhone,
-        Category: category,
-        Area: area,
-        ServiceTime: serviceTime,
-        TemplateName: templateName,
-        Status: sendResult && sendResult.status ? sendResult.status : "error",
-        StatusCode: sendResult && sendResult.statusCode ? sendResult.statusCode : "",
-        MessageId: sendResult && sendResult.messageId ? sendResult.messageId : "",
-        ErrorMessage: sendResult && sendResult.errorMessage ? sendResult.errorMessage : "",
-        RawResponse: sendResult && sendResult.responseText ? sendResult.responseText : "",
-      });
-    } catch (err) {
-      failedSends++;
-      const errorMessage = String(err && err.message ? err.message : err);
-      appendNotificationLog_({
-        TaskID: taskId,
-        ProviderID: providerId,
-        ProviderPhone: providerPhone,
-        Category: category,
-        Area: area,
-        ServiceTime: serviceTime,
-        TemplateName: templateName,
-        Status: "error",
-        StatusCode: "",
-        MessageId: "",
-        ErrorMessage: errorMessage,
-        RawResponse: errorMessage,
-      });
-      Logger.log(
-        "sendProviderJobAlert failed | TaskID=" +
-          taskId +
-          " | ProviderID=" +
-          providerId +
-          " | phone=" +
-          providerPhone +
-          " | error=" +
-          errorMessage
-      );
-    }
-  }
+  var taskSheetWriteMs = Date.now();
 
   Logger.log(
-    "submitTask_ provider alerts summary | TaskID=" +
+    "submitTask_ create-only summary | TaskID=" +
       taskId +
-      " | matched=" +
-      matchedProviders.length +
-      " | attempted=" +
-      attemptedSends +
-      " | skippedMissingPhone=" +
-      skippedMissingPhone +
-      " | failed=" +
-      failedSends
+      " | taskSheetWriteMs=" +
+      (taskSheetWriteMs - submitStartMs) +
+      " | totalElapsedMs=" +
+      (taskSheetWriteMs - submitStartMs)
   );
 
   return { ok: true, status: "success", message: "Task submitted", taskId: taskId };
+}
+
+function getTaskByIdFromAdminState_(taskId) {
+  const normalizedTaskId = String(taskId || "").trim();
+  if (!normalizedTaskId) return null;
+
+  const state = getAdminTaskSheetState_();
+  for (let i = 1; i < state.values.length; i++) {
+    const row = state.values[i] || [];
+    const rowTaskId =
+      state.idxTaskId !== -1 && row[state.idxTaskId] !== undefined
+        ? String(row[state.idxTaskId]).trim()
+        : "";
+    if (rowTaskId !== normalizedTaskId) continue;
+
+    return {
+      TaskID: rowTaskId,
+      UserPhone:
+        state.idxUserPhone !== -1 && row[state.idxUserPhone] !== undefined
+          ? String(row[state.idxUserPhone]).trim()
+          : "",
+      Category:
+        state.idxCategory !== -1 && row[state.idxCategory] !== undefined
+          ? String(row[state.idxCategory]).trim()
+          : "",
+      Area:
+        state.idxArea !== -1 && row[state.idxArea] !== undefined
+          ? String(row[state.idxArea]).trim()
+          : "",
+      Details:
+        state.idxDetails !== -1 && row[state.idxDetails] !== undefined
+          ? String(row[state.idxDetails]).trim()
+          : "",
+      Status:
+        state.idxStatus !== -1 && row[state.idxStatus] !== undefined
+          ? String(row[state.idxStatus]).trim()
+          : "",
+      CreatedAt:
+        state.idxCreatedAt !== -1 && row[state.idxCreatedAt] !== undefined
+          ? String(row[state.idxCreatedAt]).trim()
+          : "",
+      SelectedTimeframe:
+        state.idxSelectedTimeframe !== -1 && row[state.idxSelectedTimeframe] !== undefined
+          ? String(row[state.idxSelectedTimeframe]).trim()
+          : "",
+      ServiceDate:
+        state.idxServiceDate !== -1 && row[state.idxServiceDate] !== undefined
+          ? String(row[state.idxServiceDate]).trim()
+          : "",
+      TimeSlot:
+        state.idxTimeSlot !== -1 && row[state.idxTimeSlot] !== undefined
+          ? String(row[state.idxTimeSlot]).trim()
+          : "",
+      notified_at:
+        state.idxNotifiedAt !== -1 && row[state.idxNotifiedAt] !== undefined
+          ? String(row[state.idxNotifiedAt]).trim()
+          : "",
+      responded_at:
+        state.idxRespondedAt !== -1 && row[state.idxRespondedAt] !== undefined
+          ? String(row[state.idxRespondedAt]).trim()
+          : "",
+    };
+  }
+
+  return null;
+}
+
+function processTaskNotifications_(data) {
+  const processStartMs = Date.now();
+  const taskId = String(data.taskId || data.TaskID || "").trim();
+  if (!taskId) return { ok: false, status: "error", error: "TaskID required" };
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+
+  try {
+    const task = getTaskByIdFromAdminState_(taskId);
+    if (!task) return { ok: false, status: "error", error: "Task not found" };
+
+    const alreadyNotified = String(task.notified_at || "").trim();
+    const hasExistingLogs = hasNotificationLogsForTask_(taskId);
+    if (alreadyNotified || hasExistingLogs) {
+      Logger.log(
+        "processTaskNotifications_ skipped duplicate | TaskID=%s | notified_at=%s | hasExistingLogs=%s | elapsedMs=%s",
+        taskId,
+        alreadyNotified,
+        hasExistingLogs ? "yes" : "no",
+        Date.now() - processStartMs
+      );
+      return {
+        ok: true,
+        status: "success",
+        taskId: taskId,
+        skipped: true,
+        message: "Notifications already processed for this task.",
+      };
+    }
+
+    const serviceTime = buildProviderFacingServiceTime_(
+      task.SelectedTimeframe,
+      task.ServiceDate,
+      task.TimeSlot,
+      "Schedule later"
+    );
+
+    const matchResult = matchProviders_(task.Category, task.Area, 50);
+    const matchCompletedMs = Date.now();
+    const matchedProviders =
+      matchResult && matchResult.ok !== false && Array.isArray(matchResult.providers)
+        ? matchResult.providers
+        : [];
+
+    const saveResult = saveProviderMatches_({
+      taskId: task.TaskID,
+      category: task.Category,
+      area: task.Area,
+      details: task.Details,
+      providers: matchedProviders,
+    });
+    if (!saveResult || saveResult.ok === false) {
+      return { ok: false, status: "error", error: "Unable to save provider matches" };
+    }
+    const matchesSavedMs = Date.now();
+
+    const templateName = String(
+      PropertiesService.getScriptProperties().getProperty("META_WA_PROVIDER_LEAD_TEMPLATE") || ""
+    ).trim();
+    const logIds = getNextNotificationLogIds_(Math.max(1, matchedProviders.length));
+
+    let attemptedSends = 0;
+    let skippedMissingPhone = 0;
+    let failedSends = 0;
+
+    for (let i = 0; i < matchedProviders.length; i++) {
+      const provider = matchedProviders[i] || {};
+      const providerPhone = String(provider.phone || "").trim();
+      const providerId = String(
+        provider.providerId || provider.ProviderID || provider.id || ""
+      ).trim();
+
+      if (!providerPhone) {
+        skippedMissingPhone++;
+        continue;
+      }
+
+      attemptedSends++;
+
+      try {
+        const sendResult = sendProviderJobAlert(providerPhone, taskId, serviceTime, task.Area);
+        if (!sendResult || sendResult.ok === false) {
+          failedSends++;
+        }
+        appendNotificationLog_({
+          LogID: logIds[i] || "",
+          TaskID: taskId,
+          ProviderID: providerId,
+          ProviderPhone: providerPhone,
+          Category: task.Category,
+          Area: task.Area,
+          ServiceTime: serviceTime,
+          TemplateName: templateName,
+          Status: sendResult && sendResult.status ? sendResult.status : "error",
+          StatusCode: sendResult && sendResult.statusCode ? sendResult.statusCode : "",
+          MessageId: sendResult && sendResult.messageId ? sendResult.messageId : "",
+          ErrorMessage: sendResult && sendResult.errorMessage ? sendResult.errorMessage : "",
+          RawResponse: sendResult && sendResult.responseText ? sendResult.responseText : "",
+        });
+      } catch (err) {
+        failedSends++;
+        const errorMessage = String(err && err.message ? err.message : err);
+        appendNotificationLog_({
+          LogID: logIds[i] || "",
+          TaskID: taskId,
+          ProviderID: providerId,
+          ProviderPhone: providerPhone,
+          Category: task.Category,
+          Area: task.Area,
+          ServiceTime: serviceTime,
+          TemplateName: templateName,
+          Status: "error",
+          StatusCode: "",
+          MessageId: "",
+          ErrorMessage: errorMessage,
+          RawResponse: errorMessage,
+        });
+      }
+    }
+
+    const notificationsCompletedMs = Date.now();
+    const now = new Date();
+    updateAdminTaskRow_(taskId, {
+      Status: "notified",
+      notified_at: now,
+    });
+
+    Logger.log(
+      "processTaskNotifications_ summary | TaskID=%s | matched=%s | attempted=%s | skippedMissingPhone=%s | failed=%s | matchMs=%s | saveMatchesMs=%s | notifyMs=%s | totalElapsedMs=%s",
+      taskId,
+      matchedProviders.length,
+      attemptedSends,
+      skippedMissingPhone,
+      failedSends,
+      matchCompletedMs - processStartMs,
+      matchesSavedMs - matchCompletedMs,
+      notificationsCompletedMs - matchesSavedMs,
+      Date.now() - processStartMs
+    );
+
+    return {
+      ok: true,
+      status: "success",
+      taskId: taskId,
+      skipped: false,
+      matchedProviders: matchedProviders.length,
+      attemptedSends: attemptedSends,
+      failedSends: failedSends,
+      message: "Provider notifications processed.",
+    };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function getUserRequests_(data) {

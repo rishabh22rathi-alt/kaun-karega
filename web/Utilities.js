@@ -175,6 +175,23 @@ function getNormalizedCategoryKey_(value) {
   return normalizeCategoryName_(value).toLowerCase();
 }
 
+function getProviderMatchingCategoryKey_(value) {
+  var normalized = getNormalizedCategoryKey_(value);
+  if (!normalized) return "";
+
+  var collapsed = normalized.replace(/[^a-z0-9]/g, "");
+  if (
+    collapsed === "preschool" ||
+    collapsed === "preschools" ||
+    collapsed === "playschool" ||
+    collapsed === "playschools"
+  ) {
+    return "preschoolplayschool";
+  }
+
+  return normalized;
+}
+
 function uniqueNormalizedValues_(values) {
   const out = [];
   const seen = new Set();

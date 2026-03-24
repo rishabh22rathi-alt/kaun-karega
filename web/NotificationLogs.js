@@ -26,26 +26,64 @@ function getNotificationLogsSheet_() {
   return sh;
 }
 
-function nextNotificationLogId_(sheet) {
-  var values = sheet.getDataRange().getValues();
-  if (values.length <= 1) return "LOG-0001";
+function getNextNotificationLogIds_(count) {
+  var total = Number(count || 0) || 0;
+  if (total <= 0) return [];
+  var props = PropertiesService.getScriptProperties();
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
 
-  var maxSeq = 0;
+  try {
+    var currentValue = String(props.getProperty("NOTIFICATION_LOG_SEQ") || "").trim();
+    var currentSeq = Number(currentValue) || 0;
+
+    if (!currentSeq) {
+      var sh = getNotificationLogsSheet_();
+      var values = sh.getDataRange().getValues();
+      for (var i = 1; i < values.length; i++) {
+        var logId = String(values[i][0] || "").trim();
+        var match = logId.match(/^LOG-(\d+)$/i);
+        if (!match) continue;
+        var seq = Number(match[1]) || 0;
+        if (seq > currentSeq) currentSeq = seq;
+      }
+    }
+
+    var ids = [];
+    for (var j = 0; j < total; j++) {
+      currentSeq += 1;
+      ids.push("LOG-" + ("0000" + currentSeq).slice(-4));
+    }
+
+    props.setProperty("NOTIFICATION_LOG_SEQ", String(currentSeq));
+    return ids;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function hasNotificationLogsForTask_(taskId) {
+  var normalizedTaskId = String(taskId || "").trim();
+  if (!normalizedTaskId) return false;
+
+  var sh = getNotificationLogsSheet_();
+  var values = sh.getDataRange().getValues();
+  if (values.length <= 1) return false;
+
   for (var i = 1; i < values.length; i++) {
-    var logId = String(values[i][0] || "").trim();
-    var match = logId.match(/^LOG-(\d+)$/i);
-    if (!match) continue;
-
-    var seq = Number(match[1]) || 0;
-    if (seq > maxSeq) maxSeq = seq;
+    if (String(values[i][2] || "").trim() === normalizedTaskId) {
+      return true;
+    }
   }
 
-  return "LOG-" + ("0000" + (maxSeq + 1)).slice(-4);
+  return false;
 }
 
 function appendNotificationLog_(log) {
+  var logStartMs = Date.now();
   var sh = getNotificationLogsSheet_();
-  var logId = nextNotificationLogId_(sh);
+  var precomputedLogId = String(log && log.LogID || log && log.logId || "").trim();
+  var logId = precomputedLogId || getNextNotificationLogIds_(1)[0];
   var createdAt = Utilities.formatDate(new Date(), "Asia/Kolkata", "dd/MM/yyyy HH:mm:ss");
   var row = [
     logId,
@@ -65,6 +103,14 @@ function appendNotificationLog_(log) {
   ];
 
   sh.appendRow(row);
+
+  Logger.log(
+    "appendNotificationLog_ timing | logId=%s | taskId=%s | providerId=%s | elapsedMs=%s",
+    logId,
+    String(log && log.TaskID || log && log.taskId || "").trim(),
+    String(log && log.ProviderID || log && log.providerId || "").trim(),
+    Date.now() - logStartMs
+  );
 
   return {
     ok: true,

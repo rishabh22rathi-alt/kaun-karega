@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 
 type SuccessClientProps = {
@@ -47,11 +47,66 @@ export default function SuccessClient({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [providers, setProviders] = useState<ProviderItem[]>([]);
+  const [notificationStatus, setNotificationStatus] = useState<
+    "idle" | "queued" | "processing" | "done" | "error"
+  >(taskId ? "queued" : "idle");
+  const triggerStartedRef = useRef(false);
 
   const canFetchProviders = useMemo(
     () => Boolean(service && area),
     [service, area]
   );
+
+  useEffect(() => {
+    if (!taskId || triggerStartedRef.current) return;
+
+    triggerStartedRef.current = true;
+    setNotificationStatus("queued");
+
+    const timer = window.setTimeout(async () => {
+      setNotificationStatus("processing");
+
+      try {
+        const res = await fetch("/api/process-task-notifications", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ taskId }),
+          cache: "no-store",
+        });
+
+        const data = (await res.json()) as Record<string, unknown>;
+        if (!res.ok || data?.ok === false) {
+          throw new Error(
+            typeof data?.error === "string"
+              ? data.error
+              : "Unable to process provider notifications."
+          );
+        }
+
+        console.log("SUCCESS_NOTIFICATION_TRIGGER", {
+          taskId,
+          skipped: Boolean(data?.skipped),
+          matchedProviders:
+            typeof data?.matchedProviders === "number" ? data.matchedProviders : undefined,
+          attemptedSends:
+            typeof data?.attemptedSends === "number" ? data.attemptedSends : undefined,
+          failedSends:
+            typeof data?.failedSends === "number" ? data.failedSends : undefined,
+        });
+
+        setNotificationStatus("done");
+      } catch (triggerError) {
+        console.error("SUCCESS_NOTIFICATION_TRIGGER_FAILED", {
+          taskId,
+          error:
+            triggerError instanceof Error ? triggerError.message : triggerError,
+        });
+        setNotificationStatus("error");
+      }
+    }, 3000);
+
+    return () => window.clearTimeout(timer);
+  }, [taskId]);
 
   const handleShowProviders = async () => {
     setShowModal(true);
@@ -106,14 +161,20 @@ export default function SuccessClient({
         </h1>
 
         <p className="mx-auto mt-3 max-w-lg text-sm text-slate-600 md:text-base">
-          Nearby providers will contact you soon on WhatsApp.
+          Congratulations! Your task has been successfully posted. We are now
+          informing nearby service providers.
         </p>
 
         <div className="mx-auto mt-6 h-px w-full max-w-md bg-slate-200" />
 
         <p className="mx-auto mt-6 max-w-md text-sm leading-relaxed text-slate-600 md:text-base">
-          Thanks for posting your request. We are matching nearby verified
-          providers right now.
+          {notificationStatus === "queued" || notificationStatus === "processing"
+            ? "Provider notifications are being processed in the background."
+            : notificationStatus === "done"
+              ? "Nearby providers have been informed."
+              : notificationStatus === "error"
+                ? "Your task is posted. Provider notifications will be retried safely."
+                : "Thanks for posting your request."}
         </p>
 
         <button

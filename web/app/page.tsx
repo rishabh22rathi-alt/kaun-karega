@@ -522,12 +522,13 @@ const clearTaskDraftFromSessionStorage = () => {
   }
 };
 
-const buildSuccessRedirect = (service: string, area: string) => {
+const buildSuccessRedirect = (service: string, area: string, taskId = "") => {
   const params = new URLSearchParams();
   const trimmedService = service.trim();
   const normalizedArea = normalizeAreaValue(area);
   if (trimmedService) params.set("service", trimmedService);
   if (normalizedArea) params.set("area", normalizedArea);
+  if (taskId.trim()) params.set("taskId", taskId.trim());
   const query = params.toString();
   return query ? `/success?${query}` : "/success";
 };
@@ -1102,28 +1103,33 @@ const submitResolvedRequest = async (resolution: CategoryResolution) => {
 
   const resolvedCategory = resolution.resolvedName || category;
   try {
+    const submitStartMs = Date.now();
     const payload = {
         category: resolvedCategory,
         area: normalizedArea,
+        time,
         serviceDate: normalizedServiceDate,
         timeSlot,
         details: cleanDetails,
         createdAt: new Date().toISOString(),
     };
-    console.log("submit payload", {
-      category: payload.category,
-      area: payload.area,
-      serviceDate: payload.serviceDate,
-      timeSlot: payload.timeSlot,
-      detailsLength: payload.details.length,
-    });
+      console.log("submit payload", {
+        category: payload.category,
+        area: payload.area,
+        time: payload.time,
+        serviceDate: payload.serviceDate,
+        timeSlot: payload.timeSlot,
+        detailsLength: payload.details.length,
+      });
     const res = await fetch("/api/submit-request", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
+    const fetchCompletedMs = Date.now();
 
     const raw = await res.text();
+    const responseParsedMs = Date.now();
     console.log("api raw", raw);
     setDebug(`API ${res.status}\n${raw}`);
 
@@ -1142,6 +1148,17 @@ const submitResolvedRequest = async (resolution: CategoryResolution) => {
       return;
     }
 
+    console.log("submitResolvedRequest timing", {
+      category: resolvedCategory,
+      area: normalizedArea,
+      time: payload.time,
+      httpStatus: res.status,
+      fetchElapsedMs: fetchCompletedMs - submitStartMs,
+      responseReadElapsedMs: responseParsedMs - fetchCompletedMs,
+      totalElapsedMs: responseParsedMs - submitStartMs,
+      taskId: json?.taskId || "",
+    });
+
     setShowDirectContactOption(true);
     setDetails("");
     if (typeof window !== "undefined") {
@@ -1149,7 +1166,7 @@ const submitResolvedRequest = async (resolution: CategoryResolution) => {
     }
     clearTaskDraftFromSessionStorage();
     setIsRedirecting(true);
-    router.replace(buildSuccessRedirect(resolvedCategory, normalizedArea));
+    router.replace(buildSuccessRedirect(resolvedCategory, normalizedArea, json?.taskId || ""));
     return;
   } catch (err: any) {
     setError(err?.message || "Something went wrong.");
