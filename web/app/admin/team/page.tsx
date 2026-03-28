@@ -1,6 +1,4 @@
 "use client";
-
-"use client";
 import { useEffect, useMemo, useState } from "react";
 
 type TeamMember = {
@@ -39,15 +37,16 @@ export default function AdminTeamPage() {
   const [editPermissions, setEditPermissions] = useState<string[]>([]);
   const [editActive, setEditActive] = useState(true);
 
-  const permissions = useMemo(
-    () =>
-      JSON.parse(
-        typeof window !== "undefined"
-          ? localStorage.getItem("kk_permissions") || "[]"
-          : "[]"
-      ),
-    []
-  );
+  const permissions = useMemo(() => {
+    if (typeof window === "undefined") return [] as string[];
+    try {
+      const raw = localStorage.getItem("kk_admin_session");
+      const parsed = raw ? JSON.parse(raw) : null;
+      return Array.isArray(parsed?.permissions) ? (parsed.permissions as string[]) : [];
+    } catch {
+      return [] as string[];
+    }
+  }, []);
 
   const canManage = permissions.includes("manage_roles");
 
