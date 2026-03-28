@@ -225,6 +225,65 @@ function makeTaskId_() {
   return "TK-" + Date.now();
 }
 
+function normalizeTaskDisplayId_(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+
+  const match = raw.match(/\d+/);
+  if (!match) return "";
+
+  const normalized = String(Number(match[0]) || "");
+  return normalized && normalized !== "0" ? normalized : "";
+}
+
+function getTaskDisplayLabel_(taskOrDisplayId, fallbackTaskId) {
+  const source =
+    taskOrDisplayId && typeof taskOrDisplayId === "object" ? taskOrDisplayId : null;
+  const displayId = normalizeTaskDisplayId_(
+    source
+      ? source.DisplayID || source.displayId || source.TaskDisplayNumber || source.taskDisplayNumber
+      : taskOrDisplayId
+  );
+  if (displayId) return "Kaam No. " + displayId;
+
+  const fallback = source
+    ? String(source.TaskID || source.taskId || fallbackTaskId || "").trim()
+    : String(fallbackTaskId || "").trim();
+  return fallback;
+}
+
+function getNextTaskDisplayId_() {
+  const props = PropertiesService.getScriptProperties();
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+
+  try {
+    let currentSeq = Number(props.getProperty("TASK_DISPLAY_SEQ") || 0) || 0;
+
+    if (!currentSeq) {
+      const sheet = getTasksSheet_();
+      const headers = ensureSheetHeaders_(sheet, ["TaskID", "DisplayID"]);
+      const idxDisplayId = findHeaderIndexByAliases_(headers, ["DisplayID", "TaskDisplayNumber"]);
+      const values = sheet.getDataRange().getValues();
+
+      for (let i = 1; i < values.length; i++) {
+        const row = values[i] || [];
+        const seq =
+          idxDisplayId !== -1 && row[idxDisplayId] !== undefined
+            ? Number(normalizeTaskDisplayId_(row[idxDisplayId])) || 0
+            : 0;
+        if (seq > currentSeq) currentSeq = seq;
+      }
+    }
+
+    currentSeq += 1;
+    props.setProperty("TASK_DISPLAY_SEQ", String(currentSeq));
+    return String(currentSeq);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 function getTodayDateString_() {
   return Utilities.formatDate(new Date(), "Asia/Kolkata", "yyyy-MM-dd");
 }
@@ -283,6 +342,7 @@ function submitTask_(data) {
   const sh = getTasksSheet_();
   const headers = ensureSheetHeaders_(sh, [
     "TaskID",
+    "DisplayID",
     "UserPhone",
     "Category",
     "Area",
@@ -300,11 +360,13 @@ function submitTask_(data) {
   const idx = (name) => headers.indexOf(name);
 
   const taskId = makeTaskId_();
+  const displayId = getNextTaskDisplayId_();
   const createdAt = Utilities.formatDate(new Date(), "Asia/Kolkata", "dd/MM/yyyy HH:mm:ss");
 
   const row = new Array(headers.length).fill("");
 
   row[idx("TaskID")] = taskId;
+  if (idx("DisplayID") >= 0) row[idx("DisplayID")] = displayId;
   row[idx("UserPhone")] = phone;
   row[idx("Category")] = category;
   row[idx("Area")] = area;
@@ -325,17 +387,49 @@ function submitTask_(data) {
 
   sh.appendRow(row);
   var taskSheetWriteMs = Date.now();
+  var notificationResult = null;
+
+  try {
+    notificationResult = processTaskNotifications_({
+      taskId: taskId,
+      TaskID: taskId,
+      userPhone: phone,
+      phone: phone,
+    });
+  } catch (err) {
+    notificationResult = {
+      ok: false,
+      status: "error",
+      error: String(err && err.message ? err.message : err),
+    };
+  }
+  var notificationProcessingMs = Date.now();
 
   Logger.log(
-    "submitTask_ create-only summary | TaskID=" +
+    "submitTask_ summary | TaskID=" +
       taskId +
+      " | DisplayID=" +
+      displayId +
       " | taskSheetWriteMs=" +
       (taskSheetWriteMs - submitStartMs) +
+      " | notificationElapsedMs=" +
+      (notificationProcessingMs - taskSheetWriteMs) +
+      " | notificationOk=" +
+      (notificationResult && notificationResult.ok === true ? "yes" : "no") +
+      " | notificationSkipped=" +
+      (notificationResult && notificationResult.skipped ? "yes" : "no") +
       " | totalElapsedMs=" +
-      (taskSheetWriteMs - submitStartMs)
+      (notificationProcessingMs - submitStartMs)
   );
 
-  return { ok: true, status: "success", message: "Task submitted", taskId: taskId };
+  return {
+    ok: true,
+    status: "success",
+    message: "Task submitted",
+    taskId: taskId,
+    displayId: displayId,
+    taskDisplayLabel: getTaskDisplayLabel_(displayId, taskId),
+  };
 }
 
 function getTaskByIdFromAdminState_(taskId) {
@@ -353,6 +447,10 @@ function getTaskByIdFromAdminState_(taskId) {
 
     return {
       TaskID: rowTaskId,
+      DisplayID:
+        state.idxDisplayId !== -1 && row[state.idxDisplayId] !== undefined
+          ? String(row[state.idxDisplayId]).trim()
+          : "",
       UserPhone:
         state.idxUserPhone !== -1 && row[state.idxUserPhone] !== undefined
           ? String(row[state.idxUserPhone]).trim()
@@ -403,6 +501,30 @@ function getTaskByIdFromAdminState_(taskId) {
   return null;
 }
 
+function getTaskDisplayLookup_() {
+  const state = getAdminTaskSheetState_();
+  const byTaskId = {};
+
+  for (let i = 1; i < state.values.length; i++) {
+    const row = state.values[i] || [];
+    const taskId =
+      state.idxTaskId !== -1 && row[state.idxTaskId] !== undefined
+        ? String(row[state.idxTaskId]).trim()
+        : "";
+    if (!taskId) continue;
+
+    byTaskId[taskId] = {
+      TaskID: taskId,
+      DisplayID:
+        state.idxDisplayId !== -1 && row[state.idxDisplayId] !== undefined
+          ? String(row[state.idxDisplayId]).trim()
+          : "",
+    };
+  }
+
+  return byTaskId;
+}
+
 function processTaskNotifications_(data) {
   const processStartMs = Date.now();
   const taskId = String(data.taskId || data.TaskID || "").trim();
@@ -414,6 +536,8 @@ function processTaskNotifications_(data) {
   try {
     const task = getTaskByIdFromAdminState_(taskId);
     if (!task) return { ok: false, status: "error", error: "Task not found" };
+    const taskDisplayId = String(task.DisplayID || "").trim();
+    const taskDisplayLabel = getTaskDisplayLabel_(task, taskId);
 
     const alreadyNotified = String(task.notified_at || "").trim();
     const hasExistingLogs = hasNotificationLogsForTask_(taskId);
@@ -429,6 +553,8 @@ function processTaskNotifications_(data) {
         ok: true,
         status: "success",
         taskId: taskId,
+        displayId: String(task.DisplayID || "").trim(),
+        taskDisplayLabel: taskDisplayLabel,
         skipped: true,
         message: "Notifications already processed for this task.",
       };
@@ -484,7 +610,14 @@ function processTaskNotifications_(data) {
       attemptedSends++;
 
       try {
-        const sendResult = sendProviderJobAlert(providerPhone, taskId, serviceTime, task.Area);
+        const sendResult = sendProviderJobAlert(
+          providerPhone,
+          taskId,
+          serviceTime,
+          task.Area,
+          taskDisplayId,
+          providerId
+        );
         if (!sendResult || sendResult.ok === false) {
           failedSends++;
         }
@@ -548,6 +681,8 @@ function processTaskNotifications_(data) {
       ok: true,
       status: "success",
       taskId: taskId,
+      displayId: String(task.DisplayID || "").trim(),
+      taskDisplayLabel: taskDisplayLabel,
       skipped: false,
       matchedProviders: matchedProviders.length,
       attemptedSends: attemptedSends,
@@ -571,6 +706,7 @@ function getUserRequests_(data) {
   const idx = (name) => headers.indexOf(name);
 
   const iTaskID = idx("TaskID");
+  const iDisplayID = idx("DisplayID");
   const iPhone = idx("UserPhone");
   const iCategory = idx("Category");
   const iArea = idx("Area");
@@ -591,6 +727,7 @@ function getUserRequests_(data) {
 
     out.push({
       TaskID: iTaskID >= 0 ? row[iTaskID] : "",
+      DisplayID: iDisplayID >= 0 ? row[iDisplayID] : "",
       UserPhone: row[iPhone],
       Category: iCategory >= 0 ? row[iCategory] : "",
       Area: iArea >= 0 ? row[iArea] : "",
@@ -612,6 +749,7 @@ function getAdminTaskSheetState_() {
   const sheet = getTasksSheet_();
   const headers = ensureSheetHeaders_(sheet, [
     "TaskID",
+    "DisplayID",
     "UserPhone",
     "Category",
     "Area",
@@ -635,6 +773,7 @@ function getAdminTaskSheetState_() {
     headers: headers,
     values: values,
     idxTaskId: findHeaderIndexByAliases_(headers, ["TaskID"]),
+    idxDisplayId: findHeaderIndexByAliases_(headers, ["DisplayID", "TaskDisplayNumber"]),
     idxUserPhone: findHeaderIndexByAliases_(headers, ["UserPhone", "Phone"]),
     idxCategory: findHeaderIndexByAliases_(headers, ["Category"]),
     idxArea: findHeaderIndexByAliases_(headers, ["Area"]),
@@ -879,6 +1018,61 @@ function getProviderNameLookup_() {
   return byId;
 }
 
+function getProviderDirectoryLookup_() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(TAB_PROVIDERS);
+  const byId = {};
+  if (!sheet || sheet.getLastRow() < 2) return byId;
+
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0] || [];
+  const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, headers.length).getValues();
+  const headerMap = getProviderHeaderMap_(headers);
+
+  rows.forEach((row) => {
+    const providerId =
+      headerMap.providerId !== -1 && row[headerMap.providerId] !== undefined
+        ? String(row[headerMap.providerId]).trim()
+        : "";
+    if (!providerId) return;
+
+    const providerName =
+      headerMap.providerName !== -1 && row[headerMap.providerName] !== undefined
+        ? String(row[headerMap.providerName]).trim()
+        : "";
+    const providerPhone =
+      headerMap.phone !== -1 && row[headerMap.phone] !== undefined
+        ? normalizePhone10_(row[headerMap.phone])
+        : "";
+    const verified =
+      headerMap.verified !== -1 && row[headerMap.verified] !== undefined
+        ? normalizeVerifiedProviderValue_(row[headerMap.verified]) || "no"
+        : "no";
+    const otpVerified =
+      headerMap.otpVerified !== -1 && row[headerMap.otpVerified] !== undefined
+        ? normalizeOtpVerifiedValue_(row[headerMap.otpVerified]) || "no"
+        : "no";
+    const otpVerifiedAt =
+      headerMap.otpVerifiedAt !== -1 && row[headerMap.otpVerifiedAt] !== undefined
+        ? String(row[headerMap.otpVerifiedAt]).trim()
+        : "";
+    const pendingApproval =
+      headerMap.pendingApproval !== -1 && row[headerMap.pendingApproval] !== undefined
+        ? String(row[headerMap.pendingApproval]).trim()
+        : "";
+
+    byId[providerId] = {
+      ProviderID: providerId,
+      ProviderName: providerName,
+      ProviderPhone: providerPhone,
+      Verified: verified,
+      OtpVerified: otpVerified,
+      OtpVerifiedAt: otpVerifiedAt,
+      PendingApproval: pendingApproval,
+    };
+  });
+
+  return byId;
+}
+
 function getTaskMatchSummaries_() {
   const sheet = getProviderTaskMatchesSheet_();
   const values = sheet.getDataRange().getValues();
@@ -888,10 +1082,12 @@ function getTaskMatchSummaries_() {
   const idxTaskId = findHeaderIndexByAliases_(headers, ["TaskID"]);
   const idxProviderId = findHeaderIndexByAliases_(headers, ["ProviderID"]);
   const idxProviderName = findHeaderIndexByAliases_(headers, ["ProviderName"]);
+  const idxProviderPhone = findHeaderIndexByAliases_(headers, ["ProviderPhone", "Phone"]);
   const idxStatus = findHeaderIndexByAliases_(headers, ["Status"]);
   const idxCreatedAt = findHeaderIndexByAliases_(headers, ["CreatedAt"]);
   const idxAcceptedAt = findHeaderIndexByAliases_(headers, ["AcceptedAt"]);
   const byTaskId = {};
+  const providerDirectory = getProviderDirectoryLookup_();
 
   for (let i = 1; i < values.length; i++) {
     const row = values[i] || [];
@@ -901,6 +1097,7 @@ function getTaskMatchSummaries_() {
     if (!byTaskId[taskId]) {
       byTaskId[taskId] = {
         matchedProviders: [],
+        matchedProviderDetails: [],
         respondedProviderId: "",
         respondedProviderName: "",
         providerResponseAt: "",
@@ -913,15 +1110,48 @@ function getTaskMatchSummaries_() {
       idxProviderName !== -1 && row[idxProviderName] !== undefined
         ? String(row[idxProviderName]).trim()
         : "";
+    const providerPhone =
+      idxProviderPhone !== -1 && row[idxProviderPhone] !== undefined
+        ? normalizePhone10_(row[idxProviderPhone])
+        : "";
     const status =
       idxStatus !== -1 && row[idxStatus] !== undefined ? String(row[idxStatus]).trim().toLowerCase() : "";
     const acceptedAt =
       idxAcceptedAt !== -1 && row[idxAcceptedAt] !== undefined ? toIsoDateString_(row[idxAcceptedAt]) : "";
     const createdAt =
       idxCreatedAt !== -1 && row[idxCreatedAt] !== undefined ? toIsoDateString_(row[idxCreatedAt]) : "";
+    const providerDirectoryItem = providerDirectory[providerId] || null;
 
     if (providerId && byTaskId[taskId].matchedProviders.indexOf(providerId) === -1) {
       byTaskId[taskId].matchedProviders.push(providerId);
+      byTaskId[taskId].matchedProviderDetails.push({
+        ProviderID: providerId,
+        ProviderName:
+          providerName ||
+          (providerDirectoryItem ? String(providerDirectoryItem.ProviderName || "").trim() : ""),
+        ProviderPhone:
+          providerPhone ||
+          (providerDirectoryItem ? String(providerDirectoryItem.ProviderPhone || "").trim() : ""),
+        Verified:
+          providerDirectoryItem && providerDirectoryItem.Verified
+            ? String(providerDirectoryItem.Verified).trim()
+            : "no",
+        OtpVerified:
+          providerDirectoryItem && providerDirectoryItem.OtpVerified
+            ? String(providerDirectoryItem.OtpVerified).trim()
+            : "no",
+        OtpVerifiedAt:
+          providerDirectoryItem && providerDirectoryItem.OtpVerifiedAt
+            ? String(providerDirectoryItem.OtpVerifiedAt).trim()
+            : "",
+        PendingApproval:
+          providerDirectoryItem && providerDirectoryItem.PendingApproval
+            ? String(providerDirectoryItem.PendingApproval).trim()
+            : "",
+        ResponseStatus: status || (acceptedAt ? "accepted" : "new"),
+        CreatedAt: createdAt,
+        AcceptedAt: acceptedAt,
+      });
     }
 
     if (
@@ -998,6 +1228,7 @@ function buildAdminRequests_() {
         : "";
     const matchSummary = matchSummaries[taskId] || {
       matchedProviders: [],
+      matchedProviderDetails: [],
       respondedProviderId: "",
       respondedProviderName: "",
       providerResponseAt: "",
@@ -1026,6 +1257,10 @@ function buildAdminRequests_() {
 
     requests.push({
       TaskID: taskId,
+      DisplayID:
+        state.idxDisplayId !== -1 && row[state.idxDisplayId] !== undefined
+          ? String(row[state.idxDisplayId]).trim()
+          : "",
       UserPhone:
         state.idxUserPhone !== -1 && row[state.idxUserPhone] !== undefined
           ? String(row[state.idxUserPhone]).trim()
@@ -1072,6 +1307,7 @@ function buildAdminRequests_() {
       ServiceDate: serviceDateValue ? String(serviceDateValue).trim() : "",
       TimeSlot: timeSlotValue ? String(timeSlotValue).trim() : "",
       MatchedProviders: matchSummary.matchedProviders,
+      MatchedProviderDetails: matchSummary.matchedProviderDetails,
     });
   }
 

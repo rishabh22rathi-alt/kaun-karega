@@ -1,3 +1,5 @@
+import { requireAdminSession } from "@/lib/adminAuth";
+
 const APPS_SCRIPT_URL =
   process.env.APPS_SCRIPT_URL || process.env.NEXT_PUBLIC_APPS_SCRIPT_URL || "";
 
@@ -38,7 +40,12 @@ async function postToAppsScript(payload: Record<string, unknown>) {
   };
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  const auth = await requireAdminSession(request);
+  if (!auth.ok) {
+    return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+  }
+
   try {
     const data = await postToAppsScript({ action: "get_admin_dashboard_stats" });
     return Response.json(data);
@@ -48,6 +55,6 @@ export async function GET() {
   }
 }
 
-export async function POST() {
-  return GET();
+export async function POST(request: Request) {
+  return GET(request);
 }

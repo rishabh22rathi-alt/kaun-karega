@@ -44,6 +44,14 @@ function doGet(e) {
     return json_({ ok: true, status: "success", categories: getAllCategoriesFromSheet_() });
   }
 
+  if (action === "get_needs") {
+    return json_(getNeeds_(e.parameter || {}));
+  }
+
+  if (action === "get_my_needs") {
+    return json_(getMyNeeds_(e.parameter || {}));
+  }
+
   if (action === "match_providers") {
     const service = (e.parameter.service || "").trim();
     const area = (e.parameter.area || "").trim();
@@ -136,6 +144,51 @@ function doPost(e) {
 
       case "submit_task":
         return json_(submitTask_(data));
+
+      case "create_need":
+        return json_(createNeed_(data));
+
+      case "get_needs":
+        return json_(getNeeds_(data));
+
+      case "get_my_needs":
+        return json_(getMyNeeds_(data));
+
+      case "mark_need_complete":
+        return json_(markNeedComplete_(data));
+
+      case "close_need":
+        return json_(closeNeed_(data));
+
+      case "admin_hide_need":
+        return json_(adminHideNeed_(data));
+
+      case "admin_unhide_need":
+        return json_(adminUnhideNeed_(data));
+
+      case "admin_set_need_rank":
+        return json_(adminSetNeedRank_(data));
+
+      case "admin_get_needs":
+        return json_(adminGetNeeds_(data));
+
+      case "admin_close_need":
+        return json_(adminCloseNeed_(data));
+
+      case "need_chat_create_or_get_thread":
+        return json_(needChatCreateOrGetThread_(data));
+
+      case "need_chat_get_messages":
+        return json_(needChatGetMessages_(data));
+
+      case "need_chat_get_threads_for_need":
+        return json_(needChatGetThreadsForNeed_(data));
+
+      case "need_chat_send_message":
+        return json_(needChatSendMessage_(data));
+
+      case "need_chat_mark_read":
+        return json_(needChatMarkRead_(data));
 
       case "process_task_notifications":
         return json_(processTaskNotifications_(data));
@@ -342,11 +395,16 @@ function chatGetThreadsFallback_(data, actorType, normalizedPhone) {
   }
 
   const headers = values[0] || [];
+  const taskLookup = typeof getTaskDisplayLookup_ === "function" ? getTaskDisplayLookup_() : {};
   const threads = [];
 
   for (let i = 1; i < values.length; i++) {
     const row = values[i] || [];
     const thread = chatThreadRowToObjectFallback_(headers, row);
+    thread.DisplayID =
+      taskLookup &&
+      taskLookup[String(thread.TaskID || "").trim()] &&
+      String(taskLookup[String(thread.TaskID || "").trim()].DisplayID || "").trim();
 
     if (taskIdFilter && String(thread.TaskID || "").trim() !== taskIdFilter) continue;
     if (

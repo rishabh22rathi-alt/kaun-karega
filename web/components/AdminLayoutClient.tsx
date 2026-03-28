@@ -33,28 +33,26 @@ export default function AdminLayoutClient({
     }
 
     try {
-      const phone = localStorage.getItem("kk_phone");
-      const storedRole = localStorage.getItem("kk_role");
-      const storedName = localStorage.getItem("kk_name") || "Admin";
-      const storedPermissions = JSON.parse(
-        localStorage.getItem("kk_permissions") || "[]"
-      );
+      const raw = localStorage.getItem("kk_admin_session");
+      const parsed = raw
+        ? (JSON.parse(raw) as {
+            isAdmin?: unknown;
+            name?: unknown;
+            role?: unknown;
+            permissions?: unknown;
+          })
+        : null;
 
-      if (!phone || !storedRole || !Array.isArray(storedPermissions)) {
-        window.location.href = "/admin/login";
+      if (parsed?.isAdmin !== true) {
+        window.location.href = "/otp?next=/admin/dashboard";
         return;
       }
 
-      if (storedRole !== "admin" && storedRole !== "superadmin") {
-        window.location.href = "/admin/login";
-        return;
-      }
-
-      setName(storedName);
-      setRole(storedRole);
-      setPermissions(storedPermissions);
-    } catch (err) {
-      window.location.href = "/admin/login";
+      setName(typeof parsed.name === "string" && parsed.name ? parsed.name : "Admin");
+      setRole(typeof parsed.role === "string" && parsed.role ? parsed.role : "admin");
+      setPermissions(Array.isArray(parsed.permissions) ? (parsed.permissions as string[]) : []);
+    } catch {
+      window.location.href = "/otp?next=/admin/dashboard";
       return;
     } finally {
       setLoading(false);
@@ -62,11 +60,10 @@ export default function AdminLayoutClient({
   }, [isLoginRoute]);
 
   const handleLogout = () => {
-    localStorage.removeItem("kk_phone");
-    localStorage.removeItem("kk_role");
-    localStorage.removeItem("kk_permissions");
-    localStorage.removeItem("kk_name");
-    window.location.href = "/admin/login";
+    localStorage.removeItem("kk_admin_session");
+    document.cookie = "kk_auth_session=; Max-Age=0; Path=/; SameSite=Lax";
+    document.cookie = "kk_admin=; Max-Age=0; Path=/; SameSite=Lax";
+    window.location.href = "/otp?next=/admin/dashboard";
   };
 
   if (loading) {

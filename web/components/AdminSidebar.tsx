@@ -61,7 +61,6 @@ const navItems: NavItem[] = [
   {
     label: "Tasks",
     href: "/admin/tasks",
-    requiredPermission: "view_tasks",
     icon: (
       <svg
         xmlns="http://www.w3.org/2000/svg"
@@ -80,9 +79,28 @@ const navItems: NavItem[] = [
     ),
   },
   {
+    label: "Needs",
+    href: "/admin/needs",
+    icon: (
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        className="h-5 w-5"
+        fill="none"
+        viewBox="0 0 24 24"
+        stroke="currentColor"
+      >
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth="1.5"
+          d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"
+        />
+      </svg>
+    ),
+  },
+  {
     label: "Chat Rooms",
     href: "/admin/chats",
-    requiredPermission: "view_chats",
     icon: (
       <svg
         xmlns="http://www.w3.org/2000/svg"
@@ -123,7 +141,6 @@ const navItems: NavItem[] = [
   {
     label: "Reviews",
     href: "/admin/reviews",
-    requiredPermission: "view_reviews",
     icon: (
       <svg
         xmlns="http://www.w3.org/2000/svg"
@@ -142,8 +159,8 @@ const navItems: NavItem[] = [
     ),
   },
   {
-    label: "Community",
-    href: "/admin/community",
+    label: "Analytics",
+    href: "/admin/analytics",
     icon: (
       <svg
         xmlns="http://www.w3.org/2000/svg"
@@ -156,27 +173,7 @@ const navItems: NavItem[] = [
           strokeLinecap="round"
           strokeLinejoin="round"
           strokeWidth="1.5"
-          d="M12 12a3 3 0 100-6 3 3 0 000 6zm0 0v6m0 0c-3 0-6-1-6-4m6 4c3 0 6-1 6-4"
-        />
-      </svg>
-    ),
-  },
-  {
-    label: "Team Members",
-    href: "/admin/team",
-    icon: (
-      <svg
-        xmlns="http://www.w3.org/2000/svg"
-        className="h-5 w-5"
-        fill="none"
-        viewBox="0 0 24 24"
-        stroke="currentColor"
-      >
-        <path
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          strokeWidth="1.5"
-          d="M16 11c1.657 0 3-1.79 3-4s-1.343-4-3-4-3 1.79-3 4 1.343 4 3 4zM8 11c1.657 0 3-1.79 3-4S9.657 3 8 3 5 4.79 5 7s1.343 4 3 4zm0 2c-2.21 0-4 1.343-4 3v3h8v-3c0-1.657-1.79-3-4-3zm8 0c-.34 0-.67.03-.99.086A4.486 4.486 0 0120 17v3h-6v-3c0-1.343.81-2.5 2-2.914"
+          d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"
         />
       </svg>
     ),

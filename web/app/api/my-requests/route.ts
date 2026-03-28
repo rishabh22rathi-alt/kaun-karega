@@ -61,15 +61,21 @@ export async function GET(request: Request) {
     const mergedRequests = requests.map((item: any) => {
       const taskId = String(item?.TaskID || item?.taskId || "").trim();
       const adminItem = (byTaskId.get(taskId) || {}) as {
+        DisplayID?: string;
         MatchedProviders?: unknown[];
+        MatchedProviderDetails?: unknown[];
         RespondedProvider?: string;
         RespondedProviderName?: string;
       };
 
       return {
         ...item,
+        DisplayID: String(adminItem?.DisplayID || item?.DisplayID || item?.displayId || "").trim(),
         MatchedProviders: Array.isArray(adminItem?.MatchedProviders)
           ? adminItem.MatchedProviders
+          : [],
+        MatchedProviderDetails: Array.isArray(adminItem?.MatchedProviderDetails)
+          ? adminItem.MatchedProviderDetails
           : [],
         RespondedProvider: String(adminItem?.RespondedProvider || "").trim(),
         RespondedProviderName: String(adminItem?.RespondedProviderName || "").trim(),

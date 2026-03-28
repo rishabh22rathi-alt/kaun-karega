@@ -6,6 +6,8 @@ import { useRouter } from "next/navigation";
 import InAppToastStack, { type InAppToast } from "@/components/InAppToastStack";
 import { PROVIDER_PROFILE_UPDATED_EVENT } from "@/components/sidebarEvents";
 import { getAuthSession } from "@/lib/auth";
+import { getTaskDisplayLabel } from "@/lib/taskDisplay";
+import { isProviderVerifiedBadge } from "@/lib/providerPresentation";
 
 const MAX_SERVICES = 3;
 const MAX_AREAS = 5;
@@ -33,6 +35,7 @@ type CategoryDemandRow = {
 
 type RecentMatchedRequest = {
   TaskID: string;
+  DisplayID?: string;
   Category: string;
   Area: string;
   Details?: string;
@@ -77,6 +80,9 @@ type ProviderProfile = {
   ProviderName: string;
   Phone: string;
   Verified: string;
+  OtpVerified?: string;
+  OtpVerifiedAt?: string;
+  LastLoginAt?: string;
   PendingApproval?: string;
   Status?: string;
   Services?: { Category: string }[];
@@ -348,14 +354,17 @@ export default function ProviderDashboardPage() {
               Name: profileData.provider.ProviderName,
               Phone: profileData.provider.Phone,
               Verified: profileData.provider.Verified,
+              OtpVerified: profileData.provider.OtpVerified,
+              OtpVerifiedAt: profileData.provider.OtpVerifiedAt,
+              LastLoginAt: profileData.provider.LastLoginAt,
               PendingApproval: profileData.provider.PendingApproval,
               Status:
                 profileData.provider.Status ||
                 (String(profileData.provider.PendingApproval || "").toLowerCase() === "yes"
                   ? "Pending Admin Approval"
-                  : String(profileData.provider.Verified || "").toLowerCase() === "yes"
+                  : String(profileData.provider.OtpVerified || "").toLowerCase() === "yes"
                     ? "Active"
-                    : "Pending Verification"),
+                    : "Not Verified"),
             })
           );
           window.dispatchEvent(new Event(PROVIDER_PROFILE_UPDATED_EVENT));
@@ -412,7 +421,7 @@ export default function ProviderDashboardPage() {
             if (summary.unreadProviderCount > previousSummary.unreadProviderCount && summary.lastMessageAt) {
               enqueueToast(
                 "New message from customer",
-                `Task ${taskId} has ${summary.unreadProviderCount} unread customer message${summary.unreadProviderCount === 1 ? "" : "s"}.`,
+                `${recentRequestDisplayLabelByTaskId[taskId] || getTaskDisplayLabel({ TaskID: taskId }, taskId)} has ${summary.unreadProviderCount} unread customer message${summary.unreadProviderCount === 1 ? "" : "s"}.`,
                 `provider-message:${taskId}:${summary.unreadProviderCount}:${summary.lastMessageAt}`
               );
             }
@@ -438,7 +447,7 @@ export default function ProviderDashboardPage() {
   }, [phone]);
 
   const verified = useMemo(
-    () => String(profile?.Verified || "").trim().toLowerCase() === "yes",
+    () => isProviderVerifiedBadge(profile ?? {}),
     [profile]
   );
   const pendingApproval = useMemo(
@@ -481,6 +490,15 @@ export default function ProviderDashboardPage() {
       ),
     [analytics]
   );
+  const recentRequestDisplayLabelByTaskId = useMemo(() => {
+    const next: Record<string, string> = {};
+    for (const request of recentMatchedRequests) {
+      const taskId = String(request.TaskID || "").trim();
+      if (!taskId) continue;
+      next[taskId] = getTaskDisplayLabel(request, taskId);
+    }
+    return next;
+  }, [recentMatchedRequests]);
 
   const handleOpenChat = async (request: RecentMatchedRequest) => {
     const taskId = String(request.TaskID || "").trim();
@@ -588,15 +606,15 @@ export default function ProviderDashboardPage() {
   const servicesCount = services.length;
   const areasCount = areas.length;
   const statusLabel = verified
-    ? "Verified"
+    ? "Phone Verified"
     : pendingApproval
       ? "Pending Admin Approval"
-      : "Pending Verification";
+      : "Not Verified";
   const verificationMessage = verified
-    ? "Your profile is active. Keep responding quickly to improve your conversion."
+    ? "Your phone login is verified. Keep responding quickly to improve your conversion."
     : pendingApproval
       ? "Your profile is live, but one or more categories are waiting for admin review."
-      : "Your profile is under review. Verified providers get better matching priority.";
+      : "Complete OTP login to show as phone verified and get higher user-facing ranking.";
 
   const maxDemandCount = useMemo(
     () => areaDemand.reduce((max, item) => Math.max(max, Number(item.RequestCount || 0)), 0),
@@ -824,12 +842,12 @@ export default function ProviderDashboardPage() {
         {!verified ? (
           <section className="rounded-[28px] border border-amber-200 bg-amber-50/80 p-5 shadow-sm">
             <p className="text-sm font-semibold text-amber-900">
-              {pendingApproval ? "Pending Admin Approval" : "Profile Verification Pending"}
+              {pendingApproval ? "Pending Admin Approval" : "Phone Verification Pending"}
             </p>
             <p className="mt-2 text-sm leading-6 text-amber-800">
               {pendingApproval
                 ? "Your dashboard is live, but one or more categories are still under review. You can still monitor demand and refine your service areas."
-                : "Your profile is under review. You can still use demand insights now, and verified providers receive stronger matching priority."}
+                : "You can still use demand insights now, but providers who have completed OTP login are ranked above non-verified providers in user-facing lists."}
             </p>
           </section>
         ) : null}
@@ -1101,7 +1119,9 @@ export default function ProviderDashboardPage() {
                     <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                       <div>
                         <div className="flex flex-wrap items-center gap-2">
-                          <p className="text-sm font-semibold text-slate-900">{request.TaskID}</p>
+                          <p className="text-sm font-semibold text-slate-900">
+                            {getTaskDisplayLabel(request, String(request.TaskID || "").trim())}
+                          </p>
                           {taskAlertSummary?.unreadProviderCount ? (
                             <span className="inline-flex rounded-full bg-rose-600 px-2.5 py-0.5 text-xs font-semibold text-white">
                               {taskAlertSummary.unreadProviderCount} unread

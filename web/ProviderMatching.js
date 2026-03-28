@@ -106,6 +106,9 @@ function matchProviders_(serviceName, areaName, limit) {
   const piPhone = pHeader.indexOf("Phone");
   const piCategory = pHeader.indexOf("Category");
   const piVerified = pHeader.indexOf("Verified");
+  const piOtpVerified = findHeaderIndexByAliases_(pHeader, ["OtpVerified", "OTPVerified", "PhoneVerified"]);
+  const piOtpVerifiedAt = findHeaderIndexByAliases_(pHeader, ["OtpVerifiedAt", "OTPVerifiedAt"]);
+  const piPendingApproval = findHeaderIndexByAliases_(pHeader, ["PendingApproval"]);
 
   if (piPID === -1 || piName === -1 || piPhone === -1 || piVerified === -1) {
     return { ok: false, status: "error", error: "Providers headers invalid" };
@@ -128,7 +131,19 @@ function matchProviders_(serviceName, areaName, limit) {
       name: String(providers[r][piName] || "").trim(),
       phone: String(providers[r][piPhone] || "").trim(),
       category: providerCategory,
-      verified: String(providers[r][piVerified] || "").trim().toLowerCase() === "yes" ? "yes" : "no"
+      verified: normalizeVerifiedProviderValue_(providers[r][piVerified]),
+      otpVerified:
+        piOtpVerified !== -1
+          ? normalizeOtpVerifiedValue_(providers[r][piOtpVerified])
+          : "no",
+      otpVerifiedAt:
+        piOtpVerifiedAt !== -1
+          ? String(providers[r][piOtpVerifiedAt] || "").trim()
+          : "",
+      pendingApproval:
+        piPendingApproval !== -1
+          ? String(providers[r][piPendingApproval] || "").trim()
+          : "",
     });
   }
 
@@ -151,6 +166,9 @@ function matchProviders_(serviceName, areaName, limit) {
         phone: p.phone,
         category: p.category,
         verified: p.verified,
+        otpVerified: p.otpVerified,
+        otpVerifiedAt: p.otpVerifiedAt,
+        pendingApproval: p.pendingApproval,
         matchedBy:
           serviceSet.has(pid) && providerCategorySet.has(pid)
             ? "ProviderServices+Providers.Category"
@@ -161,7 +179,12 @@ function matchProviders_(serviceName, areaName, limit) {
     }
   }
 
-  out.sort((a, b) => (b.verified === "yes") - (a.verified === "yes"));
+  out.sort((a, b) => {
+    const aRank = isProviderVerifiedBadgeGas_(a) ? 0 : 1;
+    const bRank = isProviderVerifiedBadgeGas_(b) ? 0 : 1;
+    if (aRank !== bRank) return aRank - bRank;
+    return String(a.name || "").localeCompare(String(b.name || ""));
+  });
   const finalList = out.slice(0, limit);
 
   Logger.log(

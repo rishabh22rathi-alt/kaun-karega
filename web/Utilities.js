@@ -213,6 +213,91 @@ function isTruthySheetValue_(value) {
   return normalized === "yes" || normalized === "true" || normalized === "1";
 }
 
+function normalizeVerifiedProviderValue_(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (
+    normalized === "yes" ||
+    normalized === "true" ||
+    normalized === "1" ||
+    normalized === "verified"
+  ) {
+    return "yes";
+  }
+
+  if (
+    normalized === "no" ||
+    normalized === "false" ||
+    normalized === "0" ||
+    normalized === "not verified" ||
+    normalized === "unverified"
+  ) {
+    return "no";
+  }
+
+  return normalized ? "no" : "";
+}
+
+function isVerifiedProviderValue_(value) {
+  return normalizeVerifiedProviderValue_(value) === "yes";
+}
+
+function normalizeOtpVerifiedValue_(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (
+    normalized === "yes" ||
+    normalized === "true" ||
+    normalized === "1"
+  ) {
+    return "yes";
+  }
+
+  if (
+    normalized === "no" ||
+    normalized === "false" ||
+    normalized === "0" ||
+    normalized === "not verified" ||
+    normalized === "unverified" ||
+    normalized === ""
+  ) {
+    return "no";
+  }
+
+  return "no";
+}
+
+function isOtpVerifiedProviderValue_(value) {
+  return normalizeOtpVerifiedValue_(value) === "yes";
+}
+
+// Returns true if the provider's OTP verification is still within the 30-day window.
+// Transition rule: if otpVerifiedAt is blank, treat as valid (legacy provider not yet re-verified).
+// Once OtpVerifiedAt is written by a new OTP login, the 30-day expiry is enforced from that point.
+function isOtpStillValidGas_(otpVerified, otpVerifiedAt) {
+  if (normalizeOtpVerifiedValue_(otpVerified) !== "yes") return false;
+  var at = String(otpVerifiedAt || "").trim();
+  if (!at) return true; // transition: legacy provider, no OtpVerifiedAt written yet
+  var parsed = new Date(at);
+  if (isNaN(parsed.getTime())) return false;
+  var thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
+  return (new Date() - parsed) <= thirtyDaysMs;
+}
+
+// Full verified badge rule (GAS):
+//   registered_with_us = Verified === "yes"
+//   otp_still_valid    = OtpVerified === "yes" AND (OtpVerifiedAt blank OR within 30 days)
+//   not_pending        = PendingApproval !== "yes"
+function isProviderVerifiedBadgeGas_(provider) {
+  if (!provider || typeof provider !== "object") return false;
+  var verified = provider.Verified || provider.verified || "";
+  if (normalizeVerifiedProviderValue_(verified) !== "yes") return false;
+  var otpVerified = provider.OtpVerified || provider.otpVerified || "";
+  var otpVerifiedAt = provider.OtpVerifiedAt || provider.otpVerifiedAt || "";
+  if (!isOtpStillValidGas_(otpVerified, otpVerifiedAt)) return false;
+  var pending = String(provider.PendingApproval || provider.pendingApproval || "").trim().toLowerCase();
+  if (pending === "yes") return false;
+  return true;
+}
+
 function isActiveCategoryRow_(row, idxStatus, idxActive) {
   if (
     idxStatus !== -1 &&
@@ -246,6 +331,9 @@ function getProviderHeaderMap_(headers) {
     category: findHeaderIndexByAliases_(headers, ["Category", "Categories", "Service", "Services"]),
     areas: findHeaderIndexByAliases_(headers, ["Areas", "Area"]),
     verified: findHeaderIndexByAliases_(headers, ["Verified", "IsVerified"]),
+    otpVerified: findHeaderIndexByAliases_(headers, ["OtpVerified", "OTPVerified", "PhoneVerified"]),
+    otpVerifiedAt: findHeaderIndexByAliases_(headers, ["OtpVerifiedAt", "OTPVerifiedAt"]),
+    lastLoginAt: findHeaderIndexByAliases_(headers, ["LastLoginAt"]),
     status: findHeaderIndexByAliases_(headers, ["Status"]),
     approvalStatus: findHeaderIndexByAliases_(headers, ["ApprovalStatus", "Approval Status"]),
     pendingApproval: findHeaderIndexByAliases_(headers, [
@@ -272,6 +360,9 @@ function getProviderSheetFieldIndex_(headers, fieldName) {
   if (fieldName === "Category") return map.category;
   if (fieldName === "Areas") return map.areas;
   if (fieldName === "Verified") return map.verified;
+  if (fieldName === "OtpVerified") return map.otpVerified;
+  if (fieldName === "OtpVerifiedAt") return map.otpVerifiedAt;
+  if (fieldName === "LastLoginAt") return map.lastLoginAt;
   if (fieldName === "Status") return map.status;
   if (fieldName === "ApprovalStatus") return map.approvalStatus;
   if (fieldName === "PendingApproval") return map.pendingApproval;

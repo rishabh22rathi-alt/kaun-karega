@@ -161,6 +161,10 @@ export async function POST(request: Request) {
 
     const taskId =
       typeof result?.taskId === "string" ? result.taskId.trim() : "";
+    const displayId =
+      typeof result?.displayId === "string" || typeof result?.displayId === "number"
+        ? String(result.displayId).trim()
+        : "";
     if (!taskId) {
       return NextResponse.json(
         { error: "Apps Script did not return taskId." },
@@ -182,6 +186,7 @@ export async function POST(request: Request) {
     return NextResponse.json({
       ok: true,
       taskId,
+      displayId,
     });
 
   } catch (error: any) {

@@ -63,20 +63,7 @@ function providerMatchPriority_(provider) {
   const explicit = Number(provider.matchPriority || provider.MatchPriority || 0);
   if (explicit === 1 || explicit === 2) return explicit;
 
-  const verified = String(
-    provider.verified ||
-    provider.Verified ||
-    provider.providerVerified ||
-    provider.isVerified ||
-    ""
-  ).trim().toLowerCase();
-
-  return (
-    verified === "yes" ||
-    verified === "true" ||
-    verified === "1" ||
-    verified === "verified"
-  ) ? 1 : 2;
+  return isProviderVerifiedBadgeGas_(provider) ? 1 : 2;
 }
 
 function saveProviderMatches_(data) {
@@ -329,7 +316,24 @@ function getProviderRecordByPhone_(phoneRaw) {
   if (lastRow < 2) return { ok: false, error: "NO_PROVIDERS" };
 
   const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0] || [];
-  const headerMap = getProviderHeaderMap_(headers);
+  const ensuredHeaders = ensureSheetHeaders_(sh, [
+    "ProviderID",
+    "ProviderName",
+    "Phone",
+    "Category",
+    "Areas",
+    "Verified",
+    "OtpVerified",
+    "OtpVerifiedAt",
+    "LastLoginAt",
+    "Status",
+    "ApprovalStatus",
+    "PendingApproval",
+    "CustomCategory",
+    "CreatedAt",
+    "UpdatedAt",
+  ]);
+  const headerMap = getProviderHeaderMap_(ensuredHeaders);
 
   if (headerMap.phone === -1 || headerMap.providerId === -1 || headerMap.providerName === -1) {
     return {
@@ -365,6 +369,12 @@ function getProviderRecordByPhone_(phoneRaw) {
   const providerName = String(foundRow[headerMap.providerName] || "").trim();
   const verifiedRaw =
     headerMap.verified !== -1 ? String(foundRow[headerMap.verified] || "").trim() : "no";
+  const otpVerifiedRaw =
+    headerMap.otpVerified !== -1 ? String(foundRow[headerMap.otpVerified] || "").trim() : "no";
+  const otpVerifiedAtRaw =
+    headerMap.otpVerifiedAt !== -1 ? String(foundRow[headerMap.otpVerifiedAt] || "").trim() : "";
+  const lastLoginAtRaw =
+    headerMap.lastLoginAt !== -1 ? String(foundRow[headerMap.lastLoginAt] || "").trim() : "";
   const approvalRaw =
     headerMap.pendingApproval !== -1
       ? String(foundRow[headerMap.pendingApproval] || "").trim()
@@ -392,7 +402,10 @@ function getProviderRecordByPhone_(phoneRaw) {
       ProviderName: providerName,
       Name: providerName,
       Phone: phone10,
-      Verified: verifiedRaw.toLowerCase() === "yes" ? "yes" : "no",
+      Verified: normalizeVerifiedProviderValue_(verifiedRaw) || "no",
+      OtpVerified: normalizeOtpVerifiedValue_(otpVerifiedRaw) || "no",
+      OtpVerifiedAt: otpVerifiedAtRaw,
+      LastLoginAt: lastLoginAtRaw,
       PendingApproval: approvalRaw.toLowerCase() === "yes" ? "yes" : "no",
       Status: statusRaw,
     },
@@ -420,6 +433,9 @@ function providerRegister(phoneRaw, providerName, categories, areas) {
     "Category",
     "Areas",
     "Verified",
+    "OtpVerified",
+    "OtpVerifiedAt",
+    "LastLoginAt",
     "Status",
     "ApprovalStatus",
     "PendingApproval",
@@ -451,6 +467,9 @@ function providerRegister(phoneRaw, providerName, categories, areas) {
     "Category",
     "Areas",
     "Verified",
+    "OtpVerified",
+    "OtpVerifiedAt",
+    "LastLoginAt",
     "Status",
     "ApprovalStatus",
     "PendingApproval",
@@ -504,6 +523,15 @@ function providerRegister(phoneRaw, providerName, categories, areas) {
     Category: cleanCats.join(", "),
     Areas: cleanAreas.join(", "),
     Verified: verified,
+    OtpVerified: providerRow !== -1 && providerHeaderMap.otpVerified !== -1
+      ? normalizeOtpVerifiedValue_(providerRows[providerRow - 1]?.[providerHeaderMap.otpVerified] || "") || "no"
+      : "no",
+    OtpVerifiedAt: providerRow !== -1 && providerHeaderMap.otpVerifiedAt !== -1
+      ? providerRows[providerRow - 1]?.[providerHeaderMap.otpVerifiedAt] || ""
+      : "",
+    LastLoginAt: providerRow !== -1 && providerHeaderMap.lastLoginAt !== -1
+      ? providerRows[providerRow - 1]?.[providerHeaderMap.lastLoginAt] || ""
+      : "",
     Status: requiresAdminApproval ? "Pending Admin Approval" : "Active",
     ApprovalStatus: requiresAdminApproval ? "pending" : "approved",
     PendingApproval: pendingApproval,
@@ -575,6 +603,9 @@ function getProviderByPhone_(phoneRaw) {
       ProviderName: record.provider.ProviderName,
       Phone: record.provider.Phone,
       Verified: record.provider.Verified,
+      OtpVerified: record.provider.OtpVerified,
+      OtpVerifiedAt: record.provider.OtpVerifiedAt,
+      LastLoginAt: record.provider.LastLoginAt,
       PendingApproval: record.provider.PendingApproval,
       Status: record.provider.Status,
       Services: services,
@@ -595,6 +626,9 @@ function getProviderProfile_(phoneRaw) {
       Name: record.provider.ProviderName,
       Phone: record.provider.Phone,
       Verified: record.provider.Verified,
+      OtpVerified: record.provider.OtpVerified,
+      OtpVerifiedAt: record.provider.OtpVerifiedAt,
+      LastLoginAt: record.provider.LastLoginAt,
       PendingApproval: record.provider.PendingApproval,
       Status: record.provider.Status,
     },
@@ -1438,6 +1472,10 @@ function getProviderTaskLookup_() {
 
     const item = {
       TaskID: taskId,
+      DisplayID:
+        state.idxDisplayId !== -1 && row[state.idxDisplayId] !== undefined
+          ? String(row[state.idxDisplayId]).trim()
+          : "",
       Category:
         state.idxCategory !== -1 && row[state.idxCategory] !== undefined
           ? String(row[state.idxCategory]).trim()
@@ -1692,6 +1730,7 @@ function getProviderDashboardAnalytics_(providerId, services, areas) {
       const task = taskLookup.byTaskId[taskId] || {};
       return {
         TaskID: taskId,
+        DisplayID: task.DisplayID || "",
         Category: task.Category || "",
         Area: task.Area || "",
         Details: task.Details || "",

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { getAuthSession } from "@/lib/auth";
 import confetti from "canvas-confetti";
@@ -165,7 +165,7 @@ function capitalizeWords(text: string) {
     .join(" ");
 }
 
-export default function ProviderRegisterPage() {
+function ProviderRegisterPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const areaBoxRef = useRef<HTMLDivElement | null>(null);
@@ -1059,4 +1059,10 @@ export default function ProviderRegisterPage() {
   );
 }
 
-
+export default function ProviderRegisterPage() {
+  return (
+    <Suspense fallback={null}>
+      <ProviderRegisterPageInner />
+    </Suspense>
+  );
+}

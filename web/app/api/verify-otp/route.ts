@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { setAuthSession } from "@/lib/auth";
 import { upsertUserLogin } from "@/lib/googleSheets";
+import { checkAdminByPhone } from "@/lib/adminAuth";
 
 export const runtime = "nodejs";
 
@@ -172,18 +173,61 @@ export async function POST(request: Request) {
     );
 
     const token = crypto.randomUUID();
+
+    // Admin check — non-blocking. Failure never breaks the OTP login flow.
+    let adminInfo: {
+      isAdmin: boolean;
+      adminName?: string | null;
+      adminRole?: string | null;
+      permissions?: string[];
+    } = { isAdmin: false };
+    try {
+      const adminResult = await checkAdminByPhone(normalizedPhone);
+      if (adminResult.ok) {
+        adminInfo = {
+          isAdmin: true,
+          adminName: adminResult.admin.name ?? null,
+          adminRole: adminResult.admin.role ?? null,
+          permissions: adminResult.admin.permissions ?? [],
+        };
+      }
+    } catch {
+      // ignore — isAdmin stays false
+    }
+
     const response = NextResponse.json({
       ok: true,
       phone: normalizedPhone,
       token,
       message: "Verified",
+      ...adminInfo,
     });
 
     setAuthSession(normalizedPhone, token, {
       setCookie: (name, value, options) =>
         response.cookies.set(name, value, options),
     });
+    // kk_admin cookie enables server-side middleware protection for /admin/* routes
+    if (adminInfo.isAdmin) {
+      response.cookies.set("kk_admin", "1", {
+        maxAge: 30 * 24 * 60 * 60,
+        path: "/",
+        sameSite: "lax",
+        secure: process.env.NODE_ENV === "production",
+      });
+    } else {
+      response.cookies.set("kk_admin", "", { maxAge: 0, path: "/" });
+    }
     await upsertUserLogin(normalizedPhone);
+    try {
+      await updateProviderOtpVerification({
+        sheetId,
+        headers,
+        phoneWithCountryCode: normalizedPhone,
+      });
+    } catch (providerUpdateError) {
+      console.error("[VERIFY OTP] provider OTP sync failed", providerUpdateError);
+    }
     return response;
   } catch (error: any) {
     console.error("[VERIFY OTP ERROR]", error);
@@ -192,6 +236,137 @@ export async function POST(request: Request) {
       { status: 500 }
     );
   }
+}
+
+async function updateProviderOtpVerification(input: {
+  sheetId: string;
+  headers: Record<string, string>;
+  phoneWithCountryCode: string;
+}) {
+  const sheetName = "Providers";
+  const phone10 = normalizePhone10(input.phoneWithCountryCode);
+  if (!phone10) return;
+
+  const range = `${sheetName}!A:Z`;
+  const valuesResponse = await fetchSheetsJson<{ values?: string[][] }>(
+    `https://sheets.googleapis.com/v4/spreadsheets/${input.sheetId}/values/${encodeURIComponent(range)}`,
+    input.headers
+  );
+  const values = valuesResponse.values ?? [];
+  const now = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
+
+  const expectedHeaders = [
+    "ProviderID",
+    "ProviderName",
+    "Phone",
+    "Category",
+    "Areas",
+    "Verified",
+    "OtpVerified",
+    "OtpVerifiedAt",
+    "LastLoginAt",
+    "Status",
+    "ApprovalStatus",
+    "PendingApproval",
+    "CustomCategory",
+    "CreatedAt",
+    "UpdatedAt",
+  ];
+
+  const headerRow = values[0] ?? [];
+  const mergedHeaders = expectedHeaders.slice();
+  for (const existingHeader of headerRow) {
+    const normalizedExisting = String(existingHeader || "").trim();
+    if (!normalizedExisting) continue;
+    if (!mergedHeaders.some((item) => item.toLowerCase() === normalizedExisting.toLowerCase())) {
+      mergedHeaders.push(normalizedExisting);
+    }
+  }
+
+  const headerNeedsWrite =
+    mergedHeaders.length !== headerRow.length ||
+    mergedHeaders.some((header, index) => String(headerRow[index] || "") !== header);
+
+  if (headerNeedsWrite) {
+    await fetchSheetsJson(
+      `https://sheets.googleapis.com/v4/spreadsheets/${input.sheetId}/values/${encodeURIComponent(
+        `${sheetName}!1:1`
+      )}?valueInputOption=RAW`,
+      input.headers,
+      "PUT",
+      { values: [mergedHeaders] }
+    );
+  }
+
+  const normalizedHeaders = mergedHeaders.map((header) =>
+    String(header || "")
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, "")
+  );
+  const phoneIdx = normalizedHeaders.indexOf("phone");
+  const otpVerifiedIdx = normalizedHeaders.indexOf("otpverified");
+  const otpVerifiedAtIdx = normalizedHeaders.indexOf("otpverifiedat");
+  const lastLoginAtIdx = normalizedHeaders.indexOf("lastloginat");
+
+  if (phoneIdx < 0 || otpVerifiedIdx < 0 || otpVerifiedAtIdx < 0 || lastLoginAtIdx < 0) {
+    throw new Error("Providers sheet headers are missing OTP verification columns");
+  }
+
+  for (let i = 1; i < values.length; i += 1) {
+    const row = values[i] ?? [];
+    const rowPhone10 = normalizePhone10((row[phoneIdx] ?? "").toString().trim());
+    if (rowPhone10 !== phone10) continue;
+
+    const rowNumber = i + 1;
+    const rowOtpVerified = normalizeStoredOtpValue(row[otpVerifiedIdx]);
+    const rowOtpVerifiedAt = (row[otpVerifiedAtIdx] ?? "").toString().trim();
+
+    await updateSingleCell(
+      input.sheetId,
+      input.headers,
+      `${sheetName}!${columnLetter(otpVerifiedIdx)}${rowNumber}`,
+      "yes"
+    );
+    if (!rowOtpVerifiedAt) {
+      await updateSingleCell(
+        input.sheetId,
+        input.headers,
+        `${sheetName}!${columnLetter(otpVerifiedAtIdx)}${rowNumber}`,
+        now
+      );
+    }
+    await updateSingleCell(
+      input.sheetId,
+      input.headers,
+      `${sheetName}!${columnLetter(lastLoginAtIdx)}${rowNumber}`,
+      now
+    );
+
+    console.log("[VERIFY OTP] provider OTP status updated", {
+      providerPhone: phone10,
+      rowNumber,
+      alreadyOtpVerified: rowOtpVerified === "yes",
+      otpVerifiedAtWasEmpty: !rowOtpVerifiedAt,
+    });
+    return;
+  }
+}
+
+async function updateSingleCell(
+  sheetId: string,
+  headers: Record<string, string>,
+  range: string,
+  value: string
+) {
+  await fetchSheetsJson(
+    `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(
+      range
+    )}?valueInputOption=RAW`,
+    headers,
+    "PUT",
+    { values: [[value]] }
+  );
 }
 
 function normalizeIndianPhone(value: string) {
@@ -203,6 +378,26 @@ function normalizeIndianPhone(value: string) {
     return digitsOnly;
   }
   return null;
+}
+
+function normalizePhone10(value: string) {
+  const digitsOnly = String(value || "").replace(/\D/g, "");
+  if (digitsOnly.length === 10) return digitsOnly;
+  if (digitsOnly.length === 12 && digitsOnly.startsWith("91")) return digitsOnly.slice(2);
+  return digitsOnly.slice(-10);
+}
+
+function normalizeStoredOtpValue(value: unknown) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (
+    normalized === "yes" ||
+    normalized === "true" ||
+    normalized === "1" ||
+    normalized === "verified"
+  ) {
+    return "yes";
+  }
+  return "no";
 }
 
 function columnLetter(index: number) {

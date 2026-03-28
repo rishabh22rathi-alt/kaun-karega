@@ -66,6 +66,10 @@ export async function POST(request: Request) {
       {
         ok: upstream.ok && data?.ok !== false,
         taskId,
+        displayId:
+          typeof data?.displayId === "string" || typeof data?.displayId === "number"
+            ? String(data.displayId).trim()
+            : "",
         skipped: Boolean(data?.skipped),
         message: typeof data?.message === "string" ? data.message : "",
         matchedProviders:

@@ -118,6 +118,7 @@ export function setAuthSession(
 export function clearAuthSession(): void {
   if (!isBrowser()) return;
   clearCookie(STORAGE_KEY);
+  clearCookie("kk_admin");
 }
 
 export function isLoggedIn(): boolean {

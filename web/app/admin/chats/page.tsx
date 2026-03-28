@@ -2,10 +2,12 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { getTaskDisplayLabel } from "@/lib/taskDisplay";
 
 type ThreadRow = {
   ThreadID: string;
   TaskID: string;
+  DisplayID?: string;
   UserPhone: string;
   ProviderID: string;
   LastMessage: string;
@@ -38,7 +40,6 @@ export default function AdminChatsPage() {
   const [error, setError] = useState("");
   const [filter, setFilter] = useState<FilterValue>("");
   const [actionKey, setActionKey] = useState("");
-  const [hasAdminSession, setHasAdminSession] = useState(false);
 
   const loadThreads = async (statusFilter: FilterValue) => {
     setLoading(true);
@@ -69,20 +70,7 @@ export default function AdminChatsPage() {
   };
 
   useEffect(() => {
-    try {
-      const phone = localStorage.getItem("kk_phone");
-      const role = localStorage.getItem("kk_role");
-
-      if (!phone || (role !== "admin" && role !== "superadmin")) {
-        window.location.href = "/admin/login";
-        return;
-      }
-
-      setHasAdminSession(true);
-      void loadThreads(filter);
-    } catch {
-      window.location.href = "/admin/login";
-    }
+    void loadThreads(filter);
   }, [filter]);
 
   const handleCloseChat = async (threadId: string) => {
@@ -125,10 +113,6 @@ export default function AdminChatsPage() {
     []
   );
 
-  if (!hasAdminSession) {
-    return null;
-  }
-
   return (
     <div className="space-y-4">
       <div>
@@ -166,7 +150,7 @@ export default function AdminChatsPage() {
               <thead>
                 <tr className="border-b border-slate-200 text-slate-600">
                   <th className="py-2 pr-4 font-semibold">ThreadID</th>
-                  <th className="py-2 pr-4 font-semibold">TaskID</th>
+                  <th className="py-2 pr-4 font-semibold">Kaam</th>
                   <th className="py-2 pr-4 font-semibold">UserPhone</th>
                   <th className="py-2 pr-4 font-semibold">ProviderID</th>
                   <th className="py-2 pr-4 font-semibold">LastMessage</th>
@@ -199,7 +183,9 @@ export default function AdminChatsPage() {
                           {thread.ThreadID}
                         </Link>
                       </td>
-                      <td className="py-2 pr-4">{thread.TaskID || "-"}</td>
+                      <td className="py-2 pr-4">
+                        {getTaskDisplayLabel(thread, thread.TaskID)}
+                      </td>
                       <td className="py-2 pr-4">{thread.UserPhone || "-"}</td>
                       <td className="py-2 pr-4">{thread.ProviderID || "-"}</td>
                       <td className="py-2 pr-4">{thread.LastMessage || "-"}</td>

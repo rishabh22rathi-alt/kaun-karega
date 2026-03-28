@@ -121,10 +121,15 @@ function appendNotificationLog_(log) {
 
 function getNotificationSummaryByTask_(taskId) {
   var normalizedTaskId = String(taskId || "").trim();
+  var taskLookup = typeof getTaskDisplayLookup_ === "function" ? getTaskDisplayLookup_() : {};
   var sh = getNotificationLogsSheet_();
   var values = sh.getDataRange().getValues();
   var summary = {
     taskId: normalizedTaskId,
+    DisplayID:
+      taskLookup &&
+      taskLookup[normalizedTaskId] &&
+      String(taskLookup[normalizedTaskId].DisplayID || "").trim(),
     total: 0,
     accepted: 0,
     failed: 0,
@@ -155,6 +160,7 @@ function getNotificationSummaryByTask_(taskId) {
 
 function getRecentNotificationLogs_(limit) {
   var maxItems = Math.max(1, Number(limit || 20) || 20);
+  var taskLookup = typeof getTaskDisplayLookup_ === "function" ? getTaskDisplayLookup_() : {};
   var sh = getNotificationLogsSheet_();
   var values = sh.getDataRange().getValues();
   if (values.length <= 1) return [];
@@ -166,6 +172,10 @@ function getRecentNotificationLogs_(limit) {
       LogID: String(row[0] || "").trim(),
       CreatedAt: String(row[1] || "").trim(),
       TaskID: String(row[2] || "").trim(),
+      DisplayID:
+        taskLookup &&
+        taskLookup[String(row[2] || "").trim()] &&
+        String(taskLookup[String(row[2] || "").trim()].DisplayID || "").trim(),
       ProviderID: String(row[3] || "").trim(),
       ProviderPhone: String(row[4] || "").trim(),
       Category: String(row[5] || "").trim(),

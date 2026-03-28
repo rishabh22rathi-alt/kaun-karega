@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { getAuthSession } from "@/lib/auth";
+import { getTaskDisplayLabel } from "@/lib/taskDisplay";
 
 type ProviderProfileResponse = {
   ok?: boolean;
@@ -15,6 +16,7 @@ type ProviderProfileResponse = {
 type Thread = {
   ThreadID: string;
   TaskID: string;
+  DisplayID?: string;
   UserPhone: string;
   ProviderID: string;
   LastMessageAt?: string;
@@ -382,7 +384,7 @@ export default function ChatThreadPage() {
                 Viewing as: {actorType === "provider" ? "Provider" : "User"}
               </span>
               <span className="rounded-full border border-white/15 bg-white/10 px-3 py-1">
-                Task ID: {thread.TaskID}
+                {getTaskDisplayLabel(thread, thread.TaskID)}
               </span>
               <span className="rounded-full border border-white/15 bg-white/10 px-3 py-1">
                 Thread ID: {thread.ThreadID}

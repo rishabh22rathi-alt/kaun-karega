@@ -3,6 +3,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { UserTask, getUserTasks } from "@/lib/api/userTasks";
+import { getTaskDisplayLabel } from "@/lib/taskDisplay";
 
 const statusClasses: Record<UserTask["status"], string> = {
   submitted: "bg-amber-50 text-amber-700 border-amber-200",
@@ -68,7 +69,7 @@ export default function UserTasksPage() {
             <table className="min-w-full text-left">
               <thead className="bg-slate-50 text-xs uppercase text-slate-500">
                 <tr>
-                  <th className="px-4 py-3 font-semibold">Task ID</th>
+                  <th className="px-4 py-3 font-semibold">Kaam</th>
                   <th className="px-4 py-3 font-semibold">Category</th>
                   <th className="px-4 py-3 font-semibold">Area</th>
                   <th className="px-4 py-3 font-semibold">Status</th>
@@ -77,7 +78,12 @@ export default function UserTasksPage() {
               <tbody className="divide-y divide-slate-100 text-sm text-slate-800">
                 {tasks.map((task) => (
                   <tr key={task.taskId} className="hover:bg-slate-50">
-                    <td className="px-4 py-3 font-semibold text-slate-900">{task.taskId}</td>
+                    <td className="px-4 py-3 font-semibold text-slate-900">
+                      {getTaskDisplayLabel(
+                        { taskId: task.taskId, displayId: task.displayId },
+                        task.taskId
+                      )}
+                    </td>
                     <td className="px-4 py-3">{task.category}</td>
                     <td className="px-4 py-3">{task.area}</td>
                     <td className="px-4 py-3">

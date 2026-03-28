@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getAuthSession } from "@/lib/auth";
+import { getTaskDisplayLabel } from "@/lib/taskDisplay";
 
 type PageProps = {
   params: {
@@ -22,6 +23,7 @@ type ProviderProfileResponse = {
 
 type AdminRequest = {
   TaskID: string;
+  DisplayID?: string;
   UserPhone: string;
   Category?: string;
   Area?: string;
@@ -135,6 +137,10 @@ export default function ProviderChatEntryPage({ params }: PageProps) {
   }, [router, taskId]);
 
   const requiredTime = useMemo(() => buildRequiredTime(task), [task]);
+  const taskDisplayLabel = useMemo(
+    () => getTaskDisplayLabel(task || { TaskID: taskId }, taskId),
+    [task, taskId]
+  );
 
   const handleStartChat = async () => {
     if (!task || !providerPhone || startingChat) return;
@@ -214,6 +220,7 @@ export default function ProviderChatEntryPage({ params }: PageProps) {
         <h1 className="mt-2 text-2xl font-semibold text-slate-900">
           {task.Category || "Service Request"}
         </h1>
+        <p className="mt-2 text-sm font-semibold text-slate-600">{taskDisplayLabel}</p>
 
         <dl className="mt-6 space-y-4 text-sm text-slate-700">
           <div>

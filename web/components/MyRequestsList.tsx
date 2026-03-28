@@ -4,15 +4,28 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import InAppToastStack, { type InAppToast } from "@/components/InAppToastStack";
 import { getAuthSession } from "@/lib/auth";
+import { getVerifiedLabel, isProviderVerifiedBadge, normalizeVerifiedValue } from "@/lib/providerPresentation";
+import { getTaskDisplayLabel } from "@/lib/taskDisplay";
+
+type MatchedProviderRow = {
+  providerId: string;
+  providerName: string;
+  providerPhone: string;
+  verified: "yes" | "no";
+  responseStatus: string;
+};
 
 type RequestRow = {
   taskId: string;
+  displayId?: string;
+  displayLabel: string;
   category: string;
   area: string;
   details: string;
   status: string;
   createdAt: string;
   matchedProviders: string[];
+  matchedProviderDetails: MatchedProviderRow[];
   respondedProvider: string;
   respondedProviderName: string;
 };
@@ -56,8 +69,35 @@ type CreateThreadResponse = {
   };
 };
 
+function normalizeMatchedProvider(item: unknown): MatchedProviderRow | null {
+  if (!item || typeof item !== "object") return null;
+  const record = item as Record<string, unknown>;
+  const providerId = String(record.ProviderID ?? record.providerId ?? "").trim();
+  const providerName = String(record.ProviderName ?? record.providerName ?? "").trim();
+  const providerPhone = String(record.ProviderPhone ?? record.providerPhone ?? "").trim();
+  const responseStatus = String(record.ResponseStatus ?? record.status ?? "").trim();
+
+  if (!providerId) return null;
+
+  return {
+    providerId,
+    providerName,
+    providerPhone,
+    verified: isProviderVerifiedBadge(record) ? "yes" : "no",
+    responseStatus,
+  };
+}
+
 const normalizeRequest = (item: RawRequest): RequestRow => ({
   taskId: String(item.TaskID ?? item.taskId ?? item.id ?? item.task_id ?? "") || "-",
+  displayId: String(item.DisplayID ?? item.displayId ?? "") || "",
+  displayLabel: getTaskDisplayLabel(
+    {
+      TaskID: item.TaskID ?? item.taskId ?? item.id ?? item.task_id ?? "",
+      DisplayID: item.DisplayID ?? item.displayId ?? "",
+    },
+    String(item.TaskID ?? item.taskId ?? item.id ?? item.task_id ?? "")
+  ),
   category: String(item.Category ?? item.category ?? "") || "-",
   area: String(item.Area ?? item.area ?? "") || "-",
   details: String(item.Details ?? item.details ?? "") || "-",
@@ -65,6 +105,11 @@ const normalizeRequest = (item: RawRequest): RequestRow => ({
   createdAt: String(item.CreatedAt ?? item.createdAt ?? "") || "-",
   matchedProviders: Array.isArray(item.MatchedProviders)
     ? item.MatchedProviders.map((providerId) => String(providerId || "").trim()).filter(Boolean)
+    : [],
+  matchedProviderDetails: Array.isArray(item.MatchedProviderDetails)
+    ? item.MatchedProviderDetails.map((provider) => normalizeMatchedProvider(provider)).filter(
+        (provider): provider is MatchedProviderRow => Boolean(provider)
+      )
     : [],
   respondedProvider: String(item.RespondedProvider ?? item.respondedProvider ?? "") || "",
   respondedProviderName:
@@ -212,6 +257,10 @@ export default function MyRequestsList() {
             ? data.tasks
             : [];
         const normalizedRows: RequestRow[] = list.map((item: RawRequest) => normalizeRequest(item));
+        const displayLabelByTaskId = normalizedRows.reduce((acc: Record<string, string>, row) => {
+          acc[row.taskId] = row.displayLabel;
+          return acc;
+        }, {});
         const requestSnapshot = normalizedRows.reduce((acc: Record<string, string>, row: RequestRow) => {
           acc[row.taskId] = row.respondedProvider;
           return acc;
@@ -238,7 +287,7 @@ export default function MyRequestsList() {
             if (!previousRespondedProvider && row.respondedProvider) {
               enqueueToast(
                 "A provider responded to your request",
-                `Task ${row.taskId} now has a provider response.`,
+                `${row.displayLabel} now has a provider response.`,
                 buildToastId("response", row.taskId, row.respondedProvider)
               );
             }
@@ -252,7 +301,7 @@ export default function MyRequestsList() {
             if (summary.unreadUserCount > previousSummary.unreadUserCount && summary.lastMessageAt) {
               enqueueToast(
                 "New message from provider",
-                `You have ${summary.unreadUserCount} unread message${summary.unreadUserCount === 1 ? "" : "s"} on task ${taskId}.`,
+                `You have ${summary.unreadUserCount} unread message${summary.unreadUserCount === 1 ? "" : "s"} on ${displayLabelByTaskId[taskId] || getTaskDisplayLabel({ TaskID: taskId }, taskId)}.`,
                 buildToastId("message", taskId, `${summary.unreadUserCount}:${summary.lastMessageAt}`)
               );
             }
@@ -468,6 +517,20 @@ export default function MyRequestsList() {
               const threadByProviderId = new Map(
                 taskThreads.map((thread) => [String(thread.ProviderID || "").trim(), thread])
               );
+              const matchedProviderRows =
+                row.matchedProviderDetails.length > 0
+                  ? row.matchedProviderDetails
+                  : row.matchedProviders.map((providerId) => ({
+                      providerId,
+                      providerName:
+                        providerId === row.respondedProvider && row.respondedProviderName
+                          ? row.respondedProviderName
+                          : providerId,
+                      providerPhone: "",
+                      verified: "no" as const,
+                      responseStatus:
+                        providerId === row.respondedProvider ? "responded" : "",
+                    }));
 
               return (
                 <div
@@ -477,7 +540,7 @@ export default function MyRequestsList() {
                   <div className="space-y-2 text-sm">
                     <p className="flex flex-wrap items-center gap-2 text-slate-900">
                       <span>
-                        <span className="font-semibold">Task ID:</span> {row.taskId}
+                        <span className="font-semibold">Kaam:</span> {row.displayLabel}
                       </span>
                       {taskThreadSummary?.unreadUserCount ? (
                         <span className="inline-flex rounded-full bg-rose-600 px-2.5 py-0.5 text-xs font-semibold text-white">
@@ -526,60 +589,105 @@ export default function MyRequestsList() {
                         <p className="text-sm text-slate-600">Loading responses...</p>
                       ) : responsesError ? (
                         <p className="text-sm text-rose-600">{responsesError}</p>
-                      ) : row.matchedProviders.length === 0 ? (
+                      ) : matchedProviderRows.length === 0 ? (
                         <p className="text-sm text-slate-600">No matched providers yet.</p>
                       ) : (
-                        row.matchedProviders.map((providerId) => {
-                          const thread = threadByProviderId.get(providerId) || null;
-                          const chatKey = `${row.taskId}:${providerId}`;
-                          const providerLabel =
-                            providerId === row.respondedProvider && row.respondedProviderName
-                              ? `${providerId} (${row.respondedProviderName})`
-                              : providerId;
+                        <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+                          <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
+                            <thead className="bg-slate-100 text-slate-700">
+                              <tr>
+                                <th className="px-3 py-3 font-semibold">Provider Name</th>
+                                <th className="px-3 py-3 font-semibold">Phone</th>
+                                <th className="px-3 py-3 font-semibold">Phone Verified</th>
+                                <th className="px-3 py-3 font-semibold">Response Status</th>
+                                <th className="px-3 py-3 font-semibold">Chat / Action</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-200 text-slate-800">
+                              {matchedProviderRows.map((provider) => {
+                                const providerId = String(provider.providerId || "").trim();
+                                const thread = threadByProviderId.get(providerId) || null;
+                                const chatKey = `${row.taskId}:${providerId}`;
+                                const responseStatus =
+                                  providerId === row.respondedProvider
+                                    ? "Responded"
+                                    : provider.responseStatus
+                                      ? provider.responseStatus
+                                          .replace(/_/g, " ")
+                                          .replace(/\b\w/g, (ch) => ch.toUpperCase())
+                                      : "Awaiting response";
 
-                          return (
-                            <div
-                              key={providerId}
-                              className="rounded-lg border border-slate-200 bg-white p-3 text-sm"
-                            >
-                              <p className="text-slate-900">
-                                <span className="font-semibold">ProviderID:</span> {providerLabel}
-                              </p>
-                              <p className="mt-1 text-slate-700">
-                                <span className="font-semibold">Thread:</span>{" "}
-                                {thread?.ThreadID || "Not created yet"}
-                              </p>
-                              <p className="mt-1 text-slate-700">
-                                <span className="font-semibold">Last activity:</span>{" "}
-                                {formatDisplayDate(
-                                  thread?.LastMessageAt || thread?.UpdatedAt || thread?.CreatedAt || ""
-                                )}
-                              </p>
-                              <p className="mt-1 text-slate-700">
-                                <span className="font-semibold">Unread for user:</span>{" "}
-                                {thread?.UnreadUserCount || 0}
-                                {thread?.UnreadUserCount ? (
-                                  <span className="ml-2 inline-flex rounded-full bg-rose-100 px-2 py-0.5 text-[11px] font-semibold text-rose-700">
-                                    New
-                                  </span>
-                                ) : null}
-                              </p>
-                              <button
-                                type="button"
-                                onClick={() => void handleOpenChat(row, providerId, thread)}
-                                disabled={openingChatKey === chatKey || !row.taskId || !providerId}
-                                className="mt-3 inline-flex rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white disabled:opacity-60"
-                              >
-                                {openingChatKey === chatKey ? "Opening..." : "Open Chat"}
-                              </button>
-                              {!row.taskId || !providerId ? (
-                                <p className="mt-2 text-xs text-rose-600">
-                                  Chat unavailable: missing task or provider identifier.
-                                </p>
-                              ) : null}
-                            </div>
-                          );
-                        })
+                                return (
+                                  <tr key={providerId}>
+                                    <td className="px-3 py-3 align-top">
+                                      <div className="font-medium text-slate-900">
+                                        {provider.providerName || providerId}
+                                      </div>
+                                      <div className="text-xs text-slate-500">{providerId}</div>
+                                    </td>
+                                    <td className="px-3 py-3 align-top">
+                                      {provider.providerPhone ? (
+                                        <a
+                                          href={`tel:${provider.providerPhone}`}
+                                          className="text-blue-600 hover:underline"
+                                        >
+                                          {provider.providerPhone}
+                                        </a>
+                                      ) : (
+                                        <span className="text-slate-500">-</span>
+                                      )}
+                                    </td>
+                                    <td className="px-3 py-3 align-top">
+                                      <span
+                                        className={
+                                          provider.verified === "yes"
+                                            ? "inline-flex rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-700"
+                                            : "inline-flex rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-700"
+                                        }
+                                      >
+                                        {getVerifiedLabel(provider.verified)}
+                                      </span>
+                                    </td>
+                                    <td className="px-3 py-3 align-top">
+                                      <div>{responseStatus}</div>
+                                      <div className="text-xs text-slate-500">
+                                        {thread?.ThreadID || "Thread not created yet"}
+                                      </div>
+                                      {thread?.LastMessageAt || thread?.UpdatedAt || thread?.CreatedAt ? (
+                                        <div className="text-xs text-slate-500">
+                                          Last activity:{" "}
+                                          {formatDisplayDate(
+                                            thread?.LastMessageAt || thread?.UpdatedAt || thread?.CreatedAt || ""
+                                          )}
+                                        </div>
+                                      ) : null}
+                                    </td>
+                                    <td className="px-3 py-3 align-top">
+                                      <button
+                                        type="button"
+                                        onClick={() => void handleOpenChat(row, providerId, thread)}
+                                        disabled={openingChatKey === chatKey || !row.taskId || !providerId}
+                                        className="inline-flex rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                                      >
+                                        {openingChatKey === chatKey ? "Opening..." : "Open Chat"}
+                                      </button>
+                                      {thread?.UnreadUserCount ? (
+                                        <div className="mt-2 inline-flex rounded-full bg-rose-100 px-2 py-0.5 text-[11px] font-semibold text-rose-700">
+                                          {thread.UnreadUserCount} unread
+                                        </div>
+                                      ) : null}
+                                      {!row.taskId || !providerId ? (
+                                        <p className="mt-2 text-xs text-rose-600">
+                                          Chat unavailable: missing task or provider identifier.
+                                        </p>
+                                      ) : null}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
                       )}
                     </div>
                   ) : null}

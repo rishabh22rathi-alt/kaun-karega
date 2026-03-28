@@ -1,154 +1,303 @@
-﻿"use client";
+"use client";
 
-import { Suspense, useEffect, useMemo, useState, FormEvent } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
-import { getAuthSession, setAuthSession } from "@/lib/auth";
+import { useEffect, useRef, useState, KeyboardEvent } from "react";
+import { useRouter } from "next/navigation";
+import { setAuthSession } from "@/lib/auth";
+import { SIDEBAR_TOGGLE_EVENT } from "@/components/sidebarEvents";
 
-type UserStatus = "provider" | "receiver" | "new";
+const DEFAULT_NEXT = "/";
 
-export default function OtpPage() {
-  return (
-    <Suspense
-      fallback={
-        <main className="min-h-screen bg-[#FFE3C2] flex items-center justify-center px-4 py-10">
-          <div className="w-full max-w-md rounded-2xl bg-white shadow-lg p-8 text-sm text-slate-700">
-            Loading OTP form...
-          </div>
-        </main>
-      }
-    >
-      <PageContent />
-    </Suspense>
-  );
-}
+const getSafeNext = (value: string | null): string => {
+  if (!value) return DEFAULT_NEXT;
+  if (!value.startsWith("/") || value.startsWith("//")) {
+    return DEFAULT_NEXT;
+  }
+  return value;
+};
 
-function PageContent() {
+export default function VerifyPage() {
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const [phone, setPhone] = useState("");
   const [otp, setOtp] = useState("");
-  const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [info, setInfo] = useState("");
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const [phone, setPhone] = useState("");
+  const [requestId, setRequestId] = useState("");
+  const [nextPath, setNextPath] = useState(DEFAULT_NEXT);
+  const [cooldown, setCooldown] = useState(0);
 
-  const phoneDigits = useMemo(() => phone.replace(/\D/g, "").slice(0, 10), [phone]);
-  const redirectTo = searchParams.get("redirectTo") || "";
+  const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
+  // ---------------------------------------------------
+  // LOAD PHONE FROM URL + AUTO SEND OTP WHEN PAGE OPENS
+  // ---------------------------------------------------
   useEffect(() => {
-    const session = getAuthSession();
-    if (session?.phone && redirectTo) {
-      router.replace(redirectTo);
+    const params = new URLSearchParams(window.location.search);
+    const p = params.get("phone");
+    const r = params.get("requestId");
+    const next = params.get("next");
+
+    if (p) {
+      setPhone(p);
+      if (r) setRequestId(r);
+      setNextPath(getSafeNext(next));
+      sendOtpImmediately(p, r ?? undefined);
+    }
+  }, []);
+
+  const sendOtpImmediately = async (
+    phoneOverride?: string,
+    requestIdOverride?: string
+  ) => {
+    setCooldown(0);
+    await sendOtp(phoneOverride, requestIdOverride);
+  };
+
+  // ---------------------------------------------------
+  // COOLDOWN TIMER
+  // ---------------------------------------------------
+  useEffect(() => {
+    if (cooldown <= 0) return;
+
+    const timer = setInterval(() => {
+      setCooldown((prev) => (prev <= 1 ? 0 : prev - 1));
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [cooldown]);
+
+  // ---------------------------------------------------
+  // SEND OTP FUNCTION
+  // ---------------------------------------------------
+  const sendOtp = async (
+    phoneOverride?: string,
+    requestIdOverride?: string
+  ) => {
+    const activePhone = phoneOverride ?? phone;
+    if (!activePhone) return;
+    if (cooldown > 0) return;
+
+    const normalizedPhone = activePhone.replace(/\D/g, "");
+    if (
+      normalizedPhone.length !== 10 &&
+      !(normalizedPhone.length === 12 && normalizedPhone.startsWith("91"))
+    ) {
+      setError("Enter a valid 10-digit Indian mobile number");
       return;
     }
 
-    const initialPhone = searchParams.get("phone");
-    if (initialPhone) {
-      setPhone(initialPhone);
-      return;
-    }
-  }, [router, searchParams, redirectTo]);
-
-  const handleVerify = async (e: FormEvent) => {
-    e.preventDefault();
-    setError("");
-    setInfo("");
-
-    if (phoneDigits.length !== 10) {
-      setError("Enter a valid 10-digit mobile number");
-      return;
-    }
-    if (!/^\d{4}$/.test(otp)) {
-      setError("Enter the 4-digit OTP sent on WhatsApp");
-      return;
-    }
+    const normalized =
+      normalizedPhone.length === 10
+        ? `91${normalizedPhone}`
+        : normalizedPhone;
+    const currentRequestId =
+      requestIdOverride || requestId || crypto.randomUUID();
+    if (requestIdOverride || !requestId) setRequestId(currentRequestId);
 
     setLoading(true);
+    setError("");
+    setMessage("");
+
     try {
-      const verifyRes = await fetch("/api/verify-otp", {
+      const res = await fetch("/api/send-whatsapp-otp", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone: phoneDigits, otp }),
+        body: JSON.stringify({
+          phoneNumber: normalized,
+          requestId: currentRequestId,
+        }),
       });
-      const verifyData = await verifyRes.json();
-      if (!verifyRes.ok || !verifyData.ok) {
-        setError(verifyData.error || "Invalid OTP");
-        return;
-      }
-      setAuthSession(verifyData.phone, verifyData.token);
 
-      const statusRes = await fetch(
-        `/api/check-user-status?phone=${encodeURIComponent(phoneDigits)}`,
-        { cache: "no-store" }
-      );
-      const statusData = await statusRes.json();
-      if (!statusRes.ok || !statusData.status) {
-        setError(statusData.error || "Could not check account status");
-        return;
-      }
+      const data = await res.json();
+      console.log("SEND OTP RESPONSE:", data);
 
-      const status: UserStatus = statusData.status;
-
-      if (redirectTo) {
-        router.push(redirectTo);
-        return;
-      }
-
-      if (status === "provider") {
-        router.replace("/provider/dashboard");
-      } else if (status === "receiver") {
-        router.replace("/");
+      if (data.ok) {
+        setMessage("OTP sent successfully on WhatsApp!");
+        setCooldown(60);
       } else {
-        router.replace(`/choose-role?phone=${phoneDigits}`);
+        setError(data?.error || "Failed to send OTP");
       }
     } catch (err) {
-      setError("Network error. Please try again.");
-    } finally {
-      setLoading(false);
+      setError("Network Error");
+    }
+
+    setLoading(false);
+  };
+
+  // ---------------------------------------------------
+  // VERIFY OTP FUNCTION
+  // ---------------------------------------------------
+  const verifyOtp = async () => {
+    if (!/^\d{4}$/.test(otp)) {
+      setError("Enter 4-digit OTP");
+      return;
+    }
+
+    const normalizedPhone = phone.replace(/\D/g, "");
+    if (
+      normalizedPhone.length !== 10 &&
+      !(normalizedPhone.length === 12 && normalizedPhone.startsWith("91"))
+    ) {
+      setError("Enter a valid 10-digit Indian mobile number");
+      return;
+    }
+
+    const normalized =
+      normalizedPhone.length === 10
+        ? `91${normalizedPhone}`
+        : normalizedPhone;
+
+    setLoading(true);
+    setError("");
+
+    try {
+      const res = await fetch("/api/verify-otp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          phoneNumber: normalized,
+          otp,
+          requestId,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (data.ok) {
+        const displayPhone = normalized.slice(-10);
+        setAuthSession(displayPhone);
+        // Mirror admin status from server response — sidebar reads this
+        if (data.isAdmin === true) {
+          window.localStorage.setItem(
+            "kk_admin_session",
+            JSON.stringify({
+              isAdmin: true,
+              name: data.adminName ?? null,
+              role: data.adminRole ?? null,
+              permissions: data.permissions ?? [],
+            })
+          );
+        } else {
+          window.localStorage.removeItem("kk_admin_session");
+        }
+        window.dispatchEvent(
+          new CustomEvent(SIDEBAR_TOGGLE_EVENT, {
+            detail: { type: "auth-updated" },
+          })
+        );
+        router.replace(nextPath);
+      } else {
+        setError(data?.error || "Verification failed");
+      }
+    } catch (err) {
+      setError("Network Error");
+    }
+
+    setLoading(false);
+  };
+
+  // ---------------------------------------------------
+  // OTP BOX HANDLERS
+  // ---------------------------------------------------
+  const handleDigitInput = (index: number, value: string) => {
+    const digit = value.replace(/\D/g, "").slice(-1);
+    const newOtp = otp.split("");
+    newOtp[index] = digit;
+    // fill gaps with empty string
+    const filled = Array.from({ length: 4 }, (_, i) => newOtp[i] ?? "");
+    setOtp(filled.join(""));
+
+    if (digit && index < 3) {
+      inputRefs.current[index + 1]?.focus();
     }
   };
 
-  return (
-    <main className="min-h-screen bg-[#FFE3C2] flex items-center justify-center px-4 py-10">
-      <div className="w-full max-w-md rounded-2xl bg-white shadow-lg p-8 space-y-6">
-        <header className="text-center space-y-1">
-          <p className="text-xs uppercase tracking-wide text-[#0EA5E9]">OTP Verification</p>
-          <h1 className="text-2xl font-bold text-slate-900">Enter the 4-digit code</h1>
-          <p className="text-sm text-slate-600">Sent to {phoneDigits || "your number"}</p>
-        </header>
+  const handleDigitKeyDown = (index: number, e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Backspace") {
+      if (otp[index]) {
+        const chars = otp.split("");
+        chars[index] = "";
+        setOtp(Array.from({ length: 4 }, (_, i) => chars[i] ?? "").join(""));
+      } else if (index > 0) {
+        inputRefs.current[index - 1]?.focus();
+      }
+    }
+  };
 
-        {(error || info) && (
-          <div
-            className={`rounded-xl border px-4 py-3 text-sm ${
-              error
-                ? "border-red-200 bg-red-50 text-red-700"
-                : "border-emerald-200 bg-emerald-50 text-emerald-700"
-            }`}
-          >
-            {error || info}
+  // ---------------------------------------------------
+  // UI
+  // ---------------------------------------------------
+  return (
+    <main className="min-h-screen bg-amber-50 flex items-center justify-center px-4 py-10">
+      <div className="w-full max-w-sm rounded-2xl bg-white shadow-lg p-8 space-y-6">
+
+        {/* Heading */}
+        <div className="text-center space-y-1">
+          <h1 className="text-2xl font-bold text-slate-900">Verify your number</h1>
+          {phone && (
+            <p className="text-sm text-slate-500">
+              Code sent to{" "}
+              <span className="font-semibold text-slate-700">
+                +91 {phone.replace(/\D/g, "").slice(-10)}
+              </span>
+            </p>
+          )}
+        </div>
+
+        {/* Messages */}
+        {message && (
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+            {message}
+          </div>
+        )}
+        {error && (
+          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
+            {error}
           </div>
         )}
 
-        <form className="space-y-4" onSubmit={handleVerify}>
-          <div className="space-y-1">
-            <label className="text-sm font-semibold text-slate-700">OTP</label>
+        {/* 4 OTP Boxes */}
+        <div className="flex justify-center gap-3">
+          {Array.from({ length: 4 }).map((_, i) => (
             <input
-              type="tel"
-              value={otp}
-              onChange={(e) => setOtp(e.target.value.replace(/\D/g, "").slice(0, 4))}
-              className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-center text-lg tracking-[0.25em] shadow-sm focus:border-[#0EA5E9] focus:outline-none focus:ring-2 focus:ring-[#0EA5E9]/30"
-              placeholder="______"
+              key={i}
+              ref={(el) => { inputRefs.current[i] = el; }}
+              type="text"
               inputMode="numeric"
+              maxLength={1}
+              value={otp[i] ?? ""}
+              onChange={(e) => handleDigitInput(i, e.target.value)}
+              onKeyDown={(e) => handleDigitKeyDown(i, e)}
+              className="w-14 h-14 rounded-xl border-2 border-slate-200 bg-white text-center text-2xl font-bold text-slate-900 shadow-sm transition focus:border-green-500 focus:outline-none focus:ring-2 focus:ring-green-500/30"
             />
-          </div>
+          ))}
+        </div>
 
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full rounded-full bg-[#0EA5E9] px-4 py-3 text-white font-semibold shadow-md transition hover:shadow-lg disabled:opacity-60"
-          >
-            {loading ? "Verifying..." : "Verify OTP"}
-          </button>
-        </form>
+        {/* Verify Button */}
+        <button
+          onClick={verifyOtp}
+          disabled={loading}
+          className="w-full rounded-xl bg-green-600 px-4 py-3 text-white font-semibold shadow-md transition hover:bg-green-700 active:scale-95 disabled:opacity-60"
+        >
+          {loading ? "Verifying..." : "Verify & Continue"}
+        </button>
+
+        {/* Resend */}
+        <div className="text-center text-sm">
+          {cooldown > 0 ? (
+            <p className="text-slate-400">
+              Resend OTP in <span className="font-semibold text-slate-600">{cooldown}s</span>
+            </p>
+          ) : (
+            <button
+              onClick={() => { void sendOtp(); }}
+              className="font-semibold text-green-600 hover:text-green-700 transition"
+            >
+              Resend OTP
+            </button>
+          )}
+        </div>
+
       </div>
     </main>
   );

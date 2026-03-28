@@ -12,6 +12,7 @@ import {
   getProviderStats,
 } from "@/lib/api/analytics";
 import { getTasksWithoutResponse, NoResponseTask } from "@/lib/api/tasks";
+import { getTaskDisplayLabel } from "@/lib/taskDisplay";
 
 type Summary = {
   today: number;
@@ -285,7 +286,7 @@ export default function AdminAnalyticsPage() {
               <table className="min-w-full text-left">
                 <thead className="bg-slate-50 text-xs uppercase text-slate-500">
                   <tr>
-                    <th className="px-4 py-3 font-semibold">Task ID</th>
+                    <th className="px-4 py-3 font-semibold">Kaam</th>
                     <th className="px-4 py-3 font-semibold">Area</th>
                     <th className="px-4 py-3 font-semibold">Category</th>
                     <th className="px-4 py-3 font-semibold">Created At</th>
@@ -296,7 +297,10 @@ export default function AdminAnalyticsPage() {
                   {noResponseTasks.map((task) => (
                     <tr key={task.taskId} className="hover:bg-slate-50">
                       <td className="px-4 py-3 font-semibold text-slate-900">
-                        {task.taskId}
+                        {getTaskDisplayLabel(
+                          { taskId: task.taskId, displayId: task.displayId },
+                          task.taskId
+                        )}
                       </td>
                       <td className="px-4 py-3">{task.area}</td>
                       <td className="px-4 py-3">{task.category}</td>

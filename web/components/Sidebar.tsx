@@ -10,6 +10,7 @@ import {
   ClipboardList,
   User,
   LayoutDashboard,
+  ShieldCheck,
   LogOut,
   LogIn,
   UserPlus,
@@ -20,9 +21,22 @@ import {
   SIDEBAR_TOGGLE_EVENT,
 } from "./sidebarEvents";
 import { clearAuthSession, getAuthSession } from "@/lib/auth";
+import { isProviderVerifiedBadge } from "@/lib/providerPresentation";
 
 const BASE_URL = process.env.NEXT_PUBLIC_APPS_SCRIPT_URL!;
 const PROVIDER_PROFILE_STORAGE_KEY = "kk_provider_profile";
+const ADMIN_SESSION_STORAGE_KEY = "kk_admin_session";
+
+function readAdminSession(): boolean {
+  try {
+    const raw = window.localStorage.getItem(ADMIN_SESSION_STORAGE_KEY);
+    if (!raw) return false;
+    const parsed = JSON.parse(raw) as { isAdmin?: unknown };
+    return parsed?.isAdmin === true;
+  } catch {
+    return false;
+  }
+}
 
 type NavItem = {
   label: string;
@@ -34,6 +48,9 @@ type ProviderProfile = {
   Name?: string;
   Phone?: string;
   Verified?: string;
+  OtpVerified?: string;
+  OtpVerifiedAt?: string;
+  PendingApproval?: string;
   Status?: string;
 };
 
@@ -41,6 +58,24 @@ type ProviderProfileResponse = {
   ok?: boolean;
   provider?: ProviderProfile;
   error?: string;
+};
+
+type NeedSummary = {
+  NeedID?: string;
+};
+
+type MyNeedsResponse = {
+  ok?: boolean;
+  needs?: NeedSummary[];
+};
+
+type NeedThreadSummary = {
+  UnreadPosterCount?: number;
+};
+
+type NeedThreadsResponse = {
+  ok?: boolean;
+  threads?: NeedThreadSummary[];
 };
 
 const formatPhone = (phone?: string | null) => {
@@ -60,7 +95,7 @@ const normalizePhoneToTen = (value?: string | null) => {
 };
 
 const isProviderVerified = (provider?: ProviderProfile | null) =>
-  String(provider?.Verified || "").trim().toLowerCase() === "yes";
+  isProviderVerifiedBadge(provider ?? {});
 
 export default function Sidebar() {
   const pathname = usePathname();
@@ -76,6 +111,8 @@ export default function Sidebar() {
     null
   );
   const [providerExists, setProviderExists] = useState<boolean | null>(null);
+  const [myNeedsUnreadCount, setMyNeedsUnreadCount] = useState(0);
+  const [isAdmin, setIsAdmin] = useState(false);
   const isLoggedIn = Boolean(session?.phone);
   const shouldHide = pathname?.startsWith("/admin");
 
@@ -84,6 +121,7 @@ export default function Sidebar() {
       const detail = (event as CustomEvent).detail;
       if (detail?.type === "auth-updated") {
         setSession(getAuthSession());
+        setIsAdmin(readAdminSession());
         return;
       }
       const isDesktop =
@@ -126,12 +164,14 @@ export default function Sidebar() {
 
   useEffect(() => {
     setSession(getAuthSession());
+    setIsAdmin(readAdminSession());
   }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     const onStorage = () => {
       setSession(getAuthSession());
+      setIsAdmin(readAdminSession());
       try {
         const raw = window.localStorage.getItem(PROVIDER_PROFILE_STORAGE_KEY);
         setProviderProfile(raw ? (JSON.parse(raw) as ProviderProfile) : null);
@@ -263,6 +303,79 @@ export default function Sidebar() {
   }, [isLoggedIn, session?.phone]);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const phone = normalizePhoneToTen(session?.phone || "");
+    if (!/^\d{10}$/.test(phone)) {
+      setMyNeedsUnreadCount(0);
+      return;
+    }
+
+    let ignore = false;
+
+    const loadMyNeedsUnreadCount = async () => {
+      try {
+        const needsRes = await fetch("/api/kk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "get_my_needs",
+            UserPhone: phone,
+          }),
+          cache: "no-store",
+        });
+
+        const needsData = (await needsRes.json()) as MyNeedsResponse;
+        if (!needsRes.ok || needsData?.ok !== true) {
+          if (!ignore) setMyNeedsUnreadCount(0);
+          return;
+        }
+
+        const needIds = (needsData.needs || [])
+          .map((need) => String(need?.NeedID || "").trim())
+          .filter(Boolean);
+
+        if (!needIds.length) {
+          if (!ignore) setMyNeedsUnreadCount(0);
+          return;
+        }
+
+        const threadResponses = await Promise.all(
+          needIds.map(async (needId) => {
+            const response = await fetch("/api/kk", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                action: "need_chat_get_threads_for_need",
+                NeedID: needId,
+                UserPhone: phone,
+              }),
+              cache: "no-store",
+            });
+
+            const data = (await response.json()) as NeedThreadsResponse;
+            return response.ok && data?.ok === true ? data.threads || [] : [];
+          })
+        );
+
+        const unreadCount = threadResponses
+          .flat()
+          .reduce((sum, thread) => sum + (Number(thread?.UnreadPosterCount) || 0), 0);
+
+        if (!ignore) setMyNeedsUnreadCount(unreadCount);
+      } catch {
+        if (!ignore) setMyNeedsUnreadCount(0);
+      }
+    };
+
+    void loadMyNeedsUnreadCount();
+
+    return () => {
+      ignore = true;
+    };
+  }, [session?.phone]);
+
+  useEffect(() => {
     if (!isLoggedIn) {
       setIsCollapsed(false);
     }
@@ -291,8 +404,12 @@ export default function Sidebar() {
     ? [
         { label: "Home", href: "/" },
         { label: "My Requests", href: "/dashboard/my-requests" },
+        { label: "My Needs", href: "/i-need/my-needs" },
         ...(providerExists === true
           ? [{ label: "Provider Dashboard", href: "/provider/dashboard" }]
+          : []),
+        ...(isAdmin
+          ? [{ label: "Admin Dashboard", href: "/admin/dashboard" }]
           : []),
       ]
     : [
@@ -304,8 +421,10 @@ export default function Sidebar() {
     clearAuthSession();
     setSession(null);
     setProviderProfile(null);
+    setIsAdmin(false);
     if (typeof window !== "undefined") {
       window.localStorage.removeItem(PROVIDER_PROFILE_STORAGE_KEY);
+      window.localStorage.removeItem(ADMIN_SESSION_STORAGE_KEY);
     }
     setIsOpen(false);
     window.dispatchEvent(
@@ -335,12 +454,16 @@ export default function Sidebar() {
     {
       Home: Home,
       "My Requests": ClipboardList,
+      "My Needs": ClipboardList,
       Profile: User,
       "Provider Dashboard": LayoutDashboard,
+      "Admin Dashboard": ShieldCheck,
       Login: LogIn,
       "Register as Service Provider": UserPlus,
       Logout: LogOut,
     };
+
+  const myNeedsBadgeLabel = myNeedsUnreadCount > 9 ? "9+" : String(myNeedsUnreadCount);
 
   return (
     <>
@@ -377,8 +500,8 @@ export default function Sidebar() {
                     }`}
                   >
                     {isProviderVerified(providerProfile)
-                      ? "Verified"
-                      : "Pending Verification"}
+                      ? "Phone Verified"
+                      : "Not Verified"}
                   </span>
                 </>
               ) : (
@@ -424,6 +547,7 @@ export default function Sidebar() {
           {navItems.map((item) => {
             const active = pathname === item.href;
             const Icon = iconByLabel[item.label];
+            const showMyNeedsBadge = item.label === "My Needs" && myNeedsUnreadCount > 0;
             return (
               <Link
                 key={item.href}
@@ -436,14 +560,28 @@ export default function Sidebar() {
                 }`}
               >
                 {Icon && (
-                  <Icon className="h-4 w-4 text-white/90" />
+                  <span className="relative inline-flex shrink-0">
+                    <Icon className="h-4 w-4 text-white/90" />
+                    {isCollapsed && showMyNeedsBadge ? (
+                      <span className="absolute -right-2 -top-2 inline-flex min-w-[18px] items-center justify-center rounded-full bg-violet-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
+                        {myNeedsBadgeLabel}
+                      </span>
+                    ) : null}
+                  </span>
                 )}
                 {isCollapsed ? (
                   <span className="sr-only">{item.label}</span>
                 ) : (
-                  <span className="text-sm whitespace-nowrap">
-                    {item.label}
-                  </span>
+                  <>
+                    <span className="text-sm whitespace-nowrap">
+                      {item.label}
+                    </span>
+                    {showMyNeedsBadge ? (
+                      <span className="ml-auto inline-flex min-w-[18px] items-center justify-center rounded-full bg-violet-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
+                        {myNeedsBadgeLabel}
+                      </span>
+                    ) : null}
+                  </>
                 )}
               </Link>
             );

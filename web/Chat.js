@@ -229,6 +229,10 @@ function getTaskRecordForChat_(taskId) {
 
     return {
       TaskID: rowTaskId,
+      DisplayID:
+        state.idxDisplayId !== -1 && row[state.idxDisplayId] !== undefined
+          ? String(row[state.idxDisplayId]).trim()
+          : "",
       UserPhone:
         state.idxUserPhone !== -1 ? normalizePhone10_(row[state.idxUserPhone]) : "",
       Category:
@@ -486,7 +490,9 @@ function chatCreateOrGetThread_(data) {
         ok: true,
         status: "success",
         created: false,
-        thread: existing.thread,
+        thread: Object.assign({}, existing.thread, {
+          DisplayID: String(task.DisplayID || "").trim(),
+        }),
       };
     }
 
@@ -497,6 +503,7 @@ function chatCreateOrGetThread_(data) {
     const thread = {
       ThreadID: generateThreadId_(sheet),
       TaskID: taskId,
+      DisplayID: String(task.DisplayID || "").trim(),
       UserPhone: task.UserPhone,
       ProviderID: providerId,
       ProviderPhone: providerContext.Phone || match.ProviderPhone || "",
@@ -538,11 +545,16 @@ function chatGetThreads_(data) {
   }
 
   const headers = values[0] || [];
+  const taskLookup = typeof getTaskDisplayLookup_ === "function" ? getTaskDisplayLookup_() : {};
   const threads = [];
 
   for (let i = 1; i < values.length; i++) {
     const row = values[i] || [];
     const thread = mapChatThreadRow_(headers, row);
+    thread.DisplayID =
+      taskLookup &&
+      taskLookup[String(thread.TaskID || "").trim()] &&
+      String(taskLookup[String(thread.TaskID || "").trim()].DisplayID || "").trim();
 
     if (taskIdFilter && thread.TaskID !== taskIdFilter) continue;
     if (statusFilter && String(thread.Status || "").toLowerCase() !== statusFilter) continue;
@@ -576,6 +588,12 @@ function chatGetMessages_(data) {
   if (!canChatActorAccessThread_(actor, threadState.thread)) {
     return { ok: false, status: "error", error: "Access denied" };
   }
+
+  const taskLookup = typeof getTaskDisplayLookup_ === "function" ? getTaskDisplayLookup_() : {};
+  threadState.thread.DisplayID =
+    taskLookup &&
+    taskLookup[String(threadState.thread.TaskID || "").trim()] &&
+    String(taskLookup[String(threadState.thread.TaskID || "").trim()].DisplayID || "").trim();
 
   const sheet = getChatMessagesSheet_();
   const values = sheet.getDataRange().getValues();

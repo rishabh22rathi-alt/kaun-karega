@@ -17,5 +17,8 @@
 !Providers.js
 !ProviderMatching.js
 !Chat.js
+!Needs.js
+!NeedChat.js
 !Whatsapp.gs
 !NotificationLogs.js
+!TestDataSeeder.js

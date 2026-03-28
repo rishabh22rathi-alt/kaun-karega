@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { getTaskDisplayLabel } from "@/lib/taskDisplay";
 
 type PageProps = {
   params: {
@@ -12,6 +13,7 @@ type PageProps = {
 type ThreadRow = {
   ThreadID: string;
   TaskID: string;
+  DisplayID?: string;
   UserPhone: string;
   ProviderID: string;
   LastMessage: string;
@@ -51,7 +53,6 @@ export default function AdminChatDetailPage({ params }: PageProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [actionLoading, setActionLoading] = useState(false);
-  const [hasAdminSession, setHasAdminSession] = useState(false);
 
   const loadDetail = async () => {
     setLoading(true);
@@ -105,20 +106,7 @@ export default function AdminChatDetailPage({ params }: PageProps) {
   };
 
   useEffect(() => {
-    try {
-      const phone = localStorage.getItem("kk_phone");
-      const role = localStorage.getItem("kk_role");
-
-      if (!phone || (role !== "admin" && role !== "superadmin")) {
-        window.location.href = "/admin/login";
-        return;
-      }
-
-      setHasAdminSession(true);
-      void loadDetail();
-    } catch {
-      window.location.href = "/admin/login";
-    }
+    void loadDetail();
   }, [threadId]);
 
   const handleCloseChat = async () => {
@@ -150,10 +138,6 @@ export default function AdminChatDetailPage({ params }: PageProps) {
       setActionLoading(false);
     }
   };
-
-  if (!hasAdminSession) {
-    return null;
-  }
 
   if (loading) {
     return (
@@ -188,7 +172,10 @@ export default function AdminChatDetailPage({ params }: PageProps) {
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-2 text-sm text-slate-700">
             <p><span className="font-semibold text-slate-900">ThreadID:</span> {thread.ThreadID}</p>
-            <p><span className="font-semibold text-slate-900">TaskID:</span> {thread.TaskID || "-"}</p>
+            <p>
+              <span className="font-semibold text-slate-900">Kaam:</span>{" "}
+              {getTaskDisplayLabel(thread, thread.TaskID)}
+            </p>
             <p><span className="font-semibold text-slate-900">UserPhone:</span> {thread.UserPhone || "-"}</p>
             <p><span className="font-semibold text-slate-900">ProviderID:</span> {thread.ProviderID || "-"}</p>
             <p><span className="font-semibold text-slate-900">Status:</span> {thread.Status || "-"}</p>

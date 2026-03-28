@@ -1,4 +1,4 @@
-function sendProviderJobAlert(phone, taskId, serviceTime, area) {
+function sendProviderJobAlert(phone, taskId, serviceTime, area, taskDisplayId, providerId) {
   var sendStartMs = Date.now();
   var scriptProperties = PropertiesService.getScriptProperties();
 
@@ -42,7 +42,7 @@ function sendProviderJobAlert(phone, taskId, serviceTime, area) {
     throw new Error("Missing META_WA_PROVIDER_LEAD_TEMPLATE in Script Properties");
   }
 
-  var kaamLabel = "Kaam #" + String(taskId || "").trim();
+  var kaamLabel = String(taskDisplayId || "").trim() || String(taskId || "").trim();
   var requiredTime = String(serviceTime || "").trim();
   var requiredArea = String(area || "").trim();
 
@@ -83,7 +83,7 @@ function sendProviderJobAlert(phone, taskId, serviceTime, area) {
           parameters: [
             {
               type: "text",
-              text: "KAAM" + String(taskId || "").trim()
+              text: String(taskId || "").trim() + "/" + String(providerId || "").trim()
             }
           ]
         }
@@ -154,8 +154,10 @@ function sendProviderJobAlert(phone, taskId, serviceTime, area) {
 function testWhatsappTemplate() {
   return sendProviderJobAlert(
     "9509597100",
-    "123",
+    "TK-TEST",
     "Tomorrow",
-    "Sardarpura"
+    "Sardarpura",
+    "",
+    "PR-TEST"
   );
 }

@@ -91,16 +91,6 @@ const CATEGORY_GROUPS: CategoryGroup[] = [
     accent: "bg-sky-50",
   },
   {
-    title: "Events",
-    items: [
-      { label: "Photographers", image: "/subcategories/event-photo.svg" },
-      { label: "Decorators", image: "/subcategories/event-decor.svg" },
-      { label: "Caterers", image: "/subcategories/event-catering.svg" },
-      { label: "DJs", image: "/subcategories/event-dj.svg" },
-    ],
-    accent: "bg-rose-50",
-  },
-  {
     title: "Repairs & Others",
     items: [
       { label: "AC Repair", image: "/subcategories/repair-ac.svg" },
@@ -143,6 +133,7 @@ const toGroupKey = (title: string) =>
     .replace(/^-+|-+$/g, "");
 
 function FeaturedCategoryGrid() {
+  const router = useRouter();
   const [pageByGroup, setPageByGroup] = useState<Record<string, number>>({});
   const [pausedGroups, setPausedGroups] = useState<Record<string, boolean>>({});
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
@@ -195,7 +186,7 @@ function FeaturedCategoryGrid() {
   };
 
   return (
-    <section className="mb-8 w-full">
+    <section className="mb-6 w-full">
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
         {CATEGORY_GROUPS.map((category) => {
           const groupKey = toGroupKey(category.title);
@@ -316,6 +307,47 @@ function FeaturedCategoryGrid() {
             </div>
           );
         })}
+
+        {/* I NEED card */}
+        <div className="relative rounded-2xl bg-violet-500 p-4 shadow-sm">
+          <button
+            type="button"
+            aria-label="Open I NEED"
+            onClick={() => router.push("/i-need")}
+            className="absolute inset-0 z-10 rounded-2xl bg-transparent"
+          >
+            <span className="sr-only">Open I NEED</span>
+          </button>
+          <div className="flex min-h-7 items-center justify-between gap-2">
+            <div>
+              <h3 className="text-sm font-semibold leading-none text-white">I NEED</h3>
+              <p className="mt-0.5 text-[10px] leading-none text-violet-100">Post your need &amp; get responses</p>
+            </div>
+          </div>
+          <ul className="mt-4 grid grid-cols-2 gap-3 text-xs text-white">
+            {[
+              { label: "Naukri", icon: "N" },
+              { label: "Property", icon: "P" },
+              { label: "Rent", icon: "R" },
+              { label: "Buy / Sell", icon: "B/S" },
+            ].map((item) => (
+              <li key={item.label} className="flex flex-col items-center">
+                <div className="h-12 w-12 rounded-full bg-white/15 p-2 shadow-sm ring-1 ring-white/20">
+                  <div className="flex h-full w-full items-center justify-center rounded-full text-sm font-bold text-white">
+                    {item.icon}
+                  </div>
+                </div>
+                <span className="mt-2 text-center font-medium">{item.label}</span>
+              </li>
+            ))}
+          </ul>
+          <button
+            type="button"
+            className="mt-4 inline-flex text-sm font-semibold text-white hover:text-violet-100"
+          >
+            Post or Browse &rarr;
+          </button>
+        </div>
       </div>
       <style jsx>{`
         .featured-fade {
@@ -522,13 +554,14 @@ const clearTaskDraftFromSessionStorage = () => {
   }
 };
 
-const buildSuccessRedirect = (service: string, area: string, taskId = "") => {
+const buildSuccessRedirect = (service: string, area: string, taskId = "", displayId = "") => {
   const params = new URLSearchParams();
   const trimmedService = service.trim();
   const normalizedArea = normalizeAreaValue(area);
   if (trimmedService) params.set("service", trimmedService);
   if (normalizedArea) params.set("area", normalizedArea);
   if (taskId.trim()) params.set("taskId", taskId.trim());
+  if (displayId.trim()) params.set("displayId", displayId.trim());
   const query = params.toString();
   return query ? `/success?${query}` : "/success";
 };
@@ -1157,6 +1190,7 @@ const submitResolvedRequest = async (resolution: CategoryResolution) => {
       responseReadElapsedMs: responseParsedMs - fetchCompletedMs,
       totalElapsedMs: responseParsedMs - submitStartMs,
       taskId: json?.taskId || "",
+      displayId: json?.displayId || "",
     });
 
     setShowDirectContactOption(true);
@@ -1166,7 +1200,14 @@ const submitResolvedRequest = async (resolution: CategoryResolution) => {
     }
     clearTaskDraftFromSessionStorage();
     setIsRedirecting(true);
-    router.replace(buildSuccessRedirect(resolvedCategory, normalizedArea, json?.taskId || ""));
+    router.replace(
+      buildSuccessRedirect(
+        resolvedCategory,
+        normalizedArea,
+        json?.taskId || "",
+        json?.displayId || ""
+      )
+    );
     return;
   } catch (err: any) {
     setError(err?.message || "Something went wrong.");
@@ -1269,6 +1310,20 @@ const submitResolvedRequest = async (resolution: CategoryResolution) => {
        setAuthSession(data.phone, data.token);
        setPhone(data.phone);
      }
+     // Mirror admin status from server response — sidebar reads this
+     if (data?.isAdmin === true) {
+       window.localStorage.setItem(
+         "kk_admin_session",
+         JSON.stringify({
+           isAdmin: true,
+           name: data.adminName ?? null,
+           role: data.adminRole ?? null,
+           permissions: data.permissions ?? [],
+         })
+       );
+     } else {
+       window.localStorage.removeItem("kk_admin_session");
+     }
     await submitResolvedRequest(categoryResolution);
    } catch (err: any) {
      setOtpError(err?.message || "Invalid OTP. Please try again.");
@@ -1318,13 +1373,13 @@ const hasArea = area.trim() !== "";
     <div className="flex min-h-screen flex-col items-center justify-center bg-slate-50 px-4 py-8 leading-relaxed">
       <div className="w-full max-w-5xl rounded-3xl border border-slate-100 bg-white p-5 shadow-md md:p-7">
         {/* Hero: Logo + Title + Tagline */}
-        <div className="mb-6 flex flex-col items-center text-center">
-          <div className="mb-4 flex items-center justify-center">
+        <div className="mb-4 flex flex-col items-center text-center">
+          <div className="mb-3 flex items-center justify-center">
             <Image
               src={logo}
               alt="Kaun Karega logo"
               priority
-              className="w-full max-w-[500px] md:max-w-[650px] mx-auto"
+              className="mx-auto w-full max-w-[300px] md:max-w-[420px]"
             />
           </div>
         </div>
@@ -1333,7 +1388,7 @@ const hasArea = area.trim() !== "";
 
         {/* Step 1: Category search bar */}
         <div className="relative mb-6">
-          <label className="text-sm font-bold uppercase tracking-wider text-slate-700">
+          <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-slate-500">
             Step 1 · What help do you need?
           </label>
           <div className="mt-2 flex items-center rounded-full border border-slate-200 bg-slate-50 px-4 py-3 shadow-sm focus-within:border-sky-400 focus-within:ring-2 focus-within:ring-sky-400/30">
@@ -1436,18 +1491,18 @@ const hasArea = area.trim() !== "";
           </div>
         )}
 
-        {/* Step 4: Task details + Submit */}
-        {hasCategory && hasTime && hasArea && (
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                Step 4 · Task details (optional)
-              </label>
-              <textarea
-                value={details}
-                onChange={(e) => setDetails(e.target.value)}
-                placeholder="Describe your work in 1–2 sentences (e.g. &quot;Kitchen tap is leaking, need plumber today evening&quot;)..."
-                rows={4}
+        {/* Step 4: Task details + Submit */}
+        {hasCategory && hasTime && hasArea && (
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Step 4 · Task details (optional)
+              </label>
+              <textarea
+                value={details}
+                onChange={(e) => setDetails(e.target.value)}
+                placeholder="Describe your work in 1–2 sentences (e.g. &quot;Kitchen tap is leaking, need plumber today evening&quot;)..."
+                rows={3}
                 className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-400/30"
               />
             </div>
@@ -1459,43 +1514,43 @@ const hasArea = area.trim() !== "";
               </pre>
             )}
             {showDirectContactOption && (
-              <div className="mt-4 p-4 bg-slate-50 border rounded-xl">
-                <p className="text-sm font-medium text-slate-700">
-                  Do you want to contact providers yourself?
-                </p>
-                <div className="flex gap-3 mt-2">
-                  <button
-                    className="px-4 py-2 rounded-lg bg-green-600 text-white"
-                    onClick={handleShowProviders}
-                  >
-                    Yes, show numbers
-                  </button>
-                  <button
-                    className="px-4 py-2 rounded-lg bg-slate-200 text-slate-700"
-                    onClick={() => setShowProvidersList(false)}
-                  >
-                    No
-                  </button>
-                </div>
-              </div>
-            )}
-            {showProvidersList && (
-              <div className="mt-4 space-y-3">
-                {providersList.map((p) => (
-                  <div key={p.phone} className="border rounded-lg p-3">
-                    <p className="font-semibold">{p.name}</p>
-                    <p className="text-sm text-slate-600">📍 {p.area}</p>
-                    <p className="text-sm text-slate-600">📞 {p.phone}</p>
-                    <a
-                      href={`tel:${p.phone}`}
-                      className="mt-2 inline-block px-3 py-1 bg-blue-500 text-white rounded-lg"
-                    >
-                      Call
-                    </a>
-                  </div>
-                ))}
-              </div>
-            )}
+              <div className="mt-4 p-4 bg-slate-50 border rounded-xl">
+                <p className="text-sm font-medium text-slate-700">
+                  Do you want to contact providers yourself?
+                </p>
+                <div className="flex gap-3 mt-2">
+                  <button
+                    className="px-4 py-2 rounded-lg bg-green-600 text-white"
+                    onClick={handleShowProviders}
+                  >
+                    Yes, show numbers
+                  </button>
+                  <button
+                    className="px-4 py-2 rounded-lg bg-slate-200 text-slate-700"
+                    onClick={() => setShowProvidersList(false)}
+                  >
+                    No
+                  </button>
+                </div>
+              </div>
+            )}
+            {showProvidersList && (
+              <div className="mt-4 space-y-3">
+                {providersList.map((p) => (
+                  <div key={p.phone} className="border rounded-lg p-3">
+                    <p className="font-semibold">{p.name}</p>
+                    <p className="text-sm text-slate-600">📍 {p.area}</p>
+                    <p className="text-sm text-slate-600">📞 {p.phone}</p>
+                    <a
+                      href={`tel:${p.phone}`}
+                      className="mt-2 inline-block px-3 py-1 bg-blue-500 text-white rounded-lg"
+                    >
+                      Call
+                    </a>
+                  </div>
+                ))}
+              </div>
+            )}
 
             <button
               type="button"
@@ -1522,7 +1577,7 @@ const hasArea = area.trim() !== "";
         Your phone number will be collected later in a quick step to send you updates on WhatsApp.
       </p>
     )}
-      </div>
+      </div>
 
       {showOtpModal && !isLoggedIn && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">

@@ -7,6 +7,7 @@ import {
   getTasksWithoutResponse,
   resendTask,
 } from "@/lib/api/tasks";
+import { getTaskDisplayLabel } from "@/lib/taskDisplay";
 
 export default function AdminTasksNoResponsePage() {
   const [tasks, setTasks] = useState<NoResponseTask[]>([]);
@@ -79,7 +80,7 @@ export default function AdminTasksNoResponsePage() {
             <table className="min-w-full text-left">
               <thead className="bg-slate-50 text-xs uppercase text-slate-500">
                 <tr>
-                  <th className="px-4 py-3 font-semibold">Task ID</th>
+                  <th className="px-4 py-3 font-semibold">Kaam</th>
                   <th className="px-4 py-3 font-semibold">Area</th>
                   <th className="px-4 py-3 font-semibold">Category</th>
                   <th className="px-4 py-3 font-semibold">Details</th>
@@ -93,7 +94,10 @@ export default function AdminTasksNoResponsePage() {
                 {tasks.map((task) => (
                   <tr key={task.taskId} className="hover:bg-slate-50">
                     <td className="px-4 py-3 font-semibold text-slate-900">
-                      {task.taskId}
+                      {getTaskDisplayLabel(
+                        { taskId: task.taskId, displayId: task.displayId },
+                        task.taskId
+                      )}
                     </td>
                     <td className="px-4 py-3">{task.area}</td>
                     <td className="px-4 py-3">{task.category}</td>

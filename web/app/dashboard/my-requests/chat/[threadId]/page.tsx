@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getAuthSession } from "@/lib/auth";
+import { getTaskDisplayLabel } from "@/lib/taskDisplay";
 
 type PageProps = {
   params: {
@@ -14,6 +15,7 @@ type PageProps = {
 type Thread = {
   ThreadID: string;
   TaskID: string;
+  DisplayID?: string;
   UserPhone: string;
   ProviderID: string;
   LastMessageAt?: string;
@@ -248,7 +250,9 @@ export default function UserRequestChatPage({ params }: PageProps) {
         <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
           <h1 className="text-xl font-semibold text-slate-900">Request Chat</h1>
           <p className="mt-1 text-sm text-slate-600">Thread ID: {thread.ThreadID}</p>
-          <p className="mt-1 text-sm text-slate-600">Task ID: {thread.TaskID}</p>
+          <p className="mt-1 text-sm text-slate-600">
+            {getTaskDisplayLabel(thread, thread.TaskID)}
+          </p>
           <p className="mt-1 text-sm text-slate-600">Provider ID: {thread.ProviderID}</p>
           <p className="mt-1 text-sm text-slate-600">Status: {thread.Status || "active"}</p>
           {isClosed ? <p className="mt-2 text-sm font-medium text-amber-700">This chat is closed.</p> : null}

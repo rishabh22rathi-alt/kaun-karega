@@ -19,6 +19,7 @@ export type DistributeTaskResponse = {
 
 export type NoResponseTask = {
   taskId: string;
+  displayId?: string;
   category: string;
   area: string;
   status?: string;

@@ -36,6 +36,7 @@ function SuccessPageContent() {
   const service = (sp.get("service") || "").trim();
   const area = (sp.get("area") || "").trim();
   const taskId = (sp.get("taskId") || "").trim();
+  const displayId = (sp.get("displayId") || "").trim();
   const userPhone = (sp.get("userPhone") || "").trim();
 
   return (
@@ -51,6 +52,7 @@ function SuccessPageContent() {
           service={service}
           area={area}
           taskId={taskId}
+          displayId={displayId}
           userPhone={userPhone}
         />
       </div>

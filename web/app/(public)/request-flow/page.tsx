@@ -96,13 +96,14 @@ function normalizeDateOnly(value: string) {
   return "";
 }
 
-function buildSuccessRedirect(service: string, area: string, taskId = "") {
+function buildSuccessRedirect(service: string, area: string, taskId = "", displayId = "") {
   const params = new URLSearchParams();
   const trimmedService = service.trim();
   const normalizedArea = normalizeAreaValue(area);
   if (trimmedService) params.set("service", trimmedService);
   if (normalizedArea) params.set("area", normalizedArea);
   if (taskId.trim()) params.set("taskId", taskId.trim());
+  if (displayId.trim()) params.set("displayId", displayId.trim());
   const query = params.toString();
   return query ? `/success?${query}` : "/success";
 }
@@ -211,7 +212,14 @@ function PageContent() {
         window.localStorage.setItem("kk_last_area", normalizedArea);
       }
       setIsRedirecting(true);
-      router.push(buildSuccessRedirect(category, normalizedArea, json?.taskId || ""));
+      router.push(
+        buildSuccessRedirect(
+          category,
+          normalizedArea,
+          json?.taskId || "",
+          json?.displayId || ""
+        )
+      );
       router.refresh();
       return;
     } catch (err: any) {

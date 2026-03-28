@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { getTaskDisplayLabel } from "@/lib/taskDisplay";
 
 type DashboardStats = {
   totalProviders: number;
@@ -53,6 +54,7 @@ type ManagedAreaMapping = {
 
 type AdminRequest = {
   TaskID: string;
+  DisplayID?: string;
   UserPhone: string;
   Category: string;
   Area: string;
@@ -118,6 +120,7 @@ type NotificationLog = {
   LogID: string;
   CreatedAt: string;
   TaskID: string;
+  DisplayID?: string;
   ProviderID: string;
   ProviderPhone: string;
   Category?: string;
@@ -133,6 +136,7 @@ type NotificationLog = {
 
 type NotificationSummary = {
   taskId: string;
+  DisplayID?: string;
   total: number;
   accepted: number;
   failed: number;
@@ -662,6 +666,10 @@ export default function AdminDashboardPage() {
   const selectedRequest = useMemo(
     () => requests.find((request) => request.TaskID === selectedRequestId) || null,
     [requests, selectedRequestId]
+  );
+  const requestsByTaskId = useMemo(
+    () => new Map(requests.map((request) => [String(request.TaskID || "").trim(), request])),
+    [requests]
   );
 
   const notificationHealth = useMemo(() => {
@@ -1463,7 +1471,7 @@ export default function AdminDashboardPage() {
             <table className="min-w-full text-left">
               <thead className="bg-red-50 text-xs uppercase text-slate-500">
                 <tr>
-                  <th className="px-4 py-3 font-semibold">TaskID</th>
+                  <th className="px-4 py-3 font-semibold">Kaam</th>
                   <th className="px-4 py-3 font-semibold">Category</th>
                   <th className="px-4 py-3 font-semibold">Area</th>
                   <th className="px-4 py-3 font-semibold">Waiting</th>
@@ -1485,7 +1493,9 @@ export default function AdminDashboardPage() {
 
                   return (
                     <tr key={request.TaskID} className="bg-red-50/60">
-                      <td className="px-4 py-3 font-medium text-slate-900">{request.TaskID}</td>
+                      <td className="px-4 py-3 font-medium text-slate-900">
+                        {getTaskDisplayLabel(request, request.TaskID)}
+                      </td>
                       <td className="px-4 py-3">{request.Category || "-"}</td>
                       <td className="px-4 py-3">{request.Area || "-"}</td>
                       <td className="px-4 py-3">{formatMinutes(request.WaitingMinutes)}</td>
@@ -2160,8 +2170,16 @@ export default function AdminDashboardPage() {
             {selectedTaskNotificationSummary ? (
               <div className="mt-4 grid gap-3 sm:grid-cols-2">
                 <div className="rounded-xl bg-slate-50 px-4 py-3 text-sm text-slate-700">
-                  <p className="font-semibold text-slate-900">TaskID</p>
-                  <p>{selectedTaskNotificationSummary.taskId || "-"}</p>
+                  <p className="font-semibold text-slate-900">Kaam</p>
+                  <p>
+                    {getTaskDisplayLabel(
+                      requestsByTaskId.get(String(selectedTaskNotificationSummary.taskId || "").trim()) || {
+                        TaskID: selectedTaskNotificationSummary.taskId || "",
+                        DisplayID: selectedTaskNotificationSummary.DisplayID || "",
+                      },
+                      selectedTaskNotificationSummary.taskId || ""
+                    ) || "-"}
+                  </p>
                 </div>
                 <div className="rounded-xl bg-slate-50 px-4 py-3 text-sm text-slate-700">
                   <p className="font-semibold text-slate-900">Latest Attempt</p>
@@ -2194,7 +2212,12 @@ export default function AdminDashboardPage() {
                   className="flex items-start justify-between gap-3 rounded-xl bg-slate-50 px-4 py-3"
                 >
                   <div className="min-w-0">
-                    <p className="text-sm font-semibold text-slate-900">{log.TaskID || "-"}</p>
+                    <p className="text-sm font-semibold text-slate-900">
+                      {getTaskDisplayLabel(
+                        requestsByTaskId.get(String(log.TaskID || "").trim()) || log,
+                        log.TaskID || ""
+                      ) || "-"}
+                    </p>
                     <p className="mt-1 text-xs text-slate-500">
                       {log.ProviderID || "-"} • {formatDateTime(log.CreatedAt)}
                     </p>
@@ -2220,7 +2243,7 @@ export default function AdminDashboardPage() {
             <thead className="bg-slate-50 text-xs uppercase text-slate-500">
               <tr>
                 <th className="px-4 py-3 font-semibold">CreatedAt</th>
-                <th className="px-4 py-3 font-semibold">TaskID</th>
+                <th className="px-4 py-3 font-semibold">Kaam</th>
                 <th className="px-4 py-3 font-semibold">ProviderID</th>
                 <th className="px-4 py-3 font-semibold">ProviderPhone</th>
                 <th className="px-4 py-3 font-semibold">Status</th>
@@ -2240,7 +2263,12 @@ export default function AdminDashboardPage() {
               {notificationLogs.map((log) => (
                 <tr key={log.LogID}>
                   <td className="px-4 py-3">{formatDateTime(log.CreatedAt)}</td>
-                  <td className="px-4 py-3 font-medium text-slate-900">{log.TaskID || "-"}</td>
+                  <td className="px-4 py-3 font-medium text-slate-900">
+                    {getTaskDisplayLabel(
+                      requestsByTaskId.get(String(log.TaskID || "").trim()) || log,
+                      log.TaskID || ""
+                    ) || "-"}
+                  </td>
                   <td className="px-4 py-3">{log.ProviderID || "-"}</td>
                   <td className="px-4 py-3">{log.ProviderPhone || "-"}</td>
                   <td className="px-4 py-3">
@@ -2307,7 +2335,7 @@ export default function AdminDashboardPage() {
               <div>
                 <p className="text-xs uppercase tracking-wide text-slate-500">Request Details</p>
                 <h3 className="mt-1 text-lg font-semibold text-slate-900">
-                  {selectedRequest.TaskID}
+                  {getTaskDisplayLabel(selectedRequest, selectedRequest.TaskID)}
                 </h3>
                 <p className="mt-1 text-sm text-slate-600">{selectedRequest.Details || "-"}</p>
               </div>
@@ -2414,7 +2442,7 @@ export default function AdminDashboardPage() {
               <table className="min-w-full text-left">
                 <thead className="bg-slate-50 text-xs uppercase text-slate-500">
                   <tr>
-                    <th className="px-4 py-3 font-semibold">TaskID</th>
+                    <th className="px-4 py-3 font-semibold">Kaam</th>
                     <th className="px-4 py-3 font-semibold">Category</th>
                     <th className="px-4 py-3 font-semibold">Area</th>
                     <th className="px-4 py-3 font-semibold">Status</th>
@@ -2434,7 +2462,9 @@ export default function AdminDashboardPage() {
                   ) : null}
                   {group.items.map((request) => (
                     <tr key={request.TaskID} className={getPriorityRowClass(request)}>
-                      <td className="px-4 py-3 font-medium text-slate-900">{request.TaskID}</td>
+                      <td className="px-4 py-3 font-medium text-slate-900">
+                        {getTaskDisplayLabel(request, request.TaskID)}
+                      </td>
                       <td className="px-4 py-3">{request.Category || "-"}</td>
                       <td className="px-4 py-3">{request.Area || "-"}</td>
                       <td className="px-4 py-3">{request.Status || "-"}</td>

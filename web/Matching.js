@@ -1,4 +1,8 @@
 /**
+ * DEPRECATED: This module is no longer called by any active Backend.js route.
+ * All live matching routes (match_providers GET/POST) resolve to ProviderMatching.js:matchProviders_().
+ * Do not update verification logic here. Do not delete until confirmed safe to remove.
+ *
  * Phase 8: Simple matching and notification engine.
  * Matching rule:
  * - Task.Category exactly matches Providers.Category

@@ -1,7 +1,6 @@
 "use client";
 
-"use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, KeyboardEvent } from "react";
 import { useRouter } from "next/navigation";
 import { setAuthSession } from "@/lib/auth";
 import { SIDEBAR_TOGGLE_EVENT } from "@/components/sidebarEvents";
@@ -19,13 +18,16 @@ const getSafeNext = (value: string | null): string => {
 export default function VerifyPage() {
   const router = useRouter();
   const [otp, setOtp] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [sendingOtp, setSendingOtp] = useState(false);
+  const [verifyingOtp, setVerifyingOtp] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [phone, setPhone] = useState("");
   const [requestId, setRequestId] = useState("");
   const [nextPath, setNextPath] = useState(DEFAULT_NEXT);
   const [cooldown, setCooldown] = useState(0);
+
+  const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
   // ---------------------------------------------------
   // LOAD PHONE FROM URL + AUTO SEND OTP WHEN PAGE OPENS
@@ -91,9 +93,9 @@ export default function VerifyPage() {
         : normalizedPhone;
     const currentRequestId =
       requestIdOverride || requestId || crypto.randomUUID();
-    if (requestIdOverride || !requestId) setRequestId(currentRequestId);
+    setRequestId(currentRequestId);
 
-    setLoading(true);
+    setSendingOtp(true);
     setError("");
     setMessage("");
 
@@ -120,7 +122,15 @@ export default function VerifyPage() {
       setError("Network Error");
     }
 
-    setLoading(false);
+    setSendingOtp(false);
+  };
+
+  const handleResendOtp = async () => {
+    const freshRequestId = crypto.randomUUID();
+    setRequestId(freshRequestId);
+    setOtp("");
+    setError("");
+    await sendOtp(phone, freshRequestId);
   };
 
   // ---------------------------------------------------
@@ -133,7 +143,10 @@ export default function VerifyPage() {
     }
 
     const normalizedPhone = phone.replace(/\D/g, "");
-    if (normalizedPhone.length !== 10 && !(normalizedPhone.length === 12 && normalizedPhone.startsWith("91"))) {
+    if (
+      normalizedPhone.length !== 10 &&
+      !(normalizedPhone.length === 12 && normalizedPhone.startsWith("91"))
+    ) {
       setError("Enter a valid 10-digit Indian mobile number");
       return;
     }
@@ -143,7 +156,7 @@ export default function VerifyPage() {
         ? `91${normalizedPhone}`
         : normalizedPhone;
 
-    setLoading(true);
+    setVerifyingOtp(true);
     setError("");
 
     try {
@@ -162,6 +175,20 @@ export default function VerifyPage() {
       if (data.ok) {
         const displayPhone = normalized.slice(-10);
         setAuthSession(displayPhone);
+        // Mirror admin status from server response — sidebar reads this
+        if (data.isAdmin === true) {
+          window.localStorage.setItem(
+            "kk_admin_session",
+            JSON.stringify({
+              isAdmin: true,
+              name: data.adminName ?? null,
+              role: data.adminRole ?? null,
+              permissions: data.permissions ?? [],
+            })
+          );
+        } else {
+          window.localStorage.removeItem("kk_admin_session");
+        }
         window.dispatchEvent(
           new CustomEvent(SIDEBAR_TOGGLE_EVENT, {
             detail: { type: "auth-updated" },
@@ -175,68 +202,117 @@ export default function VerifyPage() {
       setError("Network Error");
     }
 
-    setLoading(false);
+    setVerifyingOtp(false);
+  };
+
+  // ---------------------------------------------------
+  // OTP BOX HANDLERS
+  // ---------------------------------------------------
+  const handleDigitInput = (index: number, value: string) => {
+    const digit = value.replace(/\D/g, "").slice(-1);
+    const newOtp = otp.split("");
+    newOtp[index] = digit;
+    const filled = Array.from({ length: 4 }, (_, i) => newOtp[i] ?? "");
+    setOtp(filled.join(""));
+
+    if (digit && index < 3) {
+      inputRefs.current[index + 1]?.focus();
+    }
+  };
+
+  const handleDigitKeyDown = (
+    index: number,
+    e: KeyboardEvent<HTMLInputElement>
+  ) => {
+    if (e.key === "Backspace") {
+      if (otp[index]) {
+        const chars = otp.split("");
+        chars[index] = "";
+        setOtp(Array.from({ length: 4 }, (_, i) => chars[i] ?? "").join(""));
+      } else if (index > 0) {
+        inputRefs.current[index - 1]?.focus();
+      }
+    }
   };
 
   // ---------------------------------------------------
   // UI
   // ---------------------------------------------------
   return (
-    <main className="min-h-screen px-4 py-6 md:px-8">
-      <div className="mx-auto w-full max-w-md">
-        <h2>Verify OTP for {phone}</h2>
+    <main className="min-h-screen bg-amber-50 flex items-center justify-center px-4 py-10">
+      <div className="w-full max-w-sm rounded-2xl bg-white shadow-lg p-8 space-y-6">
 
-      <button
-        onClick={() => {
-          void sendOtp();
-        }}
-        disabled={cooldown > 0}
-        style={{
-          marginTop: 10,
-          padding: 10,
-          width: "100%",
-          background: cooldown > 0 ? "#777" : "black",
-          color: "white",
-          fontWeight: "bold",
-          cursor: cooldown > 0 ? "not-allowed" : "pointer",
-          borderRadius: 5,
-        }}
-      >
-        {cooldown > 0
-          ? `Send OTP Again in ${cooldown}s`
-          : "Send OTP Again"}
-      </button>
+        {/* Heading */}
+        <div className="text-center space-y-1">
+          <h1 className="text-2xl font-bold text-slate-900">Verify your number</h1>
+          {phone && (
+            <p className="text-sm text-slate-500">
+              Code sent to{" "}
+              <span className="font-semibold text-slate-700">
+                +91 {phone.replace(/\D/g, "").slice(-10)}
+              </span>
+            </p>
+          )}
+        </div>
 
-      {message && <p style={{ color: "lightgreen" }}>{message}</p>}
-      {error && <p style={{ color: "red" }}>{error}</p>}
+        {/* Messages */}
+        {message && (
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+            {message}
+          </div>
+        )}
+        {error && (
+          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
+            {error}
+          </div>
+        )}
 
-        <input
-          type="text"
-          inputMode="numeric"
-          maxLength={4}
-          placeholder="Enter 4-digit OTP"
-          value={otp}
-          onChange={(e) =>
-            setOtp(e.target.value.replace(/[^0-9]/g, "").slice(0, 4))
-          }
-          className="mt-5 w-full rounded border border-gray-300 bg-white p-2 text-xl font-bold tracking-widest text-black caret-black placeholder:text-gray-400"
-        />
+        {/* 4 OTP Boxes */}
+        <div className="flex justify-center gap-3">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <input
+              key={i}
+              ref={(el) => { inputRefs.current[i] = el; }}
+              type="text"
+              inputMode="numeric"
+              maxLength={1}
+              value={otp[i] ?? ""}
+              onChange={(e) => handleDigitInput(i, e.target.value)}
+              onKeyDown={(e) => handleDigitKeyDown(i, e)}
+              className="w-14 h-14 rounded-xl border-2 border-slate-200 bg-white text-center text-2xl font-bold text-slate-900 shadow-sm transition focus:border-green-500 focus:outline-none focus:ring-2 focus:ring-green-500/30"
+            />
+          ))}
+        </div>
 
+        {/* Verify Button */}
         <button
           onClick={verifyOtp}
-          style={{
-            marginTop: 20,
-            padding: 10,
-            width: "100%",
-            background: "green",
-            color: "white",
-            fontWeight: "bold",
-            borderRadius: 5,
-            cursor: "pointer",
-          }}
+          disabled={verifyingOtp}
+          className="w-full rounded-xl bg-green-600 px-4 py-3 text-white font-semibold shadow-md transition hover:bg-green-700 active:scale-95 disabled:opacity-60"
         >
-          {loading ? "Verifying..." : "Verify OTP"}
+          {verifyingOtp ? "Verifying..." : "Verify & Continue"}
         </button>
+
+        {/* Resend */}
+        <div className="text-center text-sm">
+          {cooldown > 0 ? (
+            <p className="text-slate-400">
+              Resend OTP in{" "}
+              <span className="font-semibold text-slate-600">{cooldown}s</span>
+            </p>
+          ) : (
+            <button
+              onClick={() => {
+                void handleResendOtp();
+              }}
+              disabled={sendingOtp}
+              className="font-semibold text-green-600 hover:text-green-700 transition"
+            >
+              {sendingOtp ? "Sending OTP..." : "Resend OTP"}
+            </button>
+          )}
+        </div>
+
       </div>
     </main>
   );

@@ -2,6 +2,7 @@ import { appsScriptGet } from "./client";
 
 export type UserTask = {
   taskId: string;
+  displayId?: string;
   category: string;
   area: string;
   details: string;

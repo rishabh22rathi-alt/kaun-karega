@@ -1,6 +1,4 @@
 "use client";
-
-"use client";
 import { useEffect, useMemo, useState } from "react";
 import { Review, getAllReviews } from "@/lib/api/reviews";
 
@@ -8,16 +6,9 @@ export default function AdminReviewsPage() {
   const [reviews, setReviews] = useState<Review[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [permissions, setPermissions] = useState<string[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
 
   useEffect(() => {
-    const perms = JSON.parse(localStorage.getItem("kk_permissions") || "[]");
-    setPermissions(perms);
-    if (!perms.includes("view_reviews")) {
-      setLoading(false);
-      return;
-    }
     const fetchReviews = async () => {
       try {
         const data = await getAllReviews();
@@ -29,7 +20,7 @@ export default function AdminReviewsPage() {
         setLoading(false);
       }
     };
-    fetchReviews();
+    void fetchReviews();
   }, []);
 
   const filteredReviews = useMemo(() => {
@@ -55,14 +46,6 @@ export default function AdminReviewsPage() {
       prev.filter((review, reviewIdx) => !(review.roomId === roomId && reviewIdx === idx))
     );
   };
-
-  if (!permissions.includes("view_reviews")) {
-    return (
-      <p className="text-sm text-red-500">
-        You do not have permission to view this section.
-      </p>
-    );
-  }
 
   return (
     <div className="space-y-4">

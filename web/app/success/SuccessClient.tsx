@@ -2,17 +2,21 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { getTaskDisplayLabel } from "@/lib/taskDisplay";
+import { getVerifiedLabel, isProviderVerifiedBadge, normalizeVerifiedValue } from "@/lib/providerPresentation";
 
 type SuccessClientProps = {
   service: string;
   area: string;
   taskId?: string;
+  displayId?: string;
   userPhone?: string;
 };
 
 type ProviderItem = {
   name: string;
   phone: string;
+  verified: "yes" | "no";
 };
 
 type MatchProvidersResponse = {
@@ -27,20 +31,27 @@ function toProviderItem(item: unknown): ProviderItem | null {
   const name =
     (typeof record.name === "string" && record.name.trim()) ||
     (typeof record.provider_name === "string" && record.provider_name.trim()) ||
+    (typeof record.ProviderName === "string" && record.ProviderName.trim()) ||
     "";
   const phone =
     (typeof record.phone === "string" && record.phone.trim()) ||
     (typeof record.mobile === "string" && record.mobile.trim()) ||
     (typeof record.phone_number === "string" && record.phone_number.trim()) ||
+    (typeof record.ProviderPhone === "string" && record.ProviderPhone.trim()) ||
     "";
   if (!name || !phone) return null;
-  return { name, phone };
+  return {
+    name,
+    phone,
+    verified: isProviderVerifiedBadge(record) ? "yes" : "no",
+  };
 }
 
 export default function SuccessClient({
   service,
   area,
   taskId = "",
+  displayId = "",
   userPhone = "",
 }: SuccessClientProps) {
   const [showModal, setShowModal] = useState(false);
@@ -55,6 +66,10 @@ export default function SuccessClient({
   const canFetchProviders = useMemo(
     () => Boolean(service && area),
     [service, area]
+  );
+  const taskDisplayLabel = useMemo(
+    () => getTaskDisplayLabel({ TaskID: taskId, DisplayID: displayId }, taskId),
+    [displayId, taskId]
   );
 
   useEffect(() => {
@@ -146,7 +161,7 @@ export default function SuccessClient({
             .filter((item): item is ProviderItem => Boolean(item))
         : [];
       setProviders(normalizedProviders);
-    } catch (err) {
+    } catch {
       setError("Unable to fetch providers right now. Please try again.");
     } finally {
       setLoading(false);
@@ -165,17 +180,13 @@ export default function SuccessClient({
           informing nearby service providers.
         </p>
 
-        <div className="mx-auto mt-6 h-px w-full max-w-md bg-slate-200" />
+        {taskDisplayLabel ? (
+          <p className="mx-auto mt-4 inline-flex rounded-full bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-800">
+            {taskDisplayLabel}
+          </p>
+        ) : null}
 
-        <p className="mx-auto mt-6 max-w-md text-sm leading-relaxed text-slate-600 md:text-base">
-          {notificationStatus === "queued" || notificationStatus === "processing"
-            ? "Provider notifications are being processed in the background."
-            : notificationStatus === "done"
-              ? "Nearby providers have been informed."
-              : notificationStatus === "error"
-                ? "Your task is posted. Provider notifications will be retried safely."
-                : "Thanks for posting your request."}
-        </p>
+        <div className="mx-auto mt-6 h-px w-full max-w-md bg-slate-200" />
 
         <button
           type="button"
@@ -213,7 +224,7 @@ export default function SuccessClient({
 
       {showModal ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
-          <div className="w-full max-w-lg rounded-2xl bg-white p-5 shadow-2xl md:p-6">
+          <div className="w-full max-w-3xl rounded-2xl bg-white p-5 shadow-2xl md:p-6">
             <div className="flex items-start justify-between gap-3">
               <h2 className="text-lg font-semibold text-slate-900">
                 Available Providers
@@ -232,25 +243,42 @@ export default function SuccessClient({
             ) : error ? (
               <p className="mt-4 text-sm text-red-600">{error}</p>
             ) : providers.length > 0 ? (
-              <ul className="mt-4 max-h-72 space-y-2 overflow-y-auto">
-                {providers.map((provider, index) => (
-                  <li
-                    key={`${provider.phone}-${index}`}
-                    className="rounded-xl border border-slate-200 p-3"
-                  >
-                    <p className="text-sm font-semibold text-slate-900">
-                      {provider.name}
-                    </p>
-                    <a
-                      href={`tel:${provider.phone}`}
-                      className="mt-1 flex items-center gap-1 text-sm font-medium text-blue-600 hover:underline"
-                    >
-                      <span>📞</span>
-                      <span>{provider.phone}</span>
-                    </a>
-                  </li>
-                ))}
-              </ul>
+              <div className="mt-4 overflow-x-auto rounded-xl border border-slate-200">
+                <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
+                  <thead className="bg-slate-50 text-slate-700">
+                    <tr>
+                      <th className="px-3 py-3 font-semibold">S.No</th>
+                      <th className="px-3 py-3 font-semibold">Provider Name</th>
+                      <th className="px-3 py-3 font-semibold">Phone</th>
+                      <th className="px-3 py-3 font-semibold">Phone Verified</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200 bg-white text-slate-800">
+                    {providers.map((provider, index) => (
+                      <tr key={`${provider.phone}-${index}`}>
+                        <td className="px-3 py-3 align-top">{index + 1}</td>
+                        <td className="px-3 py-3 align-top font-medium">{provider.name}</td>
+                        <td className="px-3 py-3 align-top">
+                          <a href={`tel:${provider.phone}`} className="text-blue-600 hover:underline">
+                            {provider.phone}
+                          </a>
+                        </td>
+                        <td className="px-3 py-3 align-top">
+                          <span
+                            className={
+                              provider.verified === "yes"
+                                ? "inline-flex rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-700"
+                                : "inline-flex rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-700"
+                            }
+                          >
+                            {getVerifiedLabel(provider.verified)}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             ) : (
               <p className="mt-4 text-sm text-slate-600">
                 No providers found for this service and area.
