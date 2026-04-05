@@ -24,8 +24,16 @@ function sendProviderJobAlert(phone, taskId, serviceTime, area, taskDisplayId, p
     normalizedPhone = normalizedPhone.substring(2);
   }
 
-  if (normalizedPhone.length !== 10) {
-    throw new Error("Invalid Indian mobile number: " + phone);
+  if (normalizedPhone.length !== 10 || !/^[6-9]\d{9}$/.test(normalizedPhone)) {
+    return {
+      ok: false,
+      status: "failed",
+      statusCode: "",
+      messageId: "",
+      errorMessage: "Invalid WhatsApp mobile number",
+      responseText: "Invalid WhatsApp mobile number",
+      data: null
+    };
   }
 
   normalizedPhone = "91" + normalizedPhone;
