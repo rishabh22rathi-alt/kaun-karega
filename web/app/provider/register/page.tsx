@@ -21,6 +21,7 @@ type RegisterResponse = {
   pendingApproval?: string;
   requiresAdminApproval?: boolean;
   requestedNewCategories?: string[];
+  requestedNewAreas?: string[];
   provider?: {
     ProviderID?: string;
     Name?: string;
@@ -157,6 +158,10 @@ function normalizeAreaInput(value: string): string {
   return cleaned.toLowerCase().replace(/\b[a-z]/g, (char) => char.toUpperCase());
 }
 
+function areaKey(value: string): string {
+  return normalizeAreaInput(value).toLowerCase();
+}
+
 function capitalizeWords(text: string) {
   return text
     .toLowerCase()
@@ -182,6 +187,7 @@ function ProviderRegisterPageInner() {
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
   const [customCategoryKeys, setCustomCategoryKeys] = useState<string[]>([]);
   const [selectedAreas, setSelectedAreas] = useState<string[]>([]);
+  const [customAreaKeys, setCustomAreaKeys] = useState<string[]>([]);
 
   const [catQuery, setCatQuery] = useState("");
   const [areaSearch, setAreaSearch] = useState("");
@@ -330,6 +336,7 @@ function ProviderRegisterPageInner() {
         setSelectedCategories(serviceCategories);
         setSelectedAreas(serviceAreas);
         setCustomCategoryKeys([]);
+        setCustomAreaKeys([]);
       } catch {
         // Keep the form usable even if prefill fails.
       } finally {
@@ -474,14 +481,17 @@ function ProviderRegisterPageInner() {
     setSubmitError("");
     setSuccess(null);
     setAreasLimitError("");
+    const normalizedArea = normalizeAreaInput(area);
+    const normalizedAreaKey = areaKey(normalizedArea);
     setSelectedAreas((prev) => {
-      if (prev.some((item) => item.toLowerCase() === area.toLowerCase())) return prev;
+      if (prev.some((item) => areaKey(item) === normalizedAreaKey)) return prev;
       if (prev.length >= MAX_AREAS) {
         setAreasLimitError("Max 5 areas allowed");
         return prev;
       }
-      return [...prev, area];
+      return [...prev, normalizedArea];
     });
+    setCustomAreaKeys((prev) => prev.filter((item) => item !== normalizedAreaKey));
     setAreaSearch("");
     setShowAreaSuggestions(false);
   };
@@ -494,7 +504,9 @@ function ProviderRegisterPageInner() {
 
   const removeArea = (area: string) => {
     setAreasLimitError("");
-    setSelectedAreas((prev) => prev.filter((item) => item !== area));
+    const key = areaKey(area);
+    setCustomAreaKeys((prev) => prev.filter((item) => item !== key));
+    setSelectedAreas((prev) => prev.filter((item) => areaKey(item) !== key));
   };
 
   const handleAddCustomArea = () => {
@@ -503,7 +515,10 @@ function ProviderRegisterPageInner() {
       return;
     }
     if (!canAddCustomArea) return;
-    addArea(normalizedAreaQuery);
+    const pendingArea = normalizedAreaQuery;
+    const pendingAreaKey = areaKey(pendingArea);
+    addArea(pendingArea);
+    setCustomAreaKeys((prev) => (prev.includes(pendingAreaKey) ? prev : [...prev, pendingAreaKey]));
   };
 
   const requestNewCategoryInBackground = (requestedCategory: string) => {
@@ -566,6 +581,9 @@ function ProviderRegisterPageInner() {
       const pendingNewCategories = selectedCategories.filter((category) =>
         customCategoryKeys.includes(categoryKey(category))
       );
+      const pendingNewAreas = selectedAreas.filter((area) =>
+        customAreaKeys.includes(areaKey(area))
+      );
       const customCategory = pendingNewCategories[0] || "";
       const payload = {
         action: "provider_register",
@@ -574,8 +592,10 @@ function ProviderRegisterPageInner() {
         categories: JSON.stringify(uniqueCategoryValues(selectedCategories)),
         areas: JSON.stringify(selectedAreas),
         pendingNewCategories: JSON.stringify(pendingNewCategories),
+        pendingNewAreas: JSON.stringify(pendingNewAreas),
         customCategory,
-        requiresAdminApproval: pendingNewCategories.length > 0 ? "true" : "false",
+        requiresAdminApproval:
+          pendingNewCategories.length > 0 || pendingNewAreas.length > 0 ? "true" : "false",
       };
 
       const response = await fetch("/api/kk", {
@@ -593,7 +613,11 @@ function ProviderRegisterPageInner() {
       }
 
       setSuccess(data ?? { ok: true, status: "success" });
-      const requiresAdminApproval = Boolean(data?.requiresAdminApproval);
+      const hasPendingApproval =
+        String(data?.pendingApproval || data?.provider?.PendingApproval || "no").trim().toLowerCase() ===
+        "yes";
+      const hasPendingAreaReview = Boolean(data?.requestedNewAreas?.length);
+      const requiresAdminApproval = hasPendingApproval || hasPendingAreaReview;
       setSubmittedRequiresApproval(requiresAdminApproval);
       if (typeof window !== "undefined") {
         const canonicalPhone = normalizePhone10(phone);
@@ -608,14 +632,14 @@ function ProviderRegisterPageInner() {
             "no",
           Status:
             data?.provider?.Status ||
-            (requiresAdminApproval ? "Pending Admin Approval" : "Active"),
+            (hasPendingApproval ? "Pending Admin Approval" : "Active"),
         };
         window.localStorage.setItem("kk_provider_profile", JSON.stringify(fallbackProfile));
         window.dispatchEvent(new Event(PROVIDER_PROFILE_UPDATED_EVENT));
 
         try {
           const profileResponse = await fetch(
-            `/api/kk?action=get_provider_profile&phone=${encodeURIComponent(phone)}`,
+            `/api/kk?action=get_provider_by_phone&phone=${encodeURIComponent(phone)}`,
             { cache: "no-store" }
           );
           const profileData = (await parseJsonSafe(profileResponse)) as ProviderProfileResponse | null;
@@ -858,6 +882,9 @@ function ProviderRegisterPageInner() {
                 {isLoadingAreas ? <p className="mt-2 text-xs text-slate-500">Loading areas...</p> : null}
                 {areasError ? <p className="mt-2 text-xs text-red-600">{areasError}</p> : null}
                 {areasLimitError ? <p className="mt-2 text-xs text-red-600">{areasLimitError}</p> : null}
+                <p className="mt-2 text-xs text-slate-500">
+                  Choose approved areas from the list. New areas can be requested and will go for admin approval before becoming active coverage.
+                </p>
                 {canAddCustomArea ? (
                   <div className="mt-2 flex flex-wrap gap-2">
                     <button
@@ -905,6 +932,11 @@ function ProviderRegisterPageInner() {
                         className="inline-flex items-center gap-2 rounded-full border border-sky-700 bg-sky-50 px-3 py-1.5 text-xs font-semibold text-sky-800"
                       >
                         {area}
+                        {customAreaKeys.includes(areaKey(area)) ? (
+                          <span className="rounded bg-sky-700 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
+                            REVIEW
+                          </span>
+                        ) : null}
                         <span aria-hidden="true">x</span>
                       </button>
                     ))}
@@ -955,7 +987,13 @@ function ProviderRegisterPageInner() {
               </div>
               <div>
                 <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Areas</p>
-                <p className="mt-1 text-slate-700">{selectedAreas.length > 0 ? selectedAreas.join(", ") : "-"}</p>
+                <p className="mt-1 text-slate-700">
+                  {selectedAreas.length > 0
+                    ? selectedAreas.map((area) =>
+                        customAreaKeys.includes(areaKey(area)) ? `${area} (pending review)` : area
+                      ).join(", ")
+                    : "-"}
+                </p>
               </div>
             </div>
 
@@ -973,6 +1011,11 @@ function ProviderRegisterPageInner() {
               {success.requestedNewCategories?.length ? (
                 <p className="mt-2 text-xs text-green-700">
                   Pending categories: {success.requestedNewCategories.join(", ")}
+                </p>
+              ) : null}
+              {success.requestedNewAreas?.length ? (
+                <p className="mt-2 text-xs text-green-700">
+                  Pending area review: {success.requestedNewAreas.join(", ")}
                 </p>
               ) : null}
               <p className="mt-2 text-xs text-green-700">

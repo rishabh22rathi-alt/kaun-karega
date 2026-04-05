@@ -171,7 +171,12 @@ export default function Sidebar() {
     if (typeof window === "undefined") return;
     const onStorage = () => {
       setSession(getAuthSession());
-      setIsAdmin(readAdminSession());
+      const nextIsAdmin = readAdminSession();
+      setIsAdmin(nextIsAdmin);
+      if (nextIsAdmin) {
+        setProviderProfile(null);
+        return;
+      }
       try {
         const raw = window.localStorage.getItem(PROVIDER_PROFILE_STORAGE_KEY);
         setProviderProfile(raw ? (JSON.parse(raw) as ProviderProfile) : null);
@@ -186,6 +191,10 @@ export default function Sidebar() {
   useEffect(() => {
     if (typeof window === "undefined") return;
     const onProviderProfileUpdated = () => {
+      if (readAdminSession()) {
+        setProviderProfile(null);
+        return;
+      }
       try {
         const raw = window.localStorage.getItem(PROVIDER_PROFILE_STORAGE_KEY);
         setProviderProfile(raw ? (JSON.parse(raw) as ProviderProfile) : null);
@@ -200,6 +209,11 @@ export default function Sidebar() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+    if (isAdmin) {
+      setProviderProfile(null);
+      window.localStorage.removeItem(PROVIDER_PROFILE_STORAGE_KEY);
+      return;
+    }
     const phone = normalizePhoneToTen(session?.phone);
     if (!/^\d{10}$/.test(phone)) {
       setProviderProfile(null);
@@ -230,6 +244,9 @@ export default function Sidebar() {
         );
         const data = (await response.json()) as ProviderProfileResponse;
         if (!ignore && data?.ok && data.provider) {
+          if (process.env.NODE_ENV !== "production") {
+            console.log("[Sidebar provider profile]", data.provider);
+          }
           setProviderProfile(data.provider);
           window.localStorage.setItem(
             PROVIDER_PROFILE_STORAGE_KEY,
@@ -248,7 +265,7 @@ export default function Sidebar() {
     return () => {
       ignore = true;
     };
-  }, [session?.phone]);
+  }, [isAdmin, session?.phone]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -484,7 +501,12 @@ export default function Sidebar() {
           {!isCollapsed && (
             <div className="flex flex-col leading-tight">
               <p className="text-base font-semibold text-white">Kaun Karega</p>
-              {providerProfile?.Name ? (
+              {isAdmin ? (
+                <>
+                  <p className="text-sm font-semibold text-white">Admin</p>
+                  <p className="text-xs text-white/80">Admin Console</p>
+                </>
+              ) : providerProfile?.Name ? (
                 <>
                   <p className="text-sm font-semibold text-white">
                     {providerProfile.Name}

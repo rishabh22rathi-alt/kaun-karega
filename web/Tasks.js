@@ -310,7 +310,8 @@ function submitTask_(data) {
   if (!phone) return { ok: false, status: "error", error: "Invalid phone number" };
 
   const category = String(data.category || "").trim();
-  const area = resolveCanonicalAreaName_(data.area || "");
+  const rawArea = String(data.area || "").trim();
+  const area = resolveCanonicalAreaName_(rawArea);
   const details = String(data.details || data.description || "").trim();
   const selectedTimeframe = String(
     data.selectedTimeframe || data.time || data.urgency || ""
@@ -362,6 +363,13 @@ function submitTask_(data) {
   const taskId = makeTaskId_();
   const displayId = getNextTaskDisplayId_();
   const createdAt = Utilities.formatDate(new Date(), "Asia/Kolkata", "dd/MM/yyyy HH:mm:ss");
+
+  if (rawArea && !isKnownAreaName_(rawArea)) {
+    queueAreaReviewItemSafe_(rawArea, {
+      sourceType: "task",
+      sourceRef: taskId,
+    });
+  }
 
   const row = new Array(headers.length).fill("");
 

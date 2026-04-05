@@ -15,10 +15,44 @@ export const revalidate = 0;
  */
 const ADMIN_ONLY_ACTIONS = new Set([
   // Admin dashboard — reads
+  "admin_get_dashboard",
+  "admin_get_providers",
+  "admin_get_provider",
+  "admin_get_category_requests",
+  "admin_get_categories",
+  "admin_get_area_mappings",
+  "admin_get_unmapped_areas",
+  "admin_get_requests",
+  "admin_get_notification_logs",
+  "admin_get_notification_summary",
+  "admin_get_team_members",
   "admin_notification_summary",
   "get_admin_area_mappings",
   "admin_notification_logs",
   // Admin dashboard — writes
+  "admin_verify_provider",
+  "admin_approve_category",
+  "admin_reject_category",
+  "admin_add_category",
+  "admin_edit_category",
+  "admin_toggle_category",
+  "admin_add_area",
+  "admin_edit_area",
+  "admin_add_area_alias",
+  "admin_update_area_alias",
+  "admin_toggle_area_alias",
+  "admin_merge_area_into_canonical",
+  "admin_map_unmapped_area",
+  "admin_create_area_from_unmapped",
+  "admin_resolve_unmapped_area",
+  "admin_remind_providers",
+  "admin_assign_provider",
+  "admin_close_request",
+  "admin_update_provider",
+  "admin_set_provider_blocked",
+  "admin_add_team_member",
+  "admin_update_team_member",
+  "admin_delete_team_member",
   "set_provider_verified",
   "add_category",
   "edit_category",
@@ -53,6 +87,7 @@ function extractAction(source: unknown): string {
 }
 
 const APPS_SCRIPT_URL = process.env.NEXT_PUBLIC_APPS_SCRIPT_URL;
+const STANDARDIZED_ADMIN_ACTIONS = new Set([...ADMIN_ONLY_ACTIONS, "admin_verify", "get_admin_requests"]);
 
 function parseArrayLike(value: unknown): unknown[] {
   if (Array.isArray(value)) return value;
@@ -99,6 +134,57 @@ function withNoCache(response: NextResponse) {
   return response;
 }
 
+function normalizeAdminPayload(
+  action: string,
+  payload: unknown
+): Record<string, unknown> | undefined {
+  if (!STANDARDIZED_ADMIN_ACTIONS.has(action)) return undefined;
+
+  const source =
+    payload && typeof payload === "object" && !Array.isArray(payload)
+      ? ({ ...(payload as Record<string, unknown>) } as Record<string, unknown>)
+      : {};
+  const ok = source.ok === true;
+  const error = ok ? null : typeof source.error === "string" ? source.error : "Admin request failed";
+  return {
+    ...source,
+    ok,
+    data: ok ? source : null,
+    error,
+  };
+}
+
+async function buildProxyResponse(upstream: Response, action: string) {
+  const text = await upstream.text();
+  const contentType = upstream.headers.get("content-type") || "application/json; charset=utf-8";
+
+  try {
+    const parsed = text ? (JSON.parse(text) as unknown) : {};
+    const normalized = normalizeAdminPayload(action, parsed);
+    if (normalized) {
+      return withNoCache(
+        NextResponse.json(normalized, {
+          status: upstream.status,
+          headers: {
+            "Content-Type": contentType,
+          },
+        })
+      );
+    }
+  } catch {
+    // Fall back to passthrough below when the upstream response is not JSON.
+  }
+
+  return withNoCache(
+    new NextResponse(text, {
+      status: upstream.status,
+      headers: {
+        "Content-Type": contentType,
+      },
+    })
+  );
+}
+
 export async function GET(request: NextRequest) {
   try {
     const action = request.nextUrl.searchParams.get("action") ?? "";
@@ -118,15 +204,7 @@ export async function GET(request: NextRequest) {
         Accept: "application/json, text/plain, */*",
       },
     });
-
-    const text = await upstream.text();
-    const response = new NextResponse(text, {
-      status: upstream.status,
-      headers: {
-        "Content-Type": upstream.headers.get("content-type") || "application/json; charset=utf-8",
-      },
-    });
-    return withNoCache(response);
+    return await buildProxyResponse(upstream, action);
   } catch (error: any) {
     return withNoCache(
       NextResponse.json(
@@ -164,15 +242,7 @@ export async function POST(request: NextRequest) {
       },
       body: JSON.stringify(body),
     });
-
-    const text = await upstream.text();
-    const response = new NextResponse(text, {
-      status: upstream.status,
-      headers: {
-        "Content-Type": upstream.headers.get("content-type") || "application/json; charset=utf-8",
-      },
-    });
-    return withNoCache(response);
+    return await buildProxyResponse(upstream, action);
   } catch (error: any) {
     return withNoCache(
       NextResponse.json(

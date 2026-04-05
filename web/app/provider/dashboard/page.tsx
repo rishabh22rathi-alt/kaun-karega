@@ -75,6 +75,31 @@ type ProviderAnalytics = {
   RecentMatchedRequests?: RecentMatchedRequest[];
 };
 
+type ProviderCoverageArea = {
+  Area: string;
+  Status?: string;
+};
+
+type ProviderPendingAreaRequest = {
+  RequestedArea: string;
+  Status?: string;
+  LastSeenAt?: string;
+};
+
+type ProviderResolvedAreaRequest = {
+  RequestedArea: string;
+  ResolvedCanonicalArea: string;
+  CoverageActive?: boolean;
+  Status?: string;
+  ResolvedAt?: string;
+};
+
+type ProviderAreaCoverage = {
+  ActiveApprovedAreas?: ProviderCoverageArea[];
+  PendingAreaRequests?: ProviderPendingAreaRequest[];
+  ResolvedOutcomes?: ProviderResolvedAreaRequest[];
+};
+
 type ProviderProfile = {
   ProviderID: string;
   ProviderName: string;
@@ -87,6 +112,7 @@ type ProviderProfile = {
   Status?: string;
   Services?: { Category: string }[];
   Areas?: { Area: string }[];
+  AreaCoverage?: ProviderAreaCoverage;
   Analytics?: ProviderAnalytics;
 };
 
@@ -463,6 +489,13 @@ export default function ProviderDashboardPage() {
     () => (profile?.Analytics && typeof profile.Analytics === "object" ? profile.Analytics : {}),
     [profile]
   );
+  const areaCoverage = useMemo<ProviderAreaCoverage>(
+    () =>
+      profile?.AreaCoverage && typeof profile.AreaCoverage === "object"
+        ? profile.AreaCoverage
+        : {},
+    [profile]
+  );
   const metrics = useMemo<ProviderMetricSummary>(
     () => (analytics.Metrics && typeof analytics.Metrics === "object" ? analytics.Metrics : {}),
     [analytics]
@@ -605,6 +638,21 @@ export default function ProviderDashboardPage() {
 
   const servicesCount = services.length;
   const areasCount = areas.length;
+  const activeCoverageAreas = useMemo(
+    () =>
+      Array.isArray(areaCoverage.ActiveApprovedAreas) && areaCoverage.ActiveApprovedAreas.length
+        ? areaCoverage.ActiveApprovedAreas
+        : areas.map((area) => ({ Area: area.Area, Status: "active" })),
+    [areaCoverage, areas]
+  );
+  const pendingAreaRequests = useMemo(
+    () => (Array.isArray(areaCoverage.PendingAreaRequests) ? areaCoverage.PendingAreaRequests : []),
+    [areaCoverage]
+  );
+  const resolvedAreaRequests = useMemo(
+    () => (Array.isArray(areaCoverage.ResolvedOutcomes) ? areaCoverage.ResolvedOutcomes : []),
+    [areaCoverage]
+  );
   const statusLabel = verified
     ? "Phone Verified"
     : pendingApproval
@@ -1228,11 +1276,11 @@ export default function ProviderDashboardPage() {
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
-                    Areas ({areasCount}/{MAX_AREAS})
+                    Area Coverage
                   </h2>
-                  {areasCount === MAX_AREAS ? (
-                    <p className="mt-1 text-xs text-slate-500">Maximum areas selected</p>
-                  ) : null}
+                  <p className="mt-1 text-xs text-slate-500">
+                    Active areas are used for matching. Pending requests wait for admin review.
+                  </p>
                 </div>
                 <Link
                   href="/provider/register?edit=areas"
@@ -1241,19 +1289,84 @@ export default function ProviderDashboardPage() {
                   Edit
                 </Link>
               </div>
-              <div className="mt-4 flex flex-wrap gap-2">
-                {areas.length ? (
-                  areas.map((area) => (
-                    <span
-                      key={area.Area}
-                      className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-xs font-semibold text-sky-700"
-                    >
-                      {area.Area}
-                    </span>
-                  ))
-                ) : (
-                  <p className="text-sm text-slate-500">No service areas added yet.</p>
-                )}
+              <div className="mt-5 space-y-5">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
+                    Active Approved Areas ({activeCoverageAreas.length}/{MAX_AREAS})
+                  </p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {activeCoverageAreas.length ? (
+                      activeCoverageAreas.map((area) => (
+                        <span
+                          key={area.Area}
+                          className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700"
+                        >
+                          {area.Area}
+                        </span>
+                      ))
+                    ) : (
+                      <p className="text-sm text-slate-500">No active service areas yet.</p>
+                    )}
+                  </div>
+                </div>
+
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">
+                    Pending Area Requests
+                  </p>
+                  <div className="mt-3 space-y-2">
+                    {pendingAreaRequests.length ? (
+                      pendingAreaRequests.map((item) => (
+                        <div
+                          key={`${item.RequestedArea}:${item.LastSeenAt || ""}`}
+                          className="rounded-2xl border border-amber-200 bg-amber-50/70 px-4 py-3"
+                        >
+                          <p className="text-sm font-semibold text-amber-900">{item.RequestedArea}</p>
+                          <p className="mt-1 text-xs text-amber-800">
+                            Waiting for admin review
+                            {item.LastSeenAt ? ` • Requested ${formatDateTime(item.LastSeenAt)}` : ""}
+                          </p>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-sm text-slate-500">No pending area requests.</p>
+                    )}
+                  </div>
+                </div>
+
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-sky-700">
+                    Resolved Outcomes
+                  </p>
+                  <div className="mt-3 space-y-2">
+                    {resolvedAreaRequests.length ? (
+                      resolvedAreaRequests.map((item) => {
+                        const mapped =
+                          String(item.Status || "").trim().toLowerCase() === "mapped";
+                        return (
+                          <div
+                            key={`${item.RequestedArea}:${item.ResolvedCanonicalArea}:${item.ResolvedAt || ""}`}
+                            className="rounded-2xl border border-sky-200 bg-sky-50/70 px-4 py-3"
+                          >
+                            <p className="text-sm font-semibold text-sky-900">
+                              {mapped
+                                ? `${item.RequestedArea} -> ${item.ResolvedCanonicalArea}`
+                                : item.ResolvedCanonicalArea}
+                            </p>
+                            <p className="mt-1 text-xs text-sky-800">
+                              {item.CoverageActive
+                                ? "Now active for matching"
+                                : "Resolved by admin; active coverage update not visible yet"}
+                              {item.ResolvedAt ? ` • Resolved ${formatDateTime(item.ResolvedAt)}` : ""}
+                            </p>
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <p className="text-sm text-slate-500">No resolved area requests yet.</p>
+                    )}
+                  </div>
+                </div>
               </div>
             </div>
           </section>

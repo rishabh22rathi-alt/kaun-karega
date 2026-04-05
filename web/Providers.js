@@ -82,6 +82,12 @@ function saveProviderMatches_(data) {
   removeMatchesForTask_(sh, taskId);
 
   if (providers.length === 0) {
+    if (typeof syncTaskSummaryByTaskId_ === "function") {
+      syncTaskSummaryByTaskId_(taskId);
+    }
+    if (typeof syncProviderInboxForTask_ === "function") {
+      syncProviderInboxForTask_(taskId);
+    }
     return { ok: true, status: "success", taskId: taskId, saved: 0 };
   }
 
@@ -113,6 +119,12 @@ function saveProviderMatches_(data) {
   });
 
   if (normalizedProviders.length === 0) {
+    if (typeof syncTaskSummaryByTaskId_ === "function") {
+      syncTaskSummaryByTaskId_(taskId);
+    }
+    if (typeof syncProviderInboxForTask_ === "function") {
+      syncProviderInboxForTask_(taskId);
+    }
     return { ok: true, status: "success", taskId: taskId, saved: 0 };
   }
 
@@ -139,6 +151,12 @@ function saveProviderMatches_(data) {
   });
 
   sh.getRange(sh.getLastRow() + 1, 1, rows.length, rows[0].length).setValues(rows);
+  if (typeof syncTaskSummaryByTaskId_ === "function") {
+    syncTaskSummaryByTaskId_(taskId);
+  }
+  if (typeof syncProviderInboxForTask_ === "function") {
+    syncProviderInboxForTask_(taskId);
+  }
 
   return {
     ok: true,
@@ -481,18 +499,43 @@ function providerRegister(phoneRaw, providerName, categories, areas) {
   const providerHeaderMap = getProviderHeaderMap_(providerHeaders);
 
   const cleanCats = uniqueNormalizedValues_(categories);
-  const cleanAreas = uniqueNormalizedAreaValues_(areas);
+  const requestedAreaKeys = new Set();
+  const requestedNewAreas = [];
+  const approvedResolvedAreas = [];
+  const rawAreas = Array.isArray(areas) ? areas : [];
+
+  rawAreas.forEach((areaValue) => {
+    const normalizedArea = normalizeAreaName_(areaValue);
+    const resolution = getAreaResolution_(normalizedArea);
+    const areaLookupKey = resolution.normalizedKey;
+    if (!resolution.rawArea || !areaLookupKey) return;
+
+    if (resolution.known) {
+      approvedResolvedAreas.push(resolution.resolvedArea);
+      return;
+    }
+
+    if (requestedAreaKeys.has(areaLookupKey)) return;
+    requestedAreaKeys.add(areaLookupKey);
+    requestedNewAreas.push(resolution.rawArea);
+  });
+
+  const cleanAreas = uniqueNormalizedAreaValues_(approvedResolvedAreas);
   const approvedLookup = getApprovedCategoriesLookup_();
   const requestedNewCategories = cleanCats.filter(
     (category) => !approvedLookup[getNormalizedCategoryKey_(category)]
   );
   const allCategoriesApproved = requestedNewCategories.length === 0;
-  const requiresAdminApproval = !allCategoriesApproved;
-  const verified = allCategoriesApproved ? "yes" : "no";
+  const hasNewAreaRequests = requestedNewAreas.length > 0;
+  const requiresAdminApproval = !allCategoriesApproved || hasNewAreaRequests;
   const pendingApproval = requiresAdminApproval ? "yes" : "no";
-  const message = requiresAdminApproval
-    ? "Application submitted successfully. Your new category request is pending admin approval."
-    : "Registration successful. Your profile has been verified successfully.";
+  const message = !allCategoriesApproved && hasNewAreaRequests
+    ? "Registration successful. Your new category and area requests are pending admin approval. Approved areas are active now."
+    : !allCategoriesApproved
+      ? "Application submitted successfully. Your new category request is pending admin approval."
+      : hasNewAreaRequests
+        ? "Registration successful. Your new area request is pending admin approval. Approved areas are active now."
+        : "Registration successful.";
 
   const now = new Date();
   let providerRow = -1;
@@ -516,6 +559,22 @@ function providerRegister(phoneRaw, providerName, categories, areas) {
     providerId = nextProviderId_(providersSheet);
   }
 
+  const existingRow = providerRow !== -1 ? providerRows[providerRow - 1] || [] : [];
+  const existingVerified =
+    providerRow !== -1 && providerHeaderMap.verified !== -1
+      ? String(existingRow[providerHeaderMap.verified] || "").trim().toLowerCase()
+      : "";
+  const existingApprovalStatus =
+    providerRow !== -1 && providerHeaderMap.approvalStatus !== -1
+      ? String(existingRow[providerHeaderMap.approvalStatus] || "").trim().toLowerCase()
+      : "";
+  const verified = existingVerified === "yes" ? "yes" : "no";
+  const approvalStatus = requiresAdminApproval
+    ? "pending"
+    : existingApprovalStatus === "approved"
+      ? "approved"
+      : "";
+
   const providerData = {
     ProviderID: providerId,
     Name: providerName,
@@ -532,8 +591,8 @@ function providerRegister(phoneRaw, providerName, categories, areas) {
     LastLoginAt: providerRow !== -1 && providerHeaderMap.lastLoginAt !== -1
       ? providerRows[providerRow - 1]?.[providerHeaderMap.lastLoginAt] || ""
       : "",
-    Status: requiresAdminApproval ? "Pending Admin Approval" : "Active",
-    ApprovalStatus: requiresAdminApproval ? "pending" : "approved",
+    Status: pendingApproval === "yes" ? "Pending Admin Approval" : "Active",
+    ApprovalStatus: approvalStatus,
     PendingApproval: pendingApproval,
     CustomCategory: requestedNewCategories.join(", "),
     UpdatedAt: now,
@@ -558,6 +617,13 @@ function providerRegister(phoneRaw, providerName, categories, areas) {
     areasSheet.appendRow([providerId, aName, "yes", "self_registered", now, now]);
   });
 
+  requestedNewAreas.forEach((rawArea) => {
+    queueAreaReviewItemSafe_(rawArea, {
+      sourceType: "provider_area",
+      sourceRef: providerId,
+    });
+  });
+
   upsertCategoryApplications_(providerId, providerName, phone, requestedNewCategories, now);
 
   return {
@@ -568,6 +634,7 @@ function providerRegister(phoneRaw, providerName, categories, areas) {
     pendingApproval: pendingApproval,
     requiresAdminApproval: requiresAdminApproval,
     requestedNewCategories: requestedNewCategories,
+    requestedNewAreas: requestedNewAreas,
     message: message,
     provider: {
       ProviderID: providerId,
@@ -576,7 +643,7 @@ function providerRegister(phoneRaw, providerName, categories, areas) {
       Phone: phone,
       Verified: verified,
       PendingApproval: pendingApproval,
-      Status: requiresAdminApproval ? "Pending Admin Approval" : "Active",
+      Status: pendingApproval === "yes" ? "Pending Admin Approval" : "Active",
     },
   };
 }
@@ -590,6 +657,7 @@ function getProviderByPhone_(phoneRaw) {
 
   const services = getProviderServices_(record.provider.ProviderID);
   const areas = getProviderAreas_(record.provider.ProviderID);
+  const areaCoverage = getProviderAreaCoverageStatus_(record.provider.ProviderID, areas);
   const analytics = getProviderDashboardAnalytics_(
     record.provider.ProviderID,
     services,
@@ -610,42 +678,14 @@ function getProviderByPhone_(phoneRaw) {
       Status: record.provider.Status,
       Services: services,
       Areas: areas,
+      AreaCoverage: areaCoverage,
       Analytics: analytics,
     }
   };
 }
 
 function getProviderProfile_(phoneRaw) {
-  const record = getProviderRecordByPhone_(phoneRaw);
-  if (!record.ok) return record;
-
-  return {
-    ok: true,
-    provider: {
-      ProviderID: record.provider.ProviderID,
-      Name: record.provider.ProviderName,
-      Phone: record.provider.Phone,
-      Verified: record.provider.Verified,
-      OtpVerified: record.provider.OtpVerified,
-      OtpVerifiedAt: record.provider.OtpVerifiedAt,
-      LastLoginAt: record.provider.LastLoginAt,
-      PendingApproval: record.provider.PendingApproval,
-      Status: record.provider.Status,
-    },
-  };
-}
-
-function getAdminSheetCandidates_() {
-  return ["Team", "Admins", "AdminTeam", "TeamMembers"];
-}
-
-function getExistingSheetByNames_(sheetNames) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  for (let i = 0; i < sheetNames.length; i++) {
-    const sheet = ss.getSheetByName(sheetNames[i]);
-    if (sheet) return sheet;
-  }
-  return null;
+  return getProviderByPhone_(phoneRaw);
 }
 
 function getAdminByPhone_(phoneRaw) {
@@ -654,7 +694,7 @@ function getAdminByPhone_(phoneRaw) {
     return { ok: false, error: "INVALID_PHONE" };
   }
 
-  const sheet = getExistingSheetByNames_(getAdminSheetCandidates_());
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Admins");
   if (!sheet || sheet.getLastRow() < 2) {
     return { ok: false, error: "ACCESS_DENIED" };
   }
@@ -690,10 +730,11 @@ function getAdminByPhone_(phoneRaw) {
       return { ok: false, error: "ACCESS_DENIED" };
     }
 
-    const role =
+    const roleRaw =
       idxRole !== -1 && row[idxRole] !== undefined
         ? String(row[idxRole]).trim().toLowerCase()
-        : "admin";
+        : "";
+    const role = roleRaw || "admin";
     if (role !== "admin" && role !== "superadmin") {
       return { ok: false, error: "ACCESS_DENIED" };
     }
@@ -739,6 +780,8 @@ function getAdminCategoryApplications_() {
   const idxRequestedCategory = findHeaderIndexByAliases_(headers, ["RequestedCategory", "Category"]);
   const idxStatus = findHeaderIndexByAliases_(headers, ["Status"]);
   const idxCreatedAt = findHeaderIndexByAliases_(headers, ["CreatedAt", "Timestamp"]);
+  const idxSource = findHeaderIndexByAliases_(headers, ["Source"]);
+  const idxTaskId = findHeaderIndexByAliases_(headers, ["TaskID"]);
 
   return rows
     .map((row) => ({
@@ -761,6 +804,14 @@ function getAdminCategoryApplications_() {
       CreatedAt:
         idxCreatedAt !== -1 && row[idxCreatedAt] !== undefined
           ? String(row[idxCreatedAt]).trim()
+          : "",
+      Source:
+        idxSource !== -1 && row[idxSource] !== undefined
+          ? String(row[idxSource]).trim()
+          : "",
+      TaskID:
+        idxTaskId !== -1 && row[idxTaskId] !== undefined
+          ? String(row[idxTaskId]).trim()
           : "",
     }))
     .filter((item) => item.RequestID || item.ProviderName || item.RequestedCategory)
@@ -828,6 +879,8 @@ function getCategoryApplicationsState_() {
     "RequestedCategory",
     "Status",
     "CreatedAt",
+    "Source",
+    "TaskID",
   ]);
   const headers = ensureSheetHeaders_(sheet, [
     "RequestID",
@@ -837,6 +890,8 @@ function getCategoryApplicationsState_() {
     "RequestedCategory",
     "Status",
     "CreatedAt",
+    "Source",
+    "TaskID",
   ]);
   const values = sheet.getDataRange().getValues();
 
@@ -849,6 +904,8 @@ function getCategoryApplicationsState_() {
     idxPhone: findHeaderIndexByAliases_(headers, ["Phone", "ProviderPhone"]),
     idxCategory: findHeaderIndexByAliases_(headers, ["RequestedCategory", "Category"]),
     idxStatus: findHeaderIndexByAliases_(headers, ["Status"]),
+    idxSource: findHeaderIndexByAliases_(headers, ["Source"]),
+    idxTaskId: findHeaderIndexByAliases_(headers, ["TaskID"]),
   };
 }
 
@@ -932,6 +989,30 @@ function writeProviderVerifiedValue_(providerState, rowNumber, verifiedValue) {
     providerState.sheet.getRange(rowNumber, providerState.headerMap.updatedAt + 1).setValue(new Date());
   }
 
+  return { ok: true, status: "success" };
+}
+
+function writeProviderApprovalState_(providerState, rowNumber, data) {
+  if (!providerState || !providerState.sheet) {
+    return { ok: false, status: "error", error: "Providers sheet not found" };
+  }
+
+  const updates = {};
+  if (data && data.pendingApproval !== undefined && providerState.headerMap.pendingApproval !== -1) {
+    updates.PendingApproval =
+      String(data.pendingApproval || "").trim().toLowerCase() === "yes" ? "yes" : "no";
+  }
+  if (data && data.approvalStatus !== undefined && providerState.headerMap.approvalStatus !== -1) {
+    updates.ApprovalStatus = String(data.approvalStatus || "").trim().toLowerCase();
+  }
+  if (data && data.status !== undefined && providerState.headerMap.status !== -1) {
+    updates.Status = String(data.status || "").trim();
+  }
+  if (!Object.keys(updates).length) {
+    return { ok: true, status: "success" };
+  }
+
+  updateRowFromData_(providerState.sheet, rowNumber, updates);
   return { ok: true, status: "success" };
 }
 
@@ -1032,7 +1113,7 @@ function buildPendingCategorySummaryLookup_() {
   };
 }
 
-function syncProviderApprovalState_(providerId, phone) {
+function syncProviderApprovalState_(providerId, phone, options) {
   const providerState = getProviderSheetState_();
   const normalizedProviderId = String(providerId || "").trim();
   const normalizedPhone = normalizePhone10_(phone);
@@ -1056,11 +1137,42 @@ function syncProviderApprovalState_(providerId, phone) {
     target.row[providerState.headerMap.verified] !== undefined
       ? String(target.row[providerState.headerMap.verified]).trim().toLowerCase()
       : "no";
-  const nextVerified = hasPendingCategories ? "no" : "yes";
+  const currentPendingApproval =
+    providerState.headerMap.pendingApproval !== -1 &&
+    target.row[providerState.headerMap.pendingApproval] !== undefined
+      ? String(target.row[providerState.headerMap.pendingApproval]).trim().toLowerCase()
+      : "no";
+  const currentApprovalStatus =
+    providerState.headerMap.approvalStatus !== -1 &&
+    target.row[providerState.headerMap.approvalStatus] !== undefined
+      ? String(target.row[providerState.headerMap.approvalStatus]).trim().toLowerCase()
+      : "";
+  const currentStatus =
+    providerState.headerMap.status !== -1 && target.row[providerState.headerMap.status] !== undefined
+      ? String(target.row[providerState.headerMap.status]).trim()
+      : "";
+  const nextPendingApproval = hasPendingCategories ? "yes" : "no";
+  const nextApprovalStatus = hasPendingCategories ? "pending" : "approved";
+  const nextProviderStatus = hasPendingCategories ? "Pending Admin Approval" : "Active";
+  let nextVerified = currentVerified;
 
-  if (currentVerified !== nextVerified) {
-    const writeResult = writeProviderVerifiedValue_(providerState, target.rowNumber, nextVerified);
+  if (
+    currentPendingApproval !== nextPendingApproval ||
+    currentApprovalStatus !== nextApprovalStatus ||
+    currentStatus !== nextProviderStatus
+  ) {
+    const approvalWriteResult = writeProviderApprovalState_(providerState, target.rowNumber, {
+      pendingApproval: nextPendingApproval,
+      approvalStatus: nextApprovalStatus,
+      status: nextProviderStatus,
+    });
+    if (!approvalWriteResult.ok) return approvalWriteResult;
+  }
+
+  if (options && options.markVerifiedApproved === true && !hasPendingCategories && currentVerified !== "yes") {
+    const writeResult = writeProviderVerifiedValue_(providerState, target.rowNumber, "yes");
     if (!writeResult.ok) return writeResult;
+    nextVerified = "yes";
   }
 
   return {
@@ -1072,9 +1184,9 @@ function syncProviderApprovalState_(providerId, phone) {
         ? String(target.row[providerState.headerMap.providerId]).trim()
         : normalizedProviderId,
     verified: nextVerified,
-    pendingApproval: hasPendingCategories ? "yes" : "no",
-    approvalStatus: hasPendingCategories ? "pending" : "approved",
-    providerStatus: hasPendingCategories ? "Pending Admin Approval" : "Active",
+    pendingApproval: nextPendingApproval,
+    approvalStatus: nextApprovalStatus,
+    providerStatus: nextProviderStatus,
     pendingCategories: summary.pendingCategories,
   };
 }
@@ -1113,17 +1225,35 @@ function reconcileProviderApprovalStates_() {
       const pendingCategories = pendingSummary ? pendingSummary.categories.slice() : [];
       const hasPendingCategories = pendingCategories.length > 0;
 
-      const currentVerified =
-        providerState.headerMap.verified !== -1 &&
-        row[providerState.headerMap.verified] !== undefined
-          ? String(row[providerState.headerMap.verified]).trim().toLowerCase()
+      const currentPendingApproval =
+        providerState.headerMap.pendingApproval !== -1 &&
+        row[providerState.headerMap.pendingApproval] !== undefined
+          ? String(row[providerState.headerMap.pendingApproval]).trim().toLowerCase()
           : "no";
-      const nextVerified = hasPendingCategories ? "no" : "yes";
-      const requiresUpdate = currentVerified !== nextVerified;
+      const currentApprovalStatus =
+        providerState.headerMap.approvalStatus !== -1 &&
+        row[providerState.headerMap.approvalStatus] !== undefined
+          ? String(row[providerState.headerMap.approvalStatus]).trim().toLowerCase()
+          : "";
+      const currentStatus =
+        providerState.headerMap.status !== -1 && row[providerState.headerMap.status] !== undefined
+          ? String(row[providerState.headerMap.status]).trim()
+          : "";
+      const nextPendingApproval = hasPendingCategories ? "yes" : "no";
+      const nextApprovalStatus = hasPendingCategories ? "pending" : "approved";
+      const nextProviderStatus = hasPendingCategories ? "Pending Admin Approval" : "Active";
+      const requiresUpdate =
+        currentPendingApproval !== nextPendingApproval ||
+        currentApprovalStatus !== nextApprovalStatus ||
+        currentStatus !== nextProviderStatus;
 
       if (!requiresUpdate) continue;
 
-      const writeResult = writeProviderVerifiedValue_(providerState, i + 1, nextVerified);
+      const writeResult = writeProviderApprovalState_(providerState, i + 1, {
+        pendingApproval: nextPendingApproval,
+        approvalStatus: nextApprovalStatus,
+        status: nextProviderStatus,
+      });
       if (!writeResult.ok) return writeResult;
       updatedCount += 1;
     }
@@ -1211,9 +1341,23 @@ function approveCategoryRequest_(data) {
 
     const requestResult = updateCategoryApplicationStatus_(requestId, "approved");
     if (!requestResult.ok) return requestResult;
+
+    // Skip provider sync for task-originated entries (no ProviderID)
+    if (!requestResult.providerId) {
+      return {
+        ok: true,
+        status: "success",
+        requestId: requestId,
+        categoryName: categoryResult.categoryName,
+        categoryCreated: categoryResult.created === true,
+        provider: null,
+      };
+    }
+
     const providerSyncResult = syncProviderApprovalState_(
       requestResult.providerId,
-      requestResult.phone
+      requestResult.phone,
+      { markVerifiedApproved: true }
     );
     if (!providerSyncResult.ok) return providerSyncResult;
 
@@ -1247,9 +1391,21 @@ function rejectCategoryRequest_(data) {
   try {
     const requestResult = updateCategoryApplicationStatus_(requestId, "rejected");
     if (!requestResult.ok) return requestResult;
+
+    // Skip provider sync for task-originated entries (no ProviderID)
+    if (!requestResult.providerId) {
+      return {
+        ok: true,
+        status: "success",
+        requestId: requestId,
+        provider: null,
+      };
+    }
+
     const providerSyncResult = syncProviderApprovalState_(
       requestResult.providerId,
-      requestResult.phone
+      requestResult.phone,
+      { markVerifiedApproved: false }
     );
     if (!providerSyncResult.ok) return providerSyncResult;
 
@@ -1285,6 +1441,14 @@ function setProviderVerified_(data) {
   if (!target.ok) return target;
   const writeResult = writeProviderVerifiedValue_(providerState, target.rowNumber, verified);
   if (!writeResult.ok) return writeResult;
+  if (verified === "yes") {
+    const approvalWriteResult = writeProviderApprovalState_(providerState, target.rowNumber, {
+      pendingApproval: "no",
+      approvalStatus: "approved",
+      status: "Active",
+    });
+    if (!approvalWriteResult.ok) return approvalWriteResult;
+  }
 
   return {
     ok: true,
@@ -1349,20 +1513,52 @@ function getAdminProviders_() {
     .filter((provider) => provider.ProviderID || provider.Phone || provider.ProviderName);
 }
 
+function countAdminDashboardVerifiedProviders_() {
+  const providerState = getProviderSheetState_();
+  const rows = Array.isArray(providerState && providerState.values)
+    ? providerState.values.slice(1)
+    : [];
+  if (!providerState.sheet || rows.length === 0) return 0;
+
+  return rows.filter(function (row) {
+    return isProviderVerifiedBadgeGas_({
+      Verified:
+        providerState.headerMap.verified !== -1 &&
+        row[providerState.headerMap.verified] !== undefined
+          ? row[providerState.headerMap.verified]
+          : "",
+      OtpVerified:
+        providerState.headerMap.otpVerified !== -1 &&
+        row[providerState.headerMap.otpVerified] !== undefined
+          ? row[providerState.headerMap.otpVerified]
+          : "",
+      OtpVerifiedAt:
+        providerState.headerMap.otpVerifiedAt !== -1 &&
+        row[providerState.headerMap.otpVerifiedAt] !== undefined
+          ? row[providerState.headerMap.otpVerifiedAt]
+          : "",
+      PendingApproval:
+        providerState.headerMap.pendingApproval !== -1 &&
+        row[providerState.headerMap.pendingApproval] !== undefined
+          ? row[providerState.headerMap.pendingApproval]
+          : "",
+    });
+  }).length;
+}
+
 function getAdminDashboardStats_() {
   reconcileProviderApprovalStates_();
   const categoryApplications = getAdminCategoryApplications_();
   const providers = getAdminProviders_();
   const categories = getAdminCategories_();
   const areas = getAdminAreas_();
+  const verifiedProviders = countAdminDashboardVerifiedProviders_();
 
   return {
     ok: true,
     stats: {
       totalProviders: providers.length,
-      verifiedProviders: providers.filter(
-        (provider) => String(provider.Verified).trim().toLowerCase() === "yes"
-      ).length,
+      verifiedProviders: verifiedProviders,
       pendingAdminApprovals: providers.filter(
         (provider) => String(provider.PendingApproval).trim().toLowerCase() === "yes"
       ).length,
@@ -1455,6 +1651,100 @@ function getProviderAreas_(providerId) {
     }
   });
   return out;
+}
+
+function getProviderAreaCoverageStatus_(providerId, activeAreas) {
+  const normalizedProviderId = String(providerId || "").trim();
+  const activeAreaList = Array.isArray(activeAreas) ? activeAreas : [];
+  const activeAreaKeys = new Set(
+    activeAreaList
+      .map(function (item) {
+        return getNormalizedAreaKey_(item && item.Area !== undefined ? item.Area : "");
+      })
+      .filter(Boolean)
+  );
+  const coverage = {
+    ActiveApprovedAreas: activeAreaList
+      .map(function (item) {
+        const areaName = normalizeAreaName_(item && item.Area !== undefined ? item.Area : "");
+        return areaName ? { Area: areaName, Status: "active" } : null;
+      })
+      .filter(Boolean),
+    PendingAreaRequests: [],
+    ResolvedOutcomes: [],
+  };
+
+  if (!normalizedProviderId || typeof getAreaReviewQueueState_ !== "function") {
+    return coverage;
+  }
+
+  const state = getAreaReviewQueueState_();
+  for (let i = 1; i < state.values.length; i++) {
+    const row = state.values[i] || [];
+    const sourceType =
+      state.idxSourceType !== -1 && row[state.idxSourceType] !== undefined
+        ? String(row[state.idxSourceType]).trim()
+        : "";
+    const sourceRef =
+      state.idxSourceRef !== -1 && row[state.idxSourceRef] !== undefined
+        ? String(row[state.idxSourceRef]).trim()
+        : "";
+    if (sourceType !== "provider_area" || sourceRef !== normalizedProviderId) continue;
+
+    const rawArea =
+      state.idxRawArea !== -1 && row[state.idxRawArea] !== undefined
+        ? normalizeAreaName_(row[state.idxRawArea])
+        : "";
+    const reviewStatus =
+      state.idxStatus !== -1 && row[state.idxStatus] !== undefined
+        ? String(row[state.idxStatus]).trim().toLowerCase()
+        : "pending";
+    const resolvedCanonicalArea =
+      state.idxResolvedCanonicalArea !== -1 && row[state.idxResolvedCanonicalArea] !== undefined
+        ? normalizeAreaName_(row[state.idxResolvedCanonicalArea])
+        : "";
+    const lastSeenAt =
+      state.idxLastSeenAt !== -1 && row[state.idxLastSeenAt] !== undefined
+        ? toIsoDateString_(row[state.idxLastSeenAt])
+        : "";
+    const resolvedAt =
+      state.idxResolvedAt !== -1 && row[state.idxResolvedAt] !== undefined
+        ? toIsoDateString_(row[state.idxResolvedAt])
+        : "";
+
+    if (!rawArea) continue;
+
+    if (reviewStatus === "resolved") {
+      const finalCanonicalArea = resolvedCanonicalArea || rawArea;
+      const finalCanonicalKey = getNormalizedAreaKey_(finalCanonicalArea);
+      coverage.ResolvedOutcomes.push({
+        RequestedArea: rawArea,
+        ResolvedCanonicalArea: finalCanonicalArea,
+        CoverageActive: finalCanonicalKey ? activeAreaKeys.has(finalCanonicalKey) : false,
+        Status:
+          getNormalizedAreaKey_(rawArea) === getNormalizedAreaKey_(finalCanonicalArea)
+            ? "approved"
+            : "mapped",
+        ResolvedAt: resolvedAt,
+      });
+      continue;
+    }
+
+    coverage.PendingAreaRequests.push({
+      RequestedArea: rawArea,
+      Status: "pending",
+      LastSeenAt: lastSeenAt,
+    });
+  }
+
+  coverage.PendingAreaRequests.sort(function (a, b) {
+    return parseTaskDateMs_(String(b.LastSeenAt || "")) - parseTaskDateMs_(String(a.LastSeenAt || ""));
+  });
+  coverage.ResolvedOutcomes.sort(function (a, b) {
+    return parseTaskDateMs_(String(b.ResolvedAt || "")) - parseTaskDateMs_(String(a.ResolvedAt || ""));
+  });
+
+  return coverage;
 }
 
 function getProviderTaskLookup_() {
@@ -1561,6 +1851,159 @@ function getProviderMatchRows_(providerId) {
     .filter(function (item) {
       return item.ProviderID === normalizedProviderId && item.TaskID;
     });
+}
+
+function getProviderServiceRequestThreadState_(taskId, providerId) {
+  if (typeof getChatThreadStateByTaskProvider_ !== "function") return null;
+  const result = getChatThreadStateByTaskProvider_(taskId, providerId);
+  return result && result.thread ? result.thread : null;
+}
+
+function deriveProviderServiceRequestState_(task, matchRow, providerId, thread) {
+  const normalizedProviderId = String(providerId || "").trim();
+  const taskStatus = String(task && task.Status || "").trim().toLowerCase();
+  const matchStatus = String(matchRow && matchRow.Status || "").trim().toLowerCase();
+  const assignedProvider = String(task && task.AssignedProvider || "").trim();
+  const completedAt = String(task && task.CompletedAt || "").trim();
+  const threadStatus = String(thread && thread.Status || "").trim().toLowerCase();
+  const providerResponded = Boolean(
+    String(matchRow && matchRow.AcceptedAt || "").trim() ||
+      matchStatus === "responded" ||
+      matchStatus === "accepted"
+  );
+  const assignedToProvider = assignedProvider && assignedProvider === normalizedProviderId;
+  const attendedByAnotherProvider = Boolean(
+    assignedProvider && assignedProvider !== normalizedProviderId
+  );
+  const closed = Boolean(
+    completedAt ||
+      taskStatus === "completed" ||
+      threadStatus === "closed"
+  );
+
+  if (attendedByAnotherProvider) {
+    return {
+      CurrentState: "attended_by_other_provider",
+      Actionable: false,
+      ProviderResponded: providerResponded,
+      AttendedByAnotherProvider: true,
+    };
+  }
+
+  if (closed) {
+    return {
+      CurrentState: assignedToProvider ? "closed" : "closed",
+      Actionable: false,
+      ProviderResponded: providerResponded,
+      AttendedByAnotherProvider: false,
+    };
+  }
+
+  if (taskStatus === "pending_approval") {
+    return {
+      CurrentState: "pending_approval",
+      Actionable: false,
+      ProviderResponded: providerResponded,
+      AttendedByAnotherProvider: false,
+    };
+  }
+
+  if (assignedToProvider) {
+    return {
+      CurrentState: "assigned_to_you",
+      Actionable: true,
+      ProviderResponded: true,
+      AttendedByAnotherProvider: false,
+    };
+  }
+
+  if (providerResponded) {
+    return {
+      CurrentState: "responded",
+      Actionable: true,
+      ProviderResponded: true,
+      AttendedByAnotherProvider: false,
+    };
+  }
+
+  return {
+    CurrentState: "awaiting_response",
+    Actionable: true,
+    ProviderResponded: false,
+    AttendedByAnotherProvider: false,
+  };
+}
+
+function getProviderServiceRequests_(data) {
+  if (typeof getProviderInbox_ === "function") {
+    const fastRead = getProviderInbox_(data);
+    if (fastRead && fastRead.ok === true && Number(fastRead.count || 0) > 0) {
+      return {
+        ok: true,
+        status: "success",
+        requests: Array.isArray(fastRead.requests) ? fastRead.requests : [],
+      };
+    }
+  }
+
+  const phone = normalizePhone10_(data.phone || data.ProviderPhone || data.providerPhone);
+  if (!phone) return { ok: false, status: "error", error: "Invalid provider phone" };
+
+  const providerRecord = getProviderRecordByPhone_(phone);
+  if (!providerRecord || !providerRecord.ok || !providerRecord.provider || !providerRecord.provider.ProviderID) {
+    return { ok: false, status: "error", error: "Provider not found" };
+  }
+
+  const providerId = String(providerRecord.provider.ProviderID || "").trim();
+  const providerName = String(providerRecord.provider.ProviderName || "").trim();
+  const taskLookup = getProviderTaskLookup_();
+  const requests = getProviderMatchRows_(providerId)
+    .map(function (matchRow) {
+      const task = taskLookup.byTaskId[matchRow.TaskID] || {};
+      if (!task || !String(task.TaskID || "").trim()) return null;
+
+      const thread = getProviderServiceRequestThreadState_(matchRow.TaskID, providerId);
+      const state = deriveProviderServiceRequestState_(task, matchRow, providerId, thread);
+
+      return {
+        TaskID: String(task.TaskID || "").trim(),
+        DisplayID: String(task.DisplayID || "").trim(),
+        Category: String(task.Category || matchRow.Category || "").trim(),
+        Area: String(task.Area || matchRow.Area || "").trim(),
+        Details: String(task.Details || "").trim(),
+        CreatedAt: String(task.CreatedAt || "").trim(),
+        SelectedTimeframe: String(task.SelectedTimeframe || "").trim(),
+        ServiceDate: String(task.ServiceDate || "").trim(),
+        TimeSlot: String(task.TimeSlot || "").trim(),
+        TaskStatus: String(task.Status || "").trim(),
+        MatchStatus: String(matchRow.Status || "").trim(),
+        MatchCreatedAt: String(matchRow.CreatedAt || "").trim(),
+        AcceptedAt: String(matchRow.AcceptedAt || "").trim(),
+        AssignedProvider: String(task.AssignedProvider || "").trim(),
+        CompletedAt: String(task.CompletedAt || "").trim(),
+        ThreadID: String(thread && thread.ThreadID || "").trim(),
+        ThreadStatus: String(thread && thread.Status || "").trim(),
+        CurrentState: state.CurrentState,
+        Actionable: state.Actionable,
+        ProviderResponded: state.ProviderResponded,
+        AttendedByAnotherProvider: state.AttendedByAnotherProvider,
+      };
+    })
+    .filter(Boolean)
+    .sort(function (a, b) {
+      return parseTaskDateMs_(b.CreatedAt) - parseTaskDateMs_(a.CreatedAt);
+    });
+
+  return {
+    ok: true,
+    status: "success",
+    provider: {
+      ProviderID: providerId,
+      ProviderName: providerName,
+      Phone: phone,
+    },
+    requests: requests,
+  };
 }
 
 function startOfTodayMs_() {

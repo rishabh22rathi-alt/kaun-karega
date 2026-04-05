@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { getTaskDisplayLabel } from "@/lib/taskDisplay";
 
 type DashboardStats = {
@@ -43,6 +43,18 @@ type ManagedArea = {
 type ManagedAreaAlias = {
   AliasName: string;
   Active: string;
+};
+
+type UnmappedAreaReview = {
+  ReviewID: string;
+  RawArea: string;
+  Status: string;
+  Occurrences: number;
+  SourceType: string;
+  SourceRef: string;
+  FirstSeenAt: string;
+  LastSeenAt: string;
+  ResolvedCanonicalArea?: string;
 };
 
 type ManagedAreaMapping = {
@@ -113,6 +125,12 @@ type AdminRequestsResponse = {
 type AdminAreaMappingsResponse = {
   ok?: boolean;
   mappings?: ManagedAreaMapping[];
+  error?: string;
+};
+
+type AdminUnmappedAreasResponse = {
+  ok?: boolean;
+  reviews?: UnmappedAreaReview[];
   error?: string;
 };
 
@@ -250,6 +268,7 @@ export default function AdminDashboardPage() {
   >([]);
   const [categories, setCategories] = useState<ManagedCategory[]>([]);
   const [areaMappings, setAreaMappings] = useState<ManagedAreaMapping[]>([]);
+  const [unmappedAreas, setUnmappedAreas] = useState<UnmappedAreaReview[]>([]);
   const [requests, setRequests] = useState<AdminRequest[]>([]);
   const [notificationLogs, setNotificationLogs] = useState<NotificationLog[]>([]);
   const [selectedTaskNotificationSummary, setSelectedTaskNotificationSummary] =
@@ -272,8 +291,13 @@ export default function AdminDashboardPage() {
   const [expandedAreas, setExpandedAreas] = useState<Record<string, boolean>>({});
   const [aliasAreaName, setAliasAreaName] = useState("");
   const [aliasInputValue, setAliasInputValue] = useState("");
+  const [editingAliasId, setEditingAliasId] = useState("");
+  const [editingAliasValue, setEditingAliasValue] = useState("");
+  const [editingAliasCanonicalArea, setEditingAliasCanonicalArea] = useState("");
+  const [aliasSaveStatus, setAliasSaveStatus] = useState<"idle" | "saving" | "saved">("idle");
   const [mergeCanonicalArea, setMergeCanonicalArea] = useState("");
   const [mergeSourceArea, setMergeSourceArea] = useState("");
+  const [reviewTargetAreas, setReviewTargetAreas] = useState<Record<string, string>>({});
   const [selectedRequestId, setSelectedRequestId] = useState("");
   const [assigningTaskId, setAssigningTaskId] = useState("");
   const [assignProviderId, setAssignProviderId] = useState("");
@@ -289,6 +313,7 @@ export default function AdminDashboardPage() {
     needsAttention: true,
   });
   const needsAttentionRef = useRef<HTMLDivElement | null>(null);
+  const aliasSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const showFeedback = (type: "success" | "error", message: string) => {
     setFeedbackType(type);
@@ -323,6 +348,21 @@ export default function AdminDashboardPage() {
       }))
       .sort((a, b) =>
         String(a.CanonicalArea || "").localeCompare(String(b.CanonicalArea || ""))
+      );
+
+  const getAreaManagementRowKey = (canonicalArea: string) => {
+    const areaName = String(canonicalArea || "").trim();
+    const normalizedKey = areaName.toLowerCase().replace(/\s+/g, " ");
+    return `${areaName}-${normalizedKey}`;
+  };
+
+  const sortUnmappedAreas = (items: UnmappedAreaReview[]) =>
+    items
+      .slice()
+      .sort(
+        (a, b) =>
+          new Date(String(b.LastSeenAt || "")).getTime() -
+          new Date(String(a.LastSeenAt || "")).getTime()
       );
 
   const sortRequests = (items: AdminRequest[]) =>
@@ -435,7 +475,8 @@ export default function AdminDashboardPage() {
     setLoading(true);
     setError("");
     try {
-      const [dashboardRes, requestsRes, areaMappingsRes, notificationLogsRes] = await Promise.all([
+      const [dashboardRes, requestsRes, areaMappingsRes, unmappedAreasRes, notificationLogsRes] =
+        await Promise.all([
         fetch("/api/admin/stats", { cache: "no-store" }),
         fetch("/api/kk", {
           method: "POST",
@@ -450,12 +491,18 @@ export default function AdminDashboardPage() {
         fetch("/api/kk", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "admin_get_unmapped_areas" }),
+        }),
+        fetch("/api/kk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ action: "admin_notification_logs", limit: 25 }),
         }),
       ]);
       const data = (await dashboardRes.json()) as AdminDashboardResponse;
       const requestsData = (await requestsRes.json()) as AdminRequestsResponse;
       const areaMappingsData = (await areaMappingsRes.json()) as AdminAreaMappingsResponse;
+      const unmappedAreasData = (await unmappedAreasRes.json()) as AdminUnmappedAreasResponse;
       const notificationLogsData =
         (await notificationLogsRes.json()) as AdminNotificationLogsResponse;
       if (!dashboardRes.ok || !data.ok) {
@@ -466,6 +513,9 @@ export default function AdminDashboardPage() {
       }
       if (!areaMappingsRes.ok || !areaMappingsData.ok) {
         throw new Error(areaMappingsData.error || "Failed to load area mappings");
+      }
+      if (!unmappedAreasRes.ok || !unmappedAreasData.ok) {
+        throw new Error(unmappedAreasData.error || "Failed to load unmapped areas");
       }
       if (!notificationLogsRes.ok || !notificationLogsData.ok) {
         throw new Error(notificationLogsData.error || "Failed to load notification logs");
@@ -484,6 +534,9 @@ export default function AdminDashboardPage() {
       setCategories(sortCategories(Array.isArray(data.categories) ? data.categories : []));
       setAreaMappings(
         sortAreaMappings(Array.isArray(areaMappingsData.mappings) ? areaMappingsData.mappings : [])
+      );
+      setUnmappedAreas(
+        sortUnmappedAreas(Array.isArray(unmappedAreasData.reviews) ? unmappedAreasData.reviews : [])
       );
       setRequests(sortRequests(Array.isArray(requestsData.requests) ? requestsData.requests : []));
       setNotificationLogs(
@@ -524,6 +577,23 @@ export default function AdminDashboardPage() {
     setAreaMappings(sortAreaMappings(Array.isArray(data.mappings) ? data.mappings : []));
   };
 
+  const fetchUnmappedAreas = async () => {
+    const res = await fetch("/api/kk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "admin_get_unmapped_areas" }),
+    });
+    const data = (await res.json()) as AdminUnmappedAreasResponse;
+    if (!res.ok || !data.ok) {
+      throw new Error(data.error || "Failed to load unmapped areas");
+    }
+    setUnmappedAreas(sortUnmappedAreas(Array.isArray(data.reviews) ? data.reviews : []));
+  };
+
+  const refreshAreaAdminState = async () => {
+    await Promise.all([fetchAreaMappings(), fetchUnmappedAreas()]);
+  };
+
   useEffect(() => {
     void fetchDashboard();
   }, []);
@@ -542,6 +612,14 @@ export default function AdminDashboardPage() {
       );
     });
   }, [selectedRequestId]);
+
+  useEffect(() => {
+    return () => {
+      if (aliasSaveTimeoutRef.current) {
+        clearTimeout(aliasSaveTimeoutRef.current);
+      }
+    };
+  }, []);
 
   const cards = [
     { title: "Total Providers", value: stats.totalProviders },
@@ -693,6 +771,15 @@ export default function AdminDashboardPage() {
     }));
   };
 
+  const canonicalAreaOptions = useMemo(
+    () =>
+      areaMappings
+        .map((item) => String(item.CanonicalArea || "").trim())
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b)),
+    [areaMappings]
+  );
+
   const handleCategoryRequestAction = async (
     request: CategoryApplication,
     action: "approve_category_request" | "reject_category_request"
@@ -782,6 +869,56 @@ export default function AdminDashboardPage() {
       setPendingProviderActions((current) => {
         const next = { ...current };
         delete next[providerId];
+        return next;
+      });
+    }
+  };
+
+  const handleProviderApprovalAction = async (
+    provider: AdminProvider,
+    action: "approve" | "reject"
+  ) => {
+    const providerId = String(provider.ProviderID || "").trim();
+    if (!providerId) return;
+
+    const nextVerified = action === "approve" ? "yes" : "no";
+    const actionKey = `${action}:${providerId}`;
+
+    clearFeedback();
+    setPendingProviderActions((current) => ({ ...current, [actionKey]: true }));
+
+    try {
+      const res = await fetch("/api/kk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "set_provider_verified",
+          providerId,
+          verified: nextVerified,
+        }),
+      });
+      const data = (await res.json()) as { ok?: boolean; error?: string };
+
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || "Failed to update");
+      }
+
+      setProviders((current) => {
+        const nextProviders = current.map((item) =>
+          String(item.ProviderID || "").trim() === providerId
+            ? { ...item, Verified: nextVerified, PendingApproval: "no" }
+            : item
+        );
+        recalculateStats(nextProviders, categoryApplications);
+        return nextProviders;
+      });
+      showFeedback("success", "Action completed successfully");
+    } catch {
+      showFeedback("error", "Failed to update");
+    } finally {
+      setPendingProviderActions((current) => {
+        const next = { ...current };
+        delete next[actionKey];
         return next;
       });
     }
@@ -1008,7 +1145,7 @@ export default function AdminDashboardPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          action: "add_area_alias",
+          action: "admin_add_area_alias",
           aliasName,
           canonicalArea,
         }),
@@ -1019,9 +1156,115 @@ export default function AdminDashboardPage() {
         throw new Error(data.error || "Failed to update");
       }
 
-      await fetchAreaMappings();
+      void refreshAreaAdminState();
       setAliasAreaName("");
       setAliasInputValue("");
+      setExpandedAreas((current) => ({ ...current, [canonicalArea]: true }));
+      showFeedback("success", "Action completed successfully");
+    } catch {
+      showFeedback("error", "Failed to update");
+    } finally {
+      setPendingManagementActions((current) => {
+        const next = { ...current };
+        delete next[actionKey];
+        return next;
+      });
+    }
+  };
+
+  const handleUpdateAreaAlias = async (oldAliasName: string, currentCanonicalArea: string) => {
+    const newAliasName = String(editingAliasValue || "").trim();
+    const canonicalArea = String(editingAliasCanonicalArea || currentCanonicalArea || "").trim();
+    if (!oldAliasName || !newAliasName || !canonicalArea) return;
+
+    const actionKey = `edit-alias:${oldAliasName}`;
+    let pendingCleared = false;
+    const clearPendingAction = () => {
+      pendingCleared = true;
+      setPendingManagementActions((current) => {
+        const next = { ...current };
+        delete next[actionKey];
+        return next;
+      });
+    };
+    clearFeedback();
+    if (aliasSaveTimeoutRef.current) {
+      clearTimeout(aliasSaveTimeoutRef.current);
+      aliasSaveTimeoutRef.current = null;
+    }
+    setAliasSaveStatus("saving");
+    setPendingManagementActions((current) => ({ ...current, [actionKey]: true }));
+
+    try {
+      const res = await fetch("/api/kk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "admin_update_area_alias",
+          oldAliasName,
+          newAliasName,
+          canonicalArea,
+        }),
+      });
+      const data = (await res.json()) as { ok?: boolean; error?: string };
+
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || "Failed to update");
+      }
+
+      clearPendingAction();
+      setExpandedAreas((current) => ({ ...current, [canonicalArea]: true }));
+      showFeedback("success", "Action completed successfully");
+      setAliasSaveStatus("saved");
+      // Delay refresh to allow "Saved" state to be visible for 800ms
+      setTimeout(async () => {
+        await refreshAreaAdminState();
+      }, 800);
+      aliasSaveTimeoutRef.current = setTimeout(() => {
+        setEditingAliasId("");
+        setEditingAliasValue("");
+        setEditingAliasCanonicalArea("");
+        setAliasSaveStatus("idle");
+        aliasSaveTimeoutRef.current = null;
+      }, 1400);
+    } catch {
+      setAliasSaveStatus("idle");
+      showFeedback("error", "Failed to update");
+    } finally {
+      if (!pendingCleared) {
+        clearPendingAction();
+      }
+    }
+  };
+
+  const handleToggleAreaAlias = async (
+    aliasName: string,
+    canonicalArea: string,
+    nextActive: "yes" | "no"
+  ) => {
+    if (!aliasName) return;
+
+    const actionKey = `toggle-alias:${aliasName}`;
+    clearFeedback();
+    setPendingManagementActions((current) => ({ ...current, [actionKey]: true }));
+
+    try {
+      const res = await fetch("/api/kk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "admin_toggle_area_alias",
+          aliasName,
+          active: nextActive,
+        }),
+      });
+      const data = (await res.json()) as { ok?: boolean; error?: string };
+
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || "Failed to update");
+      }
+
+      await refreshAreaAdminState();
       setExpandedAreas((current) => ({ ...current, [canonicalArea]: true }));
       showFeedback("success", "Action completed successfully");
     } catch {
@@ -1063,6 +1306,128 @@ export default function AdminDashboardPage() {
       setMergeCanonicalArea("");
       setMergeSourceArea("");
       setExpandedAreas((current) => ({ ...current, [canonicalArea]: true }));
+      showFeedback("success", "Action completed successfully");
+    } catch {
+      showFeedback("error", "Failed to update");
+    } finally {
+      setPendingManagementActions((current) => {
+        const next = { ...current };
+        delete next[actionKey];
+        return next;
+      });
+    }
+  };
+
+  const handleMapUnmappedArea = async (review: UnmappedAreaReview) => {
+    const reviewId = String(review.ReviewID || "").trim();
+    const rawArea = String(review.RawArea || "").trim();
+    const canonicalArea = String(reviewTargetAreas[reviewId] || "").trim();
+    if (!reviewId || !rawArea || !canonicalArea) return;
+
+    const actionKey = `map-review:${reviewId}`;
+    clearFeedback();
+    setPendingManagementActions((current) => ({ ...current, [actionKey]: true }));
+
+    try {
+      const res = await fetch("/api/kk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "admin_map_unmapped_area",
+          reviewId,
+          rawArea,
+          canonicalArea,
+        }),
+      });
+      const data = (await res.json()) as { ok?: boolean; error?: string };
+
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || "Failed to update");
+      }
+
+      await refreshAreaAdminState();
+      setReviewTargetAreas((current) => {
+        const next = { ...current };
+        delete next[reviewId];
+        return next;
+      });
+      setExpandedAreas((current) => ({ ...current, [canonicalArea]: true }));
+      showFeedback("success", "Action completed successfully");
+    } catch {
+      showFeedback("error", "Failed to update");
+    } finally {
+      setPendingManagementActions((current) => {
+        const next = { ...current };
+        delete next[actionKey];
+        return next;
+      });
+    }
+  };
+
+  const handleCreateAreaFromUnmapped = async (review: UnmappedAreaReview) => {
+    const reviewId = String(review.ReviewID || "").trim();
+    const rawArea = String(review.RawArea || "").trim();
+    if (!reviewId || !rawArea) return;
+
+    const actionKey = `create-review-area:${reviewId}`;
+    clearFeedback();
+    setPendingManagementActions((current) => ({ ...current, [actionKey]: true }));
+
+    try {
+      const res = await fetch("/api/kk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "admin_create_area_from_unmapped",
+          reviewId,
+          rawArea,
+        }),
+      });
+      const data = (await res.json()) as { ok?: boolean; error?: string };
+
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || "Failed to update");
+      }
+
+      await refreshAreaAdminState();
+      setExpandedAreas((current) => ({ ...current, [rawArea]: true }));
+      showFeedback("success", "Action completed successfully");
+    } catch {
+      showFeedback("error", "Failed to update");
+    } finally {
+      setPendingManagementActions((current) => {
+        const next = { ...current };
+        delete next[actionKey];
+        return next;
+      });
+    }
+  };
+
+  const handleResolveUnmappedArea = async (review: UnmappedAreaReview) => {
+    const reviewId = String(review.ReviewID || "").trim();
+    if (!reviewId) return;
+
+    const actionKey = `resolve-review:${reviewId}`;
+    clearFeedback();
+    setPendingManagementActions((current) => ({ ...current, [actionKey]: true }));
+
+    try {
+      const res = await fetch("/api/kk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "admin_resolve_unmapped_area",
+          reviewId,
+          resolvedCanonicalArea: review.ResolvedCanonicalArea || "",
+        }),
+      });
+      const data = (await res.json()) as { ok?: boolean; error?: string };
+
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || "Failed to update");
+      }
+
+      await fetchUnmappedAreas();
       showFeedback("success", "Action completed successfully");
     } catch {
       showFeedback("error", "Failed to update");
@@ -1306,7 +1671,7 @@ export default function AdminDashboardPage() {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="min-w-0 space-y-6">
       <div>
         <p className="text-xs uppercase tracking-wide text-slate-500">
           Admin Dashboard
@@ -1614,6 +1979,10 @@ export default function AdminDashboardPage() {
                 const isUpdating = Boolean(pendingProviderActions[providerId]);
                 const isVerified =
                   String(provider.Verified || "").trim().toLowerCase() === "yes";
+                const isPendingApproval =
+                  String(provider.PendingApproval || "").trim().toLowerCase() === "yes";
+                const isApproving = Boolean(pendingProviderActions[`approve:${providerId}`]);
+                const isRejecting = Boolean(pendingProviderActions[`reject:${providerId}`]);
 
                 return (
                 <tr key={provider.ProviderID || provider.Phone}>
@@ -1645,16 +2014,37 @@ export default function AdminDashboardPage() {
                     </span>
                   </td>
                   <td className="px-4 py-3">
-                    <div className="flex justify-end">
-                      <button
-                        type="button"
-                        disabled={isUpdating || !providerId}
-                        onClick={() => void handleProviderVerification(provider)}
-                        className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
-                      >
-                        {isUpdating ? "Updating..." : isVerified ? "Unverify" : "Verify"}
-                      </button>
-                    </div>
+                    {isPendingApproval ? (
+                      <div className="flex justify-end gap-2">
+                        <button
+                          type="button"
+                          disabled={isApproving || isRejecting || !providerId}
+                          onClick={() => void handleProviderApprovalAction(provider, "approve")}
+                          className="rounded-lg border border-emerald-300 px-3 py-1.5 text-xs font-medium text-emerald-700 transition hover:bg-emerald-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                        >
+                          {isApproving ? "Updating..." : "Approve"}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isApproving || isRejecting || !providerId}
+                          onClick={() => void handleProviderApprovalAction(provider, "reject")}
+                          className="rounded-lg border border-rose-300 px-3 py-1.5 text-xs font-medium text-rose-700 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                        >
+                          {isRejecting ? "Updating..." : "Reject"}
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex justify-end">
+                        <button
+                          type="button"
+                          disabled={isUpdating || !providerId}
+                          onClick={() => void handleProviderVerification(provider)}
+                          className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                        >
+                          {isUpdating ? "Updating..." : isVerified ? "Unverify" : "Verify"}
+                        </button>
+                      </div>
+                    )}
                   </td>
                 </tr>
                 );
@@ -1895,6 +2285,7 @@ export default function AdminDashboardPage() {
               ) : null}
               {areaMappings.map((area) => {
                 const areaName = String(area.CanonicalArea || "").trim();
+                const areaRowKey = getAreaManagementRowKey(areaName);
                 const isEditing = editingAreaName === areaName;
                 const editKey = `edit-area:${areaName}`;
                 const aliasKey = `add-alias:${areaName}`;
@@ -1904,8 +2295,8 @@ export default function AdminDashboardPage() {
                 const previewAliases = area.Aliases.slice(0, 3).map((item) => item.AliasName).join(", ");
 
                 return (
-                  <>
-                    <tr key={areaName}>
+                  <Fragment key={`area-fragment:${areaRowKey}`}>
+                    <tr key={`area-row:${areaRowKey}`}>
                       <td className="px-4 py-3">
                         {isEditing ? (
                           <input
@@ -2015,39 +2406,138 @@ export default function AdminDashboardPage() {
                       </td>
                     </tr>
                     {isExpanded ? (
-                      <tr key={`${areaName}-aliases`} className="bg-slate-50/60">
+                      <tr key={`area-aliases:${areaRowKey}`} className="bg-slate-50/60">
                         <td colSpan={4} className="px-4 py-4">
-                          <div className="grid gap-4 lg:grid-cols-3">
-                            <div className="rounded-xl border border-slate-200 bg-white p-4">
-                              <p className="text-sm font-semibold text-slate-900">Aliases</p>
-                              <div className="mt-3 flex flex-wrap gap-2">
-                                {area.Aliases.length ? (
-                                  area.Aliases.map((alias) => {
-                                    const aliasActive =
-                                      String(alias.Active || "yes").trim().toLowerCase() === "yes";
-                                    return (
-                                      <span
-                                        key={`${areaName}-${alias.AliasName}`}
-                                        className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium ${
-                                          aliasActive
-                                            ? "border-sky-200 bg-sky-50 text-sky-700"
-                                            : "border-slate-200 bg-slate-100 text-slate-700"
-                                        }`}
-                                      >
-                                        {alias.AliasName}
-                                      </span>
-                                    );
-                                  })
-                                ) : (
-                                  <p className="text-sm text-slate-500">No aliases mapped.</p>
-                                )}
-                              </div>
-                            </div>
+                            <div className="grid gap-4 lg:grid-cols-3">
+                              <div className="rounded-xl border border-slate-200 bg-white p-4">
+                                <p className="text-sm font-semibold text-slate-900">Aliases</p>
+                                <div className="mt-3 space-y-3">
+                                  {area.Aliases.length ? (
+                                    area.Aliases.map((alias) => {
+                                      const aliasNameValue = String(alias.AliasName || "").trim();
+                                      const aliasId = `${areaName}::${aliasNameValue}`;
+                                      const aliasEditKey = `edit-alias:${aliasNameValue}`;
+                                      const aliasToggleKey = `toggle-alias:${aliasNameValue}`;
+                                      const aliasActive =
+                                        String(alias.Active || "yes").trim().toLowerCase() === "yes";
+                                      const isAliasEditing = editingAliasId === aliasId;
 
-                            <div className="rounded-xl border border-slate-200 bg-white p-4">
-                              <p className="text-sm font-semibold text-slate-900">Add Alias</p>
-                              <div className="mt-3 space-y-3">
-                                <input
+                                      return (
+                                        <div
+                                          key={aliasId}
+                                          className="rounded-lg border border-slate-200 bg-slate-50 p-3"
+                                        >
+                                          {isAliasEditing ? (
+                                            <div className="space-y-3">
+                                              <input
+                                                value={editingAliasValue}
+                                                onChange={(event) => setEditingAliasValue(event.target.value)}
+                                                placeholder="Alias name"
+                                                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none focus:border-slate-500"
+                                              />
+                                              <input
+                                                list="admin-area-canonical-options"
+                                                value={editingAliasCanonicalArea}
+                                                onChange={(event) =>
+                                                  setEditingAliasCanonicalArea(event.target.value)
+                                                }
+                                                placeholder="Canonical area"
+                                                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none focus:border-slate-500"
+                                              />
+                                              <div className="flex gap-2">
+                                                <button
+                                                  type="button"
+                                                  disabled={aliasSaveStatus === "saving"}
+                                                  onClick={() =>
+                                                    void handleUpdateAreaAlias(aliasNameValue, areaName)
+                                                  }
+                                                  className="rounded-lg border border-emerald-200 px-3 py-2 text-sm font-medium text-emerald-700 transition hover:bg-emerald-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                                                >
+                                                  {aliasSaveStatus === "saving"
+                                                    ? "Saving..."
+                                                    : aliasSaveStatus === "saved"
+                                                      ? "Saved"
+                                                      : "Save"}
+                                                </button>
+                                                <button
+                                                  type="button"
+                                                  onClick={() => {
+                                                    if (aliasSaveTimeoutRef.current) {
+                                                      clearTimeout(aliasSaveTimeoutRef.current);
+                                                      aliasSaveTimeoutRef.current = null;
+                                                    }
+                                                    setEditingAliasId("");
+                                                    setEditingAliasValue("");
+                                                    setEditingAliasCanonicalArea("");
+                                                    setAliasSaveStatus("idle");
+                                                  }}
+                                                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                                                >
+                                                  Cancel
+                                                </button>
+                                              </div>
+                                            </div>
+                                          ) : (
+                                            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                              <div>
+                                                <p className="text-sm font-medium text-slate-900">
+                                                  {aliasNameValue}
+                                                </p>
+                                                <p className="text-xs text-slate-500">
+                                                  {aliasActive ? "active alias" : "inactive alias"}
+                                                </p>
+                                              </div>
+                                              <div className="flex flex-wrap gap-2">
+                                                <button
+                                                  type="button"
+                                                  onClick={() => {
+                                                    if (aliasSaveTimeoutRef.current) {
+                                                      clearTimeout(aliasSaveTimeoutRef.current);
+                                                      aliasSaveTimeoutRef.current = null;
+                                                    }
+                                                    setEditingAliasId(aliasId);
+                                                    setEditingAliasValue(aliasNameValue);
+                                                    setEditingAliasCanonicalArea(areaName);
+                                                    setAliasSaveStatus("idle");
+                                                  }}
+                                                  className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+                                                >
+                                                  Edit
+                                                </button>
+                                                <button
+                                                  type="button"
+                                                  disabled={Boolean(pendingManagementActions[aliasToggleKey])}
+                                                  onClick={() =>
+                                                    void handleToggleAreaAlias(
+                                                      aliasNameValue,
+                                                      areaName,
+                                                      aliasActive ? "no" : "yes"
+                                                    )
+                                                  }
+                                                  className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                                                >
+                                                  {pendingManagementActions[aliasToggleKey]
+                                                    ? "Saving..."
+                                                    : aliasActive
+                                                      ? "Deactivate"
+                                                      : "Reactivate"}
+                                                </button>
+                                              </div>
+                                            </div>
+                                          )}
+                                        </div>
+                                      );
+                                    })
+                                  ) : (
+                                    <p className="text-sm text-slate-500">No aliases mapped.</p>
+                                  )}
+                                </div>
+                              </div>
+
+                              <div className="rounded-xl border border-slate-200 bg-white p-4">
+                                <p className="text-sm font-semibold text-slate-900">Add Alias</p>
+                                <div className="mt-3 space-y-3">
+                                  <input
                                   value={aliasAreaName === areaName ? aliasInputValue : ""}
                                   onChange={(event) => {
                                     setAliasAreaName(areaName);
@@ -2127,11 +2617,118 @@ export default function AdminDashboardPage() {
                         </td>
                       </tr>
                     ) : null}
-                  </>
+                  </Fragment>
                 );
               })}
             </tbody>
           </table>
+        </div>
+        <datalist id="admin-area-canonical-options">
+          {canonicalAreaOptions.map((option) => (
+            <option key={option} value={option} />
+          ))}
+        </datalist>
+        <div className="border-t border-slate-200 px-5 py-4">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <h3 className="text-base font-semibold text-slate-900">Unmapped Area Review</h3>
+              <p className="mt-1 text-sm text-slate-500">
+                Review raw areas seen in live submissions that do not match a canonical area or alias.
+              </p>
+            </div>
+            <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700">
+              {unmappedAreas.length} pending
+            </span>
+          </div>
+          <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-200 bg-white">
+            <table className="min-w-full text-left">
+              <thead className="bg-slate-50 text-xs uppercase text-slate-500">
+                <tr>
+                  <th className="px-4 py-3 font-semibold">Raw Area</th>
+                  <th className="px-4 py-3 font-semibold">Seen</th>
+                  <th className="px-4 py-3 font-semibold">Source</th>
+                  <th className="px-4 py-3 font-semibold">Map To</th>
+                  <th className="px-4 py-3 font-semibold text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 text-sm text-slate-800">
+                {!loading && unmappedAreas.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="px-4 py-6 text-center text-slate-500">
+                      No unmapped areas pending review.
+                    </td>
+                  </tr>
+                ) : null}
+                {unmappedAreas.map((review) => {
+                  const reviewId = String(review.ReviewID || "").trim();
+                  const mapKey = `map-review:${reviewId}`;
+                  const createKey = `create-review-area:${reviewId}`;
+                  const resolveKey = `resolve-review:${reviewId}`;
+                  return (
+                    <tr key={reviewId}>
+                      <td className="px-4 py-3">
+                        <p className="font-medium text-slate-900">{review.RawArea || "-"}</p>
+                        <p className="text-xs text-slate-500">ID: {reviewId || "-"}</p>
+                      </td>
+                      <td className="px-4 py-3">
+                        <p>{review.Occurrences || 0}x</p>
+                        <p className="text-xs text-slate-500">{formatDateTime(review.LastSeenAt)}</p>
+                      </td>
+                      <td className="px-4 py-3">
+                        <p>{review.SourceType || "-"}</p>
+                        <p className="text-xs text-slate-500">{review.SourceRef || "-"}</p>
+                      </td>
+                      <td className="px-4 py-3">
+                        <input
+                          list="admin-area-canonical-options"
+                          value={reviewTargetAreas[reviewId] ?? ""}
+                          onChange={(event) =>
+                            setReviewTargetAreas((current) => ({
+                              ...current,
+                              [reviewId]: event.target.value,
+                            }))
+                          }
+                          placeholder="Select canonical area"
+                          className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none focus:border-slate-500"
+                        />
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex justify-end gap-2">
+                          <button
+                            type="button"
+                            disabled={
+                              !String(reviewTargetAreas[reviewId] || "").trim() ||
+                              Boolean(pendingManagementActions[mapKey])
+                            }
+                            onClick={() => void handleMapUnmappedArea(review)}
+                            className="rounded-lg border border-emerald-200 px-3 py-1.5 text-xs font-medium text-emerald-700 transition hover:bg-emerald-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                          >
+                            {pendingManagementActions[mapKey] ? "Saving..." : "Map"}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={Boolean(pendingManagementActions[createKey])}
+                            onClick={() => void handleCreateAreaFromUnmapped(review)}
+                            className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                          >
+                            {pendingManagementActions[createKey] ? "Saving..." : "Create Area"}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={Boolean(pendingManagementActions[resolveKey])}
+                            onClick={() => void handleResolveUnmappedArea(review)}
+                            className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                          >
+                            {pendingManagementActions[resolveKey] ? "Saving..." : "Mark Resolved"}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       </AccordionSection>
 

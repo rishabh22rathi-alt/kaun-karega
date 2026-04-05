@@ -23,6 +23,7 @@ function transferRawToProviders_(rawSheetName, category) {
 
   // Existing phone lookup (Providers col C)
   const existingPhones = new Set();
+  const providerHeaders = providerData[0] || [];
   for (let i = 1; i < providerData.length; i++) {
     const p = providerData[i][2];
     if (p) existingPhones.add(p.toString().trim());
@@ -77,14 +78,20 @@ function transferRawToProviders_(rawSheetName, category) {
     lastId++;
     const providerId = "PR-" + String(lastId).padStart(4, "0");
 
-    providerSheet.appendRow([
-      providerId,     // A
-      name,           // B
-      phone,          // C
-      category,       // D
-      area,           // E
-      "no"            // F Verified default
-    ]);
+    const providerRow = providerHeaders.map(function (header) {
+      const normalizedHeader = String(header || "").trim().toLowerCase().replace(/\s+/g, "");
+      if (normalizedHeader === "providerid" || normalizedHeader === "id") return providerId;
+      if (normalizedHeader === "providername" || normalizedHeader === "name") return name;
+      if (normalizedHeader === "phone") return phone;
+      if (normalizedHeader === "category" || normalizedHeader === "categories") return category;
+      if (normalizedHeader === "areas" || normalizedHeader === "area") return area;
+      if (normalizedHeader === "verified" || normalizedHeader === "isverified") return "no";
+      if (normalizedHeader === "otpverified" || normalizedHeader === "phoneverified") return "no";
+      if (normalizedHeader === "pendingapproval") return "no";
+      return "";
+    });
+
+    providerSheet.appendRow(providerRow);
 
     existingPhones.add(phone);
     added++;

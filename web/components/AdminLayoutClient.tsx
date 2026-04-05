@@ -20,11 +20,22 @@ export default function AdminLayoutClient({
 }: AdminLayoutClientProps) {
   const pathname = usePathname();
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isDesktop, setIsDesktop] = useState(false);
   const [loading, setLoading] = useState(true);
   const [name, setName] = useState("Admin");
   const [role, setRole] = useState("admin");
   const [permissions, setPermissions] = useState<string[]>([]);
   const isLoginRoute = pathname === "/admin/login";
+  const sidebarWidthClass = isDesktop ? (isSidebarCollapsed ? "md:ml-20" : "md:ml-72") : "";
+
+  const redirectToLogin = () => {
+    const nextPath =
+      typeof window !== "undefined"
+        ? `${window.location.pathname}${window.location.search}`
+        : pathname || "/admin/dashboard";
+    window.location.href = `/login?next=${encodeURIComponent(nextPath)}`;
+  };
 
   useEffect(() => {
     if (isLoginRoute) {
@@ -44,7 +55,7 @@ export default function AdminLayoutClient({
         : null;
 
       if (parsed?.isAdmin !== true) {
-        window.location.href = "/otp?next=/admin/dashboard";
+        redirectToLogin();
         return;
       }
 
@@ -52,18 +63,42 @@ export default function AdminLayoutClient({
       setRole(typeof parsed.role === "string" && parsed.role ? parsed.role : "admin");
       setPermissions(Array.isArray(parsed.permissions) ? (parsed.permissions as string[]) : []);
     } catch {
-      window.location.href = "/otp?next=/admin/dashboard";
+      redirectToLogin();
       return;
     } finally {
       setLoading(false);
     }
-  }, [isLoginRoute]);
+  }, [isLoginRoute, pathname]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const mediaQuery = window.matchMedia("(min-width: 1024px)");
+    const applyLayoutState = (matches: boolean) => {
+      setIsDesktop(matches);
+      setIsSidebarCollapsed(!matches);
+      setIsSidebarOpen(false);
+    };
+
+    applyLayoutState(mediaQuery.matches);
+    const handleChange = (event: MediaQueryListEvent) => applyLayoutState(event.matches);
+    mediaQuery.addEventListener("change", handleChange);
+    return () => mediaQuery.removeEventListener("change", handleChange);
+  }, []);
 
   const handleLogout = () => {
     localStorage.removeItem("kk_admin_session");
     document.cookie = "kk_auth_session=; Max-Age=0; Path=/; SameSite=Lax";
     document.cookie = "kk_admin=; Max-Age=0; Path=/; SameSite=Lax";
-    window.location.href = "/otp?next=/admin/dashboard";
+    redirectToLogin();
+  };
+
+  const handleSidebarToggle = () => {
+    if (isDesktop) {
+      setIsSidebarCollapsed((current) => !current);
+      return;
+    }
+    setIsSidebarOpen((current) => !current);
   };
 
   if (loading) {
@@ -80,16 +115,23 @@ export default function AdminLayoutClient({
         name={name}
         role={role}
         onLogout={handleLogout}
-        onMenuToggle={() => setIsSidebarOpen(true)}
+        onMenuToggle={handleSidebarToggle}
+        isSidebarCollapsed={isSidebarCollapsed}
+        isDesktop={isDesktop}
       />
 
-      <div className="flex pt-16">
+      <div className="flex min-h-[calc(100vh-4rem)] pt-16">
         <AdminSidebar
           isOpen={isSidebarOpen}
           onClose={() => setIsSidebarOpen(false)}
           permissions={permissions}
+          isCollapsed={isSidebarCollapsed}
+          isDesktop={isDesktop}
+          onCollapseToggle={() => setIsSidebarCollapsed((current) => !current)}
         />
-        <main className="flex-1 p-4 md:ml-72 md:p-8">{children}</main>
+        <main className={`min-w-0 flex-1 overflow-x-auto p-4 transition-[margin] duration-200 md:p-6 xl:p-8 ${sidebarWidthClass}`}>
+          <div className="mx-auto w-full max-w-none">{children}</div>
+        </main>
       </div>
     </div>
   );

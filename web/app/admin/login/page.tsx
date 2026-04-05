@@ -1,14 +1,16 @@
 "use client";
 
 import { useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 export default function AdminLoginPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
 
   useEffect(() => {
-    router.replace("/otp?next=/admin/dashboard");
-  }, [router]);
+    const nextPath = searchParams.get("next") || "/admin/dashboard";
+    router.replace(`/login?next=${encodeURIComponent(nextPath)}`);
+  }, [router, searchParams]);
 
   return null;
 }

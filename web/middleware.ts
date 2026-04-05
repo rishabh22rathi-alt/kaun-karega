@@ -11,7 +11,7 @@ import { getAuthSession } from "@/lib/auth";
  * /admin/login is excluded so the login page is always reachable.
  */
 export function middleware(request: NextRequest) {
-  const { pathname } = request.nextUrl;
+  const { pathname, search } = request.nextUrl;
 
   // Only guard /admin/* — and always allow /admin/login through
   if (!pathname.startsWith("/admin") || pathname === "/admin/login") {
@@ -23,7 +23,9 @@ export function middleware(request: NextRequest) {
   const adminCookie = request.cookies.get("kk_admin")?.value;
 
   if (!session?.phone || adminCookie !== "1") {
-    return NextResponse.redirect(new URL("/admin/login", request.url));
+    const loginUrl = new URL("/login", request.url);
+    loginUrl.searchParams.set("next", `${pathname}${search}`);
+    return NextResponse.redirect(loginUrl);
   }
 
   return NextResponse.next();

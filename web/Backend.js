@@ -80,16 +80,16 @@ function doGet(e) {
     return json_(debug_providerServices_headers_());
   }
 
-  if (action === "get_admin_dashboard_stats") {
+  if (action === "get_admin_dashboard_stats" || action === "admin_get_dashboard") {
     return json_(getAdminDashboardStats_());
   }
 
-  if (action === "admin_notification_logs") {
+  if (action === "admin_notification_logs" || action === "admin_get_notification_logs") {
     const limit = Math.min(parseInt(e.parameter.limit || "20", 10) || 20, 100);
     return json_({ ok: true, status: "success", logs: getRecentNotificationLogs_(limit) });
   }
 
-  if (action === "admin_notification_summary") {
+  if (action === "admin_notification_summary" || action === "admin_get_notification_summary") {
     const taskId = (e.parameter.taskId || "").trim();
     return json_({
       ok: true,
@@ -221,64 +221,134 @@ function doPost(e) {
         return json_(getAdminByPhone_(String(data.phone || "").trim()));
 
       case "get_admin_dashboard_stats":
+      case "admin_get_dashboard":
         return json_(getAdminDashboardStats_());
 
-      case "admin_notification_logs": {
+      case "admin_notification_logs":
+      case "admin_get_notification_logs": {
         const limit = Math.min(parseInt(data.limit || "20", 10) || 20, 100);
         return json_({ ok: true, status: "success", logs: getRecentNotificationLogs_(limit) });
       }
 
       case "admin_notification_summary":
+      case "admin_get_notification_summary":
         return json_({
           ok: true,
           status: "success",
           summary: getNotificationSummaryByTask_(String(data.taskId || "").trim()),
         });
 
+      case "admin_get_providers":
+        return json_({ ok: true, status: "success", providers: getAdminProviders_() });
+
+      case "admin_get_provider":
+        return json_(getAdminProviderById_(data));
+
+      case "admin_get_category_requests":
+        return json_({
+          ok: true,
+          status: "success",
+          categoryApplications: getAdminCategoryApplications_(),
+        });
+
+      case "admin_get_categories":
+        return json_({ ok: true, status: "success", categories: getAdminCategories_() });
+
       case "approve_category_request":
+      case "admin_approve_category":
         return json_(approveCategoryRequest_(data));
 
       case "reject_category_request":
+      case "admin_reject_category":
         return json_(rejectCategoryRequest_(data));
 
       case "set_provider_verified":
+      case "admin_verify_provider":
         return json_(setProviderVerified_(data));
 
       case "add_category":
+      case "admin_add_category":
         return json_(addCategory_(data));
 
       case "edit_category":
+      case "admin_edit_category":
         return json_(editCategory_(data));
 
       case "toggle_category":
+      case "admin_toggle_category":
         return json_(toggleCategory_(data));
 
       case "add_area":
+      case "admin_add_area":
         return json_(addArea_(data));
 
       case "edit_area":
+      case "admin_edit_area":
         return json_(editArea_(data));
 
       case "add_area_alias":
+      case "admin_add_area_alias":
         return json_(addAreaAlias_(data));
 
+      case "admin_update_area_alias":
+        return json_(updateAreaAlias_(data));
+
+      case "admin_toggle_area_alias":
+        return json_(toggleAreaAlias_(data));
+
       case "merge_area_into_canonical":
+      case "admin_merge_area_into_canonical":
         return json_(mergeAreaIntoCanonical_(data));
 
       case "get_admin_area_mappings":
+      case "admin_get_area_mappings":
         return json_(getAdminAreaMappingsResponse_());
 
+      case "admin_get_unmapped_areas":
+        return json_(getAdminUnmappedAreasResponse_());
+
+      case "admin_map_unmapped_area":
+        return json_(mapUnmappedAreaReview_(data));
+
+      case "admin_create_area_from_unmapped":
+        return json_(createAreaFromReview_(data));
+
+      case "admin_resolve_unmapped_area":
+        return json_(resolveUnmappedAreaReview_(data));
+
       case "get_admin_requests":
+      case "admin_get_requests":
         return json_(getAdminRequests_(data));
 
       case "remind_providers":
+      case "admin_remind_providers":
         return json_(remindProviders_(data));
 
       case "assign_provider":
+      case "admin_assign_provider":
         return json_(assignProvider_(data));
 
       case "close_request":
+      case "admin_close_request":
         return json_(closeRequest_(data));
+
+      case "admin_update_provider":
+        return json_(updateAdminProvider_(data));
+
+      case "admin_set_provider_blocked":
+        return json_(setAdminProviderBlocked_(data));
+
+      case "admin_get_team_members":
+        return json_(getAdminTeamMembers_());
+
+      case "admin_add_team_member":
+        return json_(addAdminTeamMember_(data));
+
+      case "admin_update_team_member":
+        return json_(updateAdminTeamMember_(data));
+
+      case "admin_delete_team_member":
+        return json_(deleteAdminTeamMember_(data));
 
       case "chat_create_or_get_thread":
         return json_(chatCreateOrGetThread_(data));

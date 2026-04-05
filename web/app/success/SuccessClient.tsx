@@ -71,11 +71,34 @@ export default function SuccessClient({
     () => getTaskDisplayLabel({ TaskID: taskId, DisplayID: displayId }, taskId),
     [displayId, taskId]
   );
+  const notificationStatusMessage = useMemo(() => {
+    if (notificationStatus === "queued" || notificationStatus === "processing") {
+      return "Notifying nearby service providers...";
+    }
+    if (notificationStatus === "done") {
+      return "Nearby service providers have been informed.";
+    }
+    if (notificationStatus === "error") {
+      return "We could not notify providers right now. Please try again shortly.";
+    }
+    return "";
+  }, [notificationStatus]);
 
   useEffect(() => {
     if (!taskId || triggerStartedRef.current) return;
 
+    const storageKey = `kk_notified_${taskId}`;
+    if (sessionStorage.getItem(storageKey)) {
+      console.log(
+        "[success] notification skipped, already triggered for task",
+        taskId
+      );
+      return;
+    }
+
     triggerStartedRef.current = true;
+    sessionStorage.setItem(storageKey, "1");
+    console.log("[success] notification trigger allowed for task", taskId);
     setNotificationStatus("queued");
 
     const timer = window.setTimeout(async () => {
@@ -176,9 +199,23 @@ export default function SuccessClient({
         </h1>
 
         <p className="mx-auto mt-3 max-w-lg text-sm text-slate-600 md:text-base">
-          Congratulations! Your task has been successfully posted. We are now
-          informing nearby service providers.
+          Congratulations! Your task has been successfully posted.
+          {taskId ? " We are now informing nearby service providers." : ""}
         </p>
+
+        {notificationStatusMessage ? (
+          <p
+            className={`mx-auto mt-2 max-w-lg text-xs md:text-sm ${
+              notificationStatus === "error"
+                ? "text-red-600"
+                : notificationStatus === "done"
+                  ? "text-emerald-700"
+                  : "text-slate-500"
+            }`}
+          >
+            {notificationStatusMessage}
+          </p>
+        ) : null}
 
         {taskDisplayLabel ? (
           <p className="mx-auto mt-4 inline-flex rounded-full bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-800">

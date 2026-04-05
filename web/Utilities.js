@@ -269,6 +269,36 @@ function isOtpVerifiedProviderValue_(value) {
   return normalizeOtpVerifiedValue_(value) === "yes";
 }
 
+function parseProviderVerificationTimestampGas_(value) {
+  var raw = String(value || "").trim();
+  if (!raw) return NaN;
+
+  var direct = new Date(raw).getTime();
+  if (!isNaN(direct)) return direct;
+
+  var normalized = raw.replace(",", "");
+  var normalizedDirect = new Date(normalized).getTime();
+  if (!isNaN(normalizedDirect)) return normalizedDirect;
+
+  var match = normalized.match(
+    /^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(am|pm)?)?$/i
+  );
+  if (!match) return NaN;
+
+  var day = Number(match[1]);
+  var monthIndex = Number(match[2]) - 1;
+  var year = Number(match[3]);
+  var hours = Number(match[4] || 0);
+  var minutes = Number(match[5] || 0);
+  var seconds = Number(match[6] || 0);
+  var meridiem = String(match[7] || "").trim().toLowerCase();
+
+  if (meridiem === "pm" && hours < 12) hours += 12;
+  if (meridiem === "am" && hours === 12) hours = 0;
+
+  return new Date(year, monthIndex, day, hours, minutes, seconds).getTime();
+}
+
 // Returns true if the provider's OTP verification is still within the 30-day window.
 // Transition rule: if otpVerifiedAt is blank, treat as valid (legacy provider not yet re-verified).
 // Once OtpVerifiedAt is written by a new OTP login, the 30-day expiry is enforced from that point.
@@ -276,10 +306,10 @@ function isOtpStillValidGas_(otpVerified, otpVerifiedAt) {
   if (normalizeOtpVerifiedValue_(otpVerified) !== "yes") return false;
   var at = String(otpVerifiedAt || "").trim();
   if (!at) return true; // transition: legacy provider, no OtpVerifiedAt written yet
-  var parsed = new Date(at);
-  if (isNaN(parsed.getTime())) return false;
+  var parsedTime = parseProviderVerificationTimestampGas_(at);
+  if (isNaN(parsedTime)) return false;
   var thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
-  return (new Date() - parsed) <= thirtyDaysMs;
+  return Date.now() - parsedTime <= thirtyDaysMs;
 }
 
 // Full verified badge rule (GAS):

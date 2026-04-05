@@ -333,7 +333,8 @@ function createNeed_(data) {
     isAnonymousRaw !== undefined && String(isAnonymousRaw || "").trim() !== "";
   var isAnonymous = normalizeNeedBoolean_(isAnonymousRaw);
   var category = String(data.Category || data.category || "").trim();
-  var area = resolveCanonicalAreaName_(data.Area || data.area || "");
+  var rawArea = String(data.Area || data.area || "").trim();
+  var area = resolveCanonicalAreaName_(rawArea);
   var title = String(data.Title || data.title || "").trim();
   var description = String(data.Description || data.description || "").trim();
   var validDays = normalizeNeedValidDays_(
@@ -359,6 +360,14 @@ function createNeed_(data) {
   var needId = getNextNeedId_();
   var now = getNeedTimestamp_();
   var expiresAt = addDaysToNeedTimestamp_(now, validDays);
+
+  if (rawArea && !isKnownAreaName_(rawArea)) {
+    queueAreaReviewItemSafe_(rawArea, {
+      sourceType: "need",
+      sourceRef: needId,
+    });
+  }
+
   var row = new Array(state.headers.length).fill("");
 
   if (state.idxNeedId >= 0) row[state.idxNeedId] = needId;
