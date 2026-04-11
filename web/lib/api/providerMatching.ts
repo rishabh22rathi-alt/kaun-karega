@@ -19,7 +19,7 @@ const clean = (value: string) => (value || "").trim().replace(/\s+/g, " ");
 
 function getAppsScriptUrl() {
   const scriptUrlRaw =
-    process.env.APPS_SCRIPT_URL || process.env.NEXT_PUBLIC_APPS_SCRIPT_URL || "";
+    process.env.APPS_SCRIPT_URL || "";
   return scriptUrlRaw.trim().replace(/\/$/, "");
 }
 

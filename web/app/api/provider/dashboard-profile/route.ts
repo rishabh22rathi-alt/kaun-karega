@@ -4,7 +4,7 @@ import { getAuthSession } from "@/lib/auth";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-const APPS_SCRIPT_URL = process.env.NEXT_PUBLIC_APPS_SCRIPT_URL;
+const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_URL;
 
 function normalizePhone10(value: string): string {
   const digits = String(value || "").replace(/\D/g, "");

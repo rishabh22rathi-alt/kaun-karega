@@ -38,6 +38,8 @@ function SuccessPageContent() {
   const taskId = (sp.get("taskId") || "").trim();
   const displayId = (sp.get("displayId") || "").trim();
   const userPhone = (sp.get("userPhone") || "").trim();
+  const status = (sp.get("status") || "").trim();
+  const requestRef = (sp.get("ref") || "").trim();
 
   return (
     <div className="min-h-screen bg-slate-50 px-4 py-8">
@@ -54,6 +56,8 @@ function SuccessPageContent() {
           taskId={taskId}
           displayId={displayId}
           userPhone={userPhone}
+          status={status}
+          requestRef={requestRef}
         />
       </div>
     </div>

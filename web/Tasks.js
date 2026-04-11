@@ -8,11 +8,12 @@ function getTasksSheet_() {
   return sh;
 }
 
-function sendProviderLeadNotificationViaMeta_(payload) {
+function sendWhatsAppTemplateViaMeta_(payload) {
   const props = PropertiesService.getScriptProperties();
   const token = String(
     props.getProperty("META_WA_TOKEN") ||
       props.getProperty("META_WA_ACCESS_TOKEN") ||
+      props.getProperty("WHATSAPP_ACCESS_TOKEN") ||
       ""
   ).trim();
   const phoneNumberId = String(
@@ -20,19 +21,46 @@ function sendProviderLeadNotificationViaMeta_(payload) {
       props.getProperty("META_WA_PHONE_ID") ||
       ""
   ).trim();
-  const templateName = String(
-    props.getProperty("META_WA_PROVIDER_LEAD_TEMPLATE") ||
-      props.getProperty("META_WA_TEMPLATE") ||
-      "provider_new_lead"
-  ).trim();
-  const languageCode = String(props.getProperty("META_WA_LANG") || "en_US").trim();
+  const languageCode = String(payload.LanguageCode || props.getProperty("META_WA_LANG") || "en_US").trim();
+  const templateName = String(payload.TemplateName || "").trim();
+  const phoneDigits = String(payload.Phone || "").replace(/\D/g, "");
+  let toPhone = phoneDigits;
+  if (toPhone.indexOf("91") === 0 && toPhone.length > 10) {
+    toPhone = toPhone.substring(2);
+  }
+  if (toPhone.length === 10) {
+    toPhone = "91" + toPhone;
+  }
 
   if (!token) throw new Error("Missing WhatsApp token");
   if (!phoneNumberId) throw new Error("Missing WhatsApp phone number id");
+  if (!templateName) throw new Error("Missing WhatsApp template name");
+  if (!toPhone || !/^91[6-9]\d{9}$/.test(toPhone)) {
+    return {
+      ok: false,
+      status: "failed",
+      statusCode: "",
+      messageId: "",
+      errorMessage: "Invalid WhatsApp mobile number",
+      responseText: "Invalid WhatsApp mobile number",
+      response: "Invalid WhatsApp mobile number",
+      data: null,
+      templateName: templateName,
+    };
+  }
 
-  const phoneDigits = String(payload.Phone || "").replace(/\D/g, "");
-  const toPhone = phoneDigits.length === 10 ? "91" + phoneDigits : phoneDigits;
-  if (!toPhone) throw new Error("Invalid phone number");
+  const components = [];
+  if (Array.isArray(payload.BodyParameters) && payload.BodyParameters.length) {
+    components.push({
+      type: "body",
+      parameters: payload.BodyParameters,
+    });
+  }
+  if (Array.isArray(payload.ButtonParameters) && payload.ButtonParameters.length) {
+    for (let i = 0; i < payload.ButtonParameters.length; i++) {
+      components.push(payload.ButtonParameters[i]);
+    }
+  }
 
   const response = UrlFetchApp.fetch(
     "https://graph.facebook.com/v21.0/" + phoneNumberId + "/messages",
@@ -52,32 +80,117 @@ function sendProviderLeadNotificationViaMeta_(payload) {
           language: {
             code: languageCode,
           },
-          components: [
-            {
-              type: "body",
-              parameters: [
-                { type: "text", text: String(payload.Category || "").trim() || "-" },
-                { type: "text", text: String(payload.Area || "").trim() || "-" },
-                { type: "text", text: String(payload.RequiredLabel || "").trim() || "-" },
-              ],
-            },
-          ],
+          components: components,
         },
       }),
     }
   );
 
   const statusCode = response.getResponseCode();
-  const bodyText = response.getContentText() || "";
-  if (statusCode >= 200 && statusCode < 300) {
+  const responseText = response.getContentText() || "";
+  let data = null;
+  let messageId = "";
+  let errorMessage = "";
+
+  try {
+    data = JSON.parse(responseText);
+  } catch (err) {
+    data = null;
+  }
+
+  if (
+    data &&
+    data.messages &&
+    data.messages.length &&
+    data.messages[0] &&
+    data.messages[0].id
+  ) {
+    messageId = String(data.messages[0].id).trim();
+  }
+
+  if (data && data.error && data.error.message) {
+    errorMessage = String(data.error.message).trim();
+  }
+
+  return {
+    ok: statusCode >= 200 && statusCode < 300 && !(data && data.error),
+    status:
+      statusCode >= 200 && statusCode < 300 && !(data && data.error)
+        ? "accepted"
+        : data && data.error
+          ? "failed"
+          : "error",
+    statusCode: statusCode,
+    messageId: messageId,
+    errorMessage: errorMessage,
+    responseText: responseText,
+    response: responseText,
+    data: data,
+    templateName: templateName,
+  };
+}
+
+function sendProviderLeadNotificationViaMeta_(payload) {
+  const props = PropertiesService.getScriptProperties();
+  const templateName = String(
+    props.getProperty("META_WA_PROVIDER_LEAD_TEMPLATE") ||
+      props.getProperty("META_WA_TEMPLATE") ||
+      "provider_new_lead"
+  ).trim();
+  const languageCode = String(props.getProperty("META_WA_LANG") || "en_US").trim();
+  const sendResult = sendWhatsAppTemplateViaMeta_({
+    Phone: payload.Phone,
+    TemplateName: templateName,
+    LanguageCode: languageCode,
+    BodyParameters: [
+      { type: "text", text: String(payload.Category || "").trim() || "-" },
+      { type: "text", text: String(payload.Area || "").trim() || "-" },
+      { type: "text", text: String(payload.RequiredLabel || "").trim() || "-" },
+    ],
+    ButtonParameters: [],
+  });
+
+  if (sendResult.ok) {
     return {
       ok: true,
       templateName: templateName,
-      response: bodyText,
+      response: sendResult.response,
     };
   }
 
-  throw new Error(bodyText || "WhatsApp API returned HTTP " + statusCode);
+  throw new Error(sendResult.responseText || "WhatsApp API returned HTTP " + sendResult.statusCode);
+}
+
+function sendUserFirstProviderMessageNotification_(userPhone, displayId, threadId) {
+  const templateName = "user_chat_first_provider_message";
+  const sendResult = sendWhatsAppTemplateViaMeta_({
+    Phone: userPhone,
+    TemplateName: templateName,
+    LanguageCode: "en_US",
+    BodyParameters: [
+      { type: "text", text: String(displayId || "").trim() || "-" },
+    ],
+    ButtonParameters: [
+      {
+        type: "button",
+        sub_type: "url",
+        index: "0",
+        parameters: [
+          { type: "text", text: String(threadId || "").trim() },
+        ],
+      },
+    ],
+  });
+
+  if (sendResult.ok) {
+    return {
+      ok: true,
+      templateName: templateName,
+      response: sendResult.response,
+    };
+  }
+
+  throw new Error(sendResult.responseText || "WhatsApp API returned HTTP " + sendResult.statusCode);
 }
 
 function formatTaskServiceDateForDisplay_(value) {
@@ -667,9 +780,10 @@ function processTaskNotifications_(data) {
 
     const notificationsCompletedMs = Date.now();
     const now = new Date();
+    const nextTaskStatus = matchedProviders.length > 0 ? "notified" : "no_providers_matched";
     updateAdminTaskRow_(taskId, {
-      Status: "notified",
-      notified_at: now,
+      Status: nextTaskStatus,
+      notified_at: matchedProviders.length > 0 ? now : "",
     });
 
     Logger.log(
@@ -695,7 +809,10 @@ function processTaskNotifications_(data) {
       matchedProviders: matchedProviders.length,
       attemptedSends: attemptedSends,
       failedSends: failedSends,
-      message: "Provider notifications processed.",
+      message:
+        matchedProviders.length > 0
+          ? "Provider notifications processed."
+          : "No providers matched for this task.",
     };
   } finally {
     lock.releaseLock();

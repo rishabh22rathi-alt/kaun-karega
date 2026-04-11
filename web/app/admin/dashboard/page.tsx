@@ -2,7 +2,9 @@
 
 import Link from "next/link";
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { getAuthSession } from "@/lib/auth";
 import { getTaskDisplayLabel } from "@/lib/taskDisplay";
+import { getTaskStatusLabel } from "@/lib/taskStatus";
 
 type DashboardStats = {
   totalProviders: number;
@@ -13,11 +15,15 @@ type DashboardStats = {
 
 type CategoryApplication = {
   RequestID: string;
+  ProviderID?: string;
   ProviderName: string;
   Phone: string;
   RequestedCategory: string;
   Status: string;
   CreatedAt: string;
+  AdminActionBy?: string;
+  AdminActionAt?: string;
+  AdminActionReason?: string;
 };
 
 type AdminProvider = {
@@ -105,6 +111,40 @@ type AdminRequestMetrics = {
   needsAttentionCount: number;
 };
 
+type AdminChatThread = {
+  ThreadID: string;
+  TaskID: string;
+  DisplayID?: string;
+  UserPhone: string;
+  UserPhoneMasked?: string;
+  ProviderID: string;
+  ProviderName?: string;
+  LastMessagePreview?: string;
+  LastMessageAt: string;
+  LastMessageBy?: string;
+  ThreadStatus: string;
+  ModerationReason?: string;
+  LastModeratedAt?: string;
+  LastModeratedBy?: string;
+  CreatedAt?: string;
+  UpdatedAt?: string;
+};
+
+type AdminChatMessage = {
+  MessageID: string;
+  ThreadID: string;
+  TaskID: string;
+  SenderType: string;
+  SenderName?: string;
+  SenderPhone?: string;
+  MessageText: string;
+  MessageType: string;
+  CreatedAt: string;
+  ModerationStatus?: string;
+  FlagReason?: string;
+  ContainsBlockedWord?: string;
+};
+
 type AdminDashboardResponse = {
   ok?: boolean;
   stats?: Partial<DashboardStats>;
@@ -119,6 +159,19 @@ type AdminRequestsResponse = {
   ok?: boolean;
   requests?: AdminRequest[];
   metrics?: Partial<AdminRequestMetrics>;
+  error?: string;
+};
+
+type AdminChatThreadsResponse = {
+  ok?: boolean;
+  threads?: AdminChatThread[];
+  error?: string;
+};
+
+type AdminChatThreadDetailResponse = {
+  ok?: boolean;
+  thread?: AdminChatThread;
+  messages?: AdminChatMessage[];
   error?: string;
 };
 
@@ -174,6 +227,27 @@ type AdminNotificationSummaryResponse = {
   error?: string;
 };
 
+type IssueReport = {
+  IssueID: string;
+  CreatedAt: string;
+  ReporterRole: string;
+  ReporterPhone: string;
+  ReporterName?: string;
+  IssueType: string;
+  IssuePage: string;
+  Description: string;
+  Status: string;
+  Priority?: string;
+  AdminNotes?: string;
+  ResolvedAt?: string;
+};
+
+type AdminIssueReportsResponse = {
+  ok?: boolean;
+  reports?: IssueReport[];
+  error?: string;
+};
+
 type ActionState = Record<string, boolean>;
 
 type DashboardSectionKey =
@@ -181,11 +255,13 @@ type DashboardSectionKey =
   | "providers"
   | "categoriesManagement"
   | "areasManagement"
+  | "reportedIssues"
   | "urgentRequests"
   | "priorityRequests"
   | "sameDayRequests"
   | "flexibleRequests"
-  | "needsAttention";
+  | "needsAttention"
+  | "chatMonitoring";
 
 type AccordionSectionProps = {
   sectionKey: DashboardSectionKey;
@@ -270,7 +346,11 @@ export default function AdminDashboardPage() {
   const [areaMappings, setAreaMappings] = useState<ManagedAreaMapping[]>([]);
   const [unmappedAreas, setUnmappedAreas] = useState<UnmappedAreaReview[]>([]);
   const [requests, setRequests] = useState<AdminRequest[]>([]);
+  const [chatThreads, setChatThreads] = useState<AdminChatThread[]>([]);
+  const [selectedChatThread, setSelectedChatThread] = useState<AdminChatThread | null>(null);
+  const [selectedChatMessages, setSelectedChatMessages] = useState<AdminChatMessage[]>([]);
   const [notificationLogs, setNotificationLogs] = useState<NotificationLog[]>([]);
+  const [issueReports, setIssueReports] = useState<IssueReport[]>([]);
   const [selectedTaskNotificationSummary, setSelectedTaskNotificationSummary] =
     useState<NotificationSummary | null>(null);
   const [loading, setLoading] = useState(true);
@@ -280,6 +360,7 @@ export default function AdminDashboardPage() {
   const [pendingCategoryActions, setPendingCategoryActions] = useState<ActionState>({});
   const [pendingProviderActions, setPendingProviderActions] = useState<ActionState>({});
   const [pendingManagementActions, setPendingManagementActions] = useState<ActionState>({});
+  const [pendingIssueActions, setPendingIssueActions] = useState<ActionState>({});
   const [showAddCategory, setShowAddCategory] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
   const [editingCategoryName, setEditingCategoryName] = useState("");
@@ -299,6 +380,9 @@ export default function AdminDashboardPage() {
   const [mergeSourceArea, setMergeSourceArea] = useState("");
   const [reviewTargetAreas, setReviewTargetAreas] = useState<Record<string, string>>({});
   const [selectedRequestId, setSelectedRequestId] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+  const [chatDetailLoading, setChatDetailLoading] = useState(false);
+  const [chatStatusActionKey, setChatStatusActionKey] = useState("");
   const [assigningTaskId, setAssigningTaskId] = useState("");
   const [assignProviderId, setAssignProviderId] = useState("");
   const [openSections, setOpenSections] = useState<Record<DashboardSectionKey, boolean>>({
@@ -306,11 +390,13 @@ export default function AdminDashboardPage() {
     providers: false,
     categoriesManagement: false,
     areasManagement: false,
+    reportedIssues: false,
     urgentRequests: true,
     priorityRequests: false,
     sameDayRequests: false,
     flexibleRequests: false,
     needsAttention: true,
+    chatMonitoring: false,
   });
   const needsAttentionRef = useRef<HTMLDivElement | null>(null);
   const aliasSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -374,6 +460,15 @@ export default function AdminDashboardPage() {
           new Date(String(a.CreatedAt || "")).getTime()
       );
 
+  const sortIssueReports = (items: IssueReport[]) =>
+    items
+      .slice()
+      .sort(
+        (a, b) =>
+          new Date(String(b.CreatedAt || "")).getTime() -
+          new Date(String(a.CreatedAt || "")).getTime()
+      );
+
   const formatDateTime = (value: string) => {
     if (!value) return "-";
     const date = new Date(value);
@@ -397,6 +492,79 @@ export default function AdminDashboardPage() {
   };
 
   const normalizePhone = (value: string) => String(value || "").replace(/\D/g, "").slice(-10);
+
+  const getAdminActor = () => {
+    const session = getAuthSession();
+    let adminName = "";
+
+    if (typeof window !== "undefined") {
+      try {
+        const raw = window.localStorage.getItem("kk_admin_session");
+        const parsed = raw ? JSON.parse(raw) : null;
+        adminName = String(parsed?.name || "").trim();
+      } catch {
+        adminName = "";
+      }
+    }
+
+    return {
+      AdminActorPhone: normalizePhone(String(session?.phone || "")),
+      AdminActorName: adminName,
+    };
+  };
+
+  const fetchChatThreads = async () => {
+    setChatLoading(true);
+    try {
+      const res = await fetch("/api/kk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "admin_list_chat_threads",
+        }),
+      });
+      const data = (await res.json()) as AdminChatThreadsResponse;
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || "Failed to load chat threads");
+      }
+      const nextThreads = Array.isArray(data.threads) ? data.threads : [];
+      setChatThreads(nextThreads);
+      setSelectedChatThread((current) => {
+        if (!current) return current;
+        return nextThreads.find((item) => item.ThreadID === current.ThreadID) || current;
+      });
+    } catch (err) {
+      showFeedback("error", err instanceof Error ? err.message : "Failed to load chat threads");
+    } finally {
+      setChatLoading(false);
+    }
+  };
+
+  const fetchChatThreadDetail = async (threadId: string) => {
+    if (!threadId) return;
+    setChatDetailLoading(true);
+    try {
+      const res = await fetch("/api/kk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "admin_get_chat_thread",
+          ThreadID: threadId,
+          ...getAdminActor(),
+        }),
+      });
+      const data = (await res.json()) as AdminChatThreadDetailResponse;
+      if (!res.ok || !data.ok || !data.thread) {
+        throw new Error(data.error || "Failed to load chat thread");
+      }
+      setSelectedChatThread(data.thread);
+      setSelectedChatMessages(Array.isArray(data.messages) ? data.messages : []);
+    } catch (err) {
+      showFeedback("error", err instanceof Error ? err.message : "Failed to load chat thread");
+    } finally {
+      setChatDetailLoading(false);
+    }
+  };
 
   const getWaitingToneClass = (minutes: number) => {
     if (minutes > 20) return "bg-red-50";
@@ -475,7 +643,10 @@ export default function AdminDashboardPage() {
     setLoading(true);
     setError("");
     try {
-      const [dashboardRes, requestsRes, areaMappingsRes, unmappedAreasRes, notificationLogsRes] =
+      // Critical fetches — failure here blocks the entire dashboard (correct behaviour).
+      // Non-critical fetches — .catch(() => null) prevents a network-level rejection from
+      // propagating into Promise.all and killing the page for a secondary data source.
+      const [dashboardRes, requestsRes, areaMappingsRes, unmappedAreasRes, chatThreadsRes, issueReportsRes] =
         await Promise.all([
         fetch("/api/admin/stats", { cache: "no-store" }),
         fetch("/api/kk", {
@@ -487,38 +658,30 @@ export default function AdminDashboardPage() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ action: "get_admin_area_mappings" }),
-        }),
+        }).catch(() => null),
         fetch("/api/kk", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ action: "admin_get_unmapped_areas" }),
-        }),
+        }).catch(() => null),
         fetch("/api/kk", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "admin_notification_logs", limit: 25 }),
-        }),
+          body: JSON.stringify({ action: "admin_list_chat_threads" }),
+        }).catch(() => null),
+        fetch("/api/kk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "admin_get_issue_reports" }),
+        }).catch(() => null),
       ]);
       const data = (await dashboardRes.json()) as AdminDashboardResponse;
       const requestsData = (await requestsRes.json()) as AdminRequestsResponse;
-      const areaMappingsData = (await areaMappingsRes.json()) as AdminAreaMappingsResponse;
-      const unmappedAreasData = (await unmappedAreasRes.json()) as AdminUnmappedAreasResponse;
-      const notificationLogsData =
-        (await notificationLogsRes.json()) as AdminNotificationLogsResponse;
       if (!dashboardRes.ok || !data.ok) {
         throw new Error(data.error || "Failed to load admin dashboard");
       }
       if (!requestsRes.ok || !requestsData.ok) {
         throw new Error(requestsData.error || "Failed to load admin requests");
-      }
-      if (!areaMappingsRes.ok || !areaMappingsData.ok) {
-        throw new Error(areaMappingsData.error || "Failed to load area mappings");
-      }
-      if (!unmappedAreasRes.ok || !unmappedAreasData.ok) {
-        throw new Error(unmappedAreasData.error || "Failed to load unmapped areas");
-      }
-      if (!notificationLogsRes.ok || !notificationLogsData.ok) {
-        throw new Error(notificationLogsData.error || "Failed to load notification logs");
       }
 
       setStats({
@@ -532,15 +695,30 @@ export default function AdminDashboardPage() {
         Array.isArray(data.categoryApplications) ? data.categoryApplications : []
       );
       setCategories(sortCategories(Array.isArray(data.categories) ? data.categories : []));
+      setRequests(sortRequests(Array.isArray(requestsData.requests) ? requestsData.requests : []));
+
+      // Area mappings: non-fatal. Network error resolves to null; bad HTTP response treated as empty.
+      const areaMappingsData: AdminAreaMappingsResponse =
+        areaMappingsRes?.ok ? await areaMappingsRes.json().catch(() => ({})) : {};
       setAreaMappings(
         sortAreaMappings(Array.isArray(areaMappingsData.mappings) ? areaMappingsData.mappings : [])
       );
+
+      // Unmapped areas: non-fatal. Same degradation pattern.
+      const unmappedAreasData: AdminUnmappedAreasResponse =
+        unmappedAreasRes?.ok ? await unmappedAreasRes.json().catch(() => ({})) : {};
       setUnmappedAreas(
         sortUnmappedAreas(Array.isArray(unmappedAreasData.reviews) ? unmappedAreasData.reviews : [])
       );
-      setRequests(sortRequests(Array.isArray(requestsData.requests) ? requestsData.requests : []));
-      setNotificationLogs(
-        Array.isArray(notificationLogsData.logs) ? notificationLogsData.logs : []
+
+      const chatThreadsData: AdminChatThreadsResponse =
+        chatThreadsRes?.ok ? await chatThreadsRes.json().catch(() => ({})) : {};
+      setChatThreads(Array.isArray(chatThreadsData.threads) ? chatThreadsData.threads : []);
+
+      const issueReportsData: AdminIssueReportsResponse =
+        issueReportsRes?.ok ? await issueReportsRes.json().catch(() => ({})) : {};
+      setIssueReports(
+        sortIssueReports(Array.isArray(issueReportsData.reports) ? issueReportsData.reports : [])
       );
     } catch (err) {
       setError(
@@ -548,6 +726,24 @@ export default function AdminDashboardPage() {
       );
     } finally {
       setLoading(false);
+    }
+
+    // Notification logs are non-blocking: a failure here degrades only that panel.
+    try {
+      const notificationLogsRes = await fetch("/api/kk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "admin_notification_logs", limit: 25 }),
+      });
+      const notificationLogsData =
+        (await notificationLogsRes.json()) as AdminNotificationLogsResponse;
+      setNotificationLogs(
+        notificationLogsRes.ok && notificationLogsData.ok && Array.isArray(notificationLogsData.logs)
+          ? notificationLogsData.logs
+          : []
+      );
+    } catch {
+      setNotificationLogs([]);
     }
   };
 
@@ -562,6 +758,19 @@ export default function AdminDashboardPage() {
       throw new Error(data.error || "Failed to load admin requests");
     }
     setRequests(sortRequests(Array.isArray(data.requests) ? data.requests : []));
+  };
+
+  const fetchIssueReports = async () => {
+    const res = await fetch("/api/kk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "admin_get_issue_reports" }),
+    });
+    const data = (await res.json()) as AdminIssueReportsResponse;
+    if (!res.ok || !data.ok) {
+      throw new Error(data.error || "Failed to load issue reports");
+    }
+    setIssueReports(sortIssueReports(Array.isArray(data.reports) ? data.reports : []));
   };
 
   const fetchAreaMappings = async () => {
@@ -592,6 +801,48 @@ export default function AdminDashboardPage() {
 
   const refreshAreaAdminState = async () => {
     await Promise.all([fetchAreaMappings(), fetchUnmappedAreas()]);
+  };
+
+  const getIssueStatusClass = (status: string) => {
+    const normalized = String(status || "").trim().toLowerCase();
+    if (normalized === "resolved") return "border-emerald-200 bg-emerald-50 text-emerald-700";
+    if (normalized === "in_progress") return "border-amber-200 bg-amber-50 text-amber-700";
+    return "border-slate-200 bg-slate-100 text-slate-700";
+  };
+
+  const handleIssueStatusUpdate = async (
+    issueId: string,
+    status: "open" | "in_progress" | "resolved"
+  ) => {
+    const actionKey = `${issueId}:${status}`;
+    setPendingIssueActions((current) => ({ ...current, [actionKey]: true }));
+    clearFeedback();
+
+    try {
+      const res = await fetch("/api/kk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "admin_update_issue_report_status",
+          IssueID: issueId,
+          Status: status,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.error || "Failed to update issue status");
+      }
+      await fetchIssueReports();
+      showFeedback("success", "Issue status updated successfully");
+    } catch (err) {
+      showFeedback("error", err instanceof Error ? err.message : "Failed to update issue status");
+    } finally {
+      setPendingIssueActions((current) => {
+        const next = { ...current };
+        delete next[actionKey];
+        return next;
+      });
+    }
   };
 
   useEffect(() => {
@@ -750,6 +1001,26 @@ export default function AdminDashboardPage() {
     [requests]
   );
 
+  // Providers eligible for manual assignment to the task currently being assigned.
+  // Primary: MatchedProviders from backend (already category+area aware).
+  // Fallback: filter by category string equality.
+  const assignableProviders = useMemo(() => {
+    if (!assigningTaskId) return providers;
+    const task = requests.find((r) => String(r.TaskID || "").trim() === assigningTaskId);
+    if (!task) return providers;
+
+    if (Array.isArray(task.MatchedProviders) && task.MatchedProviders.length > 0) {
+      const matchedIds = new Set(task.MatchedProviders.map((id) => String(id || "").trim()));
+      return providers.filter((p) => matchedIds.has(String(p.ProviderID || "").trim()));
+    }
+
+    const taskCategory = String(task.Category || "").trim().toLowerCase();
+    if (!taskCategory) return providers;
+    return providers.filter(
+      (p) => String(p.Category || "").trim().toLowerCase() === taskCategory
+    );
+  }, [assigningTaskId, requests, providers]);
+
   const notificationHealth = useMemo(() => {
     return notificationLogs.reduce(
       (acc, log) => {
@@ -782,13 +1053,31 @@ export default function AdminDashboardPage() {
 
   const handleCategoryRequestAction = async (
     request: CategoryApplication,
-    action: "approve_category_request" | "reject_category_request"
+    action:
+      | "approve_category_request"
+      | "reject_category_request"
+      | "admin_close_category_request"
+      | "admin_archive_category_request"
+      | "admin_delete_category_request_soft"
   ) => {
     const requestId = String(request.RequestID || "").trim();
     if (!requestId) return;
+    const actionKey = `${action}:${requestId}`;
+    const requiresReason = action !== "approve_category_request";
+    const actionLabelMap: Record<string, string> = {
+      approve_category_request: "approve",
+      reject_category_request: "reject",
+      admin_close_category_request: "close",
+      admin_archive_category_request: "archive",
+      admin_delete_category_request_soft: "delete",
+    };
+    const reason = requiresReason
+      ? window.prompt(`Reason required to ${actionLabelMap[action]} request ${requestId}:`, "")?.trim() || ""
+      : "";
+    if (requiresReason && !reason) return;
 
     clearFeedback();
-    setPendingCategoryActions((current) => ({ ...current, [requestId]: true }));
+    setPendingCategoryActions((current) => ({ ...current, [actionKey]: true }));
 
     try {
       const payload =
@@ -797,10 +1086,14 @@ export default function AdminDashboardPage() {
               action,
               requestId,
               categoryName: request.RequestedCategory,
+              ...getAdminActor(),
+              adminActionReason: reason,
             }
           : {
               action,
               requestId,
+              reason,
+              ...getAdminActor(),
             };
 
       const res = await fetch("/api/kk", {
@@ -821,7 +1114,7 @@ export default function AdminDashboardPage() {
     } finally {
       setPendingCategoryActions((current) => {
         const next = { ...current };
-        delete next[requestId];
+        delete next[actionKey];
         return next;
       });
     }
@@ -856,7 +1149,11 @@ export default function AdminDashboardPage() {
       setProviders((current) => {
         const nextProviders = current.map((item) =>
           String(item.ProviderID || "").trim() === providerId
-            ? { ...item, Verified: nextVerified }
+            ? {
+                ...item,
+                Verified: nextVerified,
+                PendingApproval: nextVerified === "yes" ? "no" : item.PendingApproval,
+              }
             : item
         );
         recalculateStats(nextProviders, categoryApplications);
@@ -880,6 +1177,7 @@ export default function AdminDashboardPage() {
   ) => {
     const providerId = String(provider.ProviderID || "").trim();
     if (!providerId) return;
+    if (action === "reject" && !window.confirm(`Reject provider "${provider.ProviderName || providerId}"? They will be marked as unverified.`)) return;
 
     const nextVerified = action === "approve" ? "yes" : "no";
     const actionKey = `${action}:${providerId}`;
@@ -1013,6 +1311,7 @@ export default function AdminDashboardPage() {
     if (!categoryName) return;
 
     const nextActive = String(category.Active || "").trim().toLowerCase() === "yes" ? "no" : "yes";
+    if (nextActive === "no" && !window.confirm(`Disable category "${categoryName}"? This will affect live provider matching.`)) return;
     const actionKey = `toggle-category:${categoryName}`;
     clearFeedback();
     setPendingManagementActions((current) => ({ ...current, [actionKey]: true }));
@@ -1406,6 +1705,7 @@ export default function AdminDashboardPage() {
   const handleResolveUnmappedArea = async (review: UnmappedAreaReview) => {
     const reviewId = String(review.ReviewID || "").trim();
     if (!reviewId) return;
+    if (!window.confirm(`Mark "${review.RawArea}" as resolved? It will be removed from the unmapped area review list.`)) return;
 
     const actionKey = `resolve-review:${reviewId}`;
     clearFeedback();
@@ -1548,6 +1848,49 @@ export default function AdminDashboardPage() {
     }
   };
 
+  const handleChatThreadStatusUpdate = async (
+    thread: AdminChatThread,
+    nextStatus: "active" | "flagged" | "muted" | "locked" | "closed"
+  ) => {
+    const threadId = String(thread.ThreadID || "").trim();
+    if (!threadId) return;
+    const requiresReason = nextStatus === "flagged" || nextStatus === "locked" || nextStatus === "closed";
+    const reason = requiresReason
+      ? window.prompt(`Reason required to mark thread ${threadId} as ${nextStatus}:`, "")?.trim() || ""
+      : "";
+    if (requiresReason && !reason) return;
+
+    const actionKey = `${nextStatus}:${threadId}`;
+    clearFeedback();
+    setChatStatusActionKey(actionKey);
+
+    try {
+      const res = await fetch("/api/kk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "admin_update_chat_thread_status",
+          ThreadID: threadId,
+          ThreadStatus: nextStatus,
+          Reason: reason,
+          ...getAdminActor(),
+        }),
+      });
+      const data = (await res.json()) as AdminChatThreadDetailResponse;
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || "Failed to update chat thread");
+      }
+
+      await fetchChatThreads();
+      await fetchChatThreadDetail(threadId);
+      showFeedback("success", "Chat thread updated successfully");
+    } catch {
+      showFeedback("error", "Failed to update chat thread");
+    } finally {
+      setChatStatusActionKey("");
+    }
+  };
+
   const renderRequestActions = (request: AdminRequest) => {
     const remindKey = `remind:${request.TaskID}`;
     const assignKey = `assign:${request.TaskID}`;
@@ -1566,7 +1909,7 @@ export default function AdminDashboardPage() {
             className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-900"
           >
             <option value="">Select provider</option>
-            {providers.map((provider) => (
+            {assignableProviders.map((provider) => (
               <option key={provider.ProviderID} value={provider.ProviderID}>
                 {provider.ProviderName || provider.ProviderID}
               </option>
@@ -1644,7 +1987,7 @@ export default function AdminDashboardPage() {
     return (
       <div className="flex justify-end gap-2">
         <a
-          href={`/admin/chat?taskId=${encodeURIComponent(request.TaskID)}`}
+          href="/admin/chats"
           className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
         >
           Open Chat
@@ -1743,7 +2086,7 @@ export default function AdminDashboardPage() {
       <AccordionSection
         sectionKey="pendingCategoryRequests"
         title="Pending Category Requests"
-        description="Approve or reject requests inline."
+        description="Approve, reject, close, archive, or soft-delete requests inline."
         count={pendingCategoryApplications.length}
         isOpen={openSections.pendingCategoryRequests}
         onToggle={toggleSection}
@@ -1771,7 +2114,27 @@ export default function AdminDashboardPage() {
               ) : null}
               {pendingCategoryApplications.map((item) => {
                 const requestId = String(item.RequestID || "").trim();
-                const isPending = Boolean(pendingCategoryActions[requestId]);
+                const isApprovePending = Boolean(
+                  pendingCategoryActions[`approve_category_request:${requestId}`]
+                );
+                const isRejectPending = Boolean(
+                  pendingCategoryActions[`reject_category_request:${requestId}`]
+                );
+                const isClosePending = Boolean(
+                  pendingCategoryActions[`admin_close_category_request:${requestId}`]
+                );
+                const isArchivePending = Boolean(
+                  pendingCategoryActions[`admin_archive_category_request:${requestId}`]
+                );
+                const isDeletePending = Boolean(
+                  pendingCategoryActions[`admin_delete_category_request_soft:${requestId}`]
+                );
+                const isPending =
+                  isApprovePending ||
+                  isRejectPending ||
+                  isClosePending ||
+                  isArchivePending ||
+                  isDeletePending;
 
                 return (
                 <tr key={`${item.RequestID}-${item.RequestedCategory}`}>
@@ -1797,7 +2160,7 @@ export default function AdminDashboardPage() {
                         }
                         className="rounded-lg border border-emerald-200 px-3 py-1.5 text-xs font-medium text-emerald-700 transition hover:bg-emerald-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
                       >
-                        {isPending ? "Updating..." : "Approve"}
+                        {isApprovePending ? "Updating..." : "Approve"}
                       </button>
                       <button
                         type="button"
@@ -1807,7 +2170,37 @@ export default function AdminDashboardPage() {
                         }
                         className="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-medium text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
                       >
-                        {isPending ? "Updating..." : "Reject"}
+                        {isRejectPending ? "Updating..." : "Reject"}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isPending}
+                        onClick={() =>
+                          void handleCategoryRequestAction(item, "admin_close_category_request")
+                        }
+                        className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                      >
+                        {isClosePending ? "Updating..." : "Close"}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isPending}
+                        onClick={() =>
+                          void handleCategoryRequestAction(item, "admin_archive_category_request")
+                        }
+                        className="rounded-lg border border-amber-200 px-3 py-1.5 text-xs font-medium text-amber-700 transition hover:bg-amber-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                      >
+                        {isArchivePending ? "Updating..." : "Archive"}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isPending}
+                        onClick={() =>
+                          void handleCategoryRequestAction(item, "admin_delete_category_request_soft")
+                        }
+                        className="rounded-lg border border-rose-200 px-3 py-1.5 text-xs font-medium text-rose-700 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                      >
+                        {isDeletePending ? "Updating..." : "Delete"}
                       </button>
                     </div>
                   </td>
@@ -1874,7 +2267,7 @@ export default function AdminDashboardPage() {
                                 className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-900"
                               >
                                 <option value="">Select provider</option>
-                                {providers.map((provider) => (
+                                {assignableProviders.map((provider) => (
                                   <option key={provider.ProviderID} value={provider.ProviderID}>
                                     {provider.ProviderName || provider.ProviderID}
                                   </option>
@@ -1942,7 +2335,7 @@ export default function AdminDashboardPage() {
         sectionKey="providers"
         title="Providers Needing Attention"
         description="Compact list of providers that currently need admin review."
-        count={providersNeedingAttention.length}
+        count={visibleProvidersNeedingAttention.length}
         isOpen={openSections.providers}
         onToggle={toggleSection}
         headerAction={
@@ -2052,6 +2445,11 @@ export default function AdminDashboardPage() {
             </tbody>
           </table>
         </div>
+        {providersNeedingAttention.length > visibleProvidersNeedingAttention.length ? (
+          <p className="px-5 py-3 text-xs text-slate-500">
+            Showing first {visibleProvidersNeedingAttention.length} of {providersNeedingAttention.length} providers needing attention. Use View All Providers to see the full list.
+          </p>
+        ) : null}
       </AccordionSection>
 
       <AccordionSection
@@ -2732,6 +3130,235 @@ export default function AdminDashboardPage() {
         </div>
       </AccordionSection>
 
+      <AccordionSection
+        sectionKey="reportedIssues"
+        title="Reported Issues"
+        description="Problems reported by logged-in users and providers."
+        count={issueReports.length}
+        isOpen={openSections.reportedIssues}
+        onToggle={toggleSection}
+      >
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-left">
+            <thead className="bg-slate-50 text-xs uppercase text-slate-500">
+              <tr>
+                <th className="px-4 py-3 font-semibold">Date</th>
+                <th className="px-4 py-3 font-semibold">IssueID</th>
+                <th className="px-4 py-3 font-semibold">ReporterRole</th>
+                <th className="px-4 py-3 font-semibold">ReporterPhone</th>
+                <th className="px-4 py-3 font-semibold">IssueType</th>
+                <th className="px-4 py-3 font-semibold">IssuePage</th>
+                <th className="px-4 py-3 font-semibold">Description</th>
+                <th className="px-4 py-3 font-semibold">Status</th>
+                <th className="px-4 py-3 font-semibold text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 text-sm text-slate-800">
+              {!loading && issueReports.length === 0 ? (
+                <tr>
+                  <td colSpan={9} className="px-4 py-6 text-center text-slate-500">
+                    No issue reports submitted yet.
+                  </td>
+                </tr>
+              ) : null}
+              {issueReports.map((item) => {
+                const openKey = `${item.IssueID}:open`;
+                const progressKey = `${item.IssueID}:in_progress`;
+                const resolvedKey = `${item.IssueID}:resolved`;
+                const isPending =
+                  Boolean(pendingIssueActions[openKey]) ||
+                  Boolean(pendingIssueActions[progressKey]) ||
+                  Boolean(pendingIssueActions[resolvedKey]);
+
+                return (
+                  <tr key={item.IssueID}>
+                    <td className="px-4 py-3">{formatDateTime(item.CreatedAt)}</td>
+                    <td className="px-4 py-3 font-medium text-slate-900">{item.IssueID}</td>
+                    <td className="px-4 py-3">{item.ReporterRole || "-"}</td>
+                    <td className="px-4 py-3">{item.ReporterPhone || "-"}</td>
+                    <td className="px-4 py-3">{item.IssueType || "-"}</td>
+                    <td className="px-4 py-3">{item.IssuePage || "-"}</td>
+                    <td className="max-w-[320px] px-4 py-3">
+                      <p className="line-clamp-3 whitespace-pre-wrap" title={item.Description || ""}>
+                        {item.Description || "-"}
+                      </p>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${getIssueStatusClass(
+                          item.Status
+                        )}`}
+                      >
+                        {item.Status || "open"}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex justify-end gap-2">
+                        <button
+                          type="button"
+                          disabled={isPending}
+                          onClick={() => void handleIssueStatusUpdate(item.IssueID, "open")}
+                          className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                        >
+                          {pendingIssueActions[openKey] ? "Updating..." : "Mark Open"}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isPending}
+                          onClick={() => void handleIssueStatusUpdate(item.IssueID, "in_progress")}
+                          className="rounded-lg border border-amber-200 px-3 py-1.5 text-xs font-medium text-amber-700 transition hover:bg-amber-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                        >
+                          {pendingIssueActions[progressKey] ? "Updating..." : "In Progress"}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isPending}
+                          onClick={() => void handleIssueStatusUpdate(item.IssueID, "resolved")}
+                          className="rounded-lg border border-emerald-200 px-3 py-1.5 text-xs font-medium text-emerald-700 transition hover:bg-emerald-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                        >
+                          {pendingIssueActions[resolvedKey] ? "Updating..." : "Mark Resolved"}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </AccordionSection>
+
+      <AccordionSection
+        sectionKey="chatMonitoring"
+        title="Chat Monitoring"
+        description="Inspect chat threads in read-only mode and apply moderation status updates."
+        count={chatThreads.length}
+        isOpen={openSections.chatMonitoring}
+        onToggle={toggleSection}
+        headerAction={
+          <button
+            type="button"
+            onClick={() => void fetchChatThreads()}
+            className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+          >
+            {chatLoading ? "Refreshing..." : "Refresh"}
+          </button>
+        }
+      >
+        <div className="grid gap-5 p-5 xl:grid-cols-[1.15fr,0.85fr]">
+          <div className="overflow-x-auto rounded-2xl border border-slate-200">
+            <table className="min-w-full text-left">
+              <thead className="bg-slate-50 text-xs uppercase text-slate-500">
+                <tr>
+                  <th className="px-4 py-3 font-semibold">ThreadID</th>
+                  <th className="px-4 py-3 font-semibold">Kaam</th>
+                  <th className="px-4 py-3 font-semibold">User</th>
+                  <th className="px-4 py-3 font-semibold">Provider</th>
+                  <th className="px-4 py-3 font-semibold">Last Message</th>
+                  <th className="px-4 py-3 font-semibold">Last Time</th>
+                  <th className="px-4 py-3 font-semibold">Status</th>
+                  <th className="px-4 py-3 font-semibold text-right">Open</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 text-sm text-slate-800">
+                {!chatLoading && chatThreads.length === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="px-4 py-6 text-center text-slate-500">
+                      No chat threads found.
+                    </td>
+                  </tr>
+                ) : null}
+                {chatThreads.map((thread) => (
+                  <tr
+                    key={thread.ThreadID}
+                    className={selectedChatThread?.ThreadID === thread.ThreadID ? "bg-sky-50/60" : ""}
+                  >
+                    <td className="px-4 py-3 font-medium text-slate-900">{thread.ThreadID}</td>
+                    <td className="px-4 py-3">{getTaskDisplayLabel(thread, thread.TaskID)}</td>
+                    <td className="px-4 py-3">{thread.UserPhoneMasked || "-"}</td>
+                    <td className="px-4 py-3">{thread.ProviderName || thread.ProviderID || "-"}</td>
+                    <td className="max-w-[220px] truncate px-4 py-3" title={thread.LastMessagePreview || ""}>
+                      {thread.LastMessagePreview || "-"}
+                    </td>
+                    <td className="px-4 py-3">{formatDateTime(thread.LastMessageAt || "")}</td>
+                    <td className="px-4 py-3">
+                      <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700">
+                        {thread.ThreadStatus || "active"}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <button
+                        type="button"
+                        onClick={() => void fetchChatThreadDetail(thread.ThreadID)}
+                        className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+                      >
+                        Open
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            {!selectedChatThread ? (
+              <p className="text-sm text-slate-500">
+                Open a thread to inspect the full conversation and apply moderation status changes.
+              </p>
+            ) : chatDetailLoading ? (
+              <p className="text-sm text-slate-500">Loading thread detail...</p>
+            ) : (
+              <div className="space-y-4">
+                <div className="space-y-2 text-sm text-slate-700">
+                  <p><span className="font-semibold text-slate-900">ThreadID:</span> {selectedChatThread.ThreadID}</p>
+                  <p><span className="font-semibold text-slate-900">Kaam:</span> {getTaskDisplayLabel(selectedChatThread, selectedChatThread.TaskID)}</p>
+                  <p><span className="font-semibold text-slate-900">User:</span> {selectedChatThread.UserPhoneMasked || "-"}</p>
+                  <p><span className="font-semibold text-slate-900">Provider:</span> {selectedChatThread.ProviderName || selectedChatThread.ProviderID || "-"}</p>
+                  <p><span className="font-semibold text-slate-900">Status:</span> {selectedChatThread.ThreadStatus || "active"}</p>
+                  <p><span className="font-semibold text-slate-900">Moderation Note:</span> {selectedChatThread.ModerationReason || "-"}</p>
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  {(["active", "flagged", "muted", "locked", "closed"] as const).map((statusOption) => {
+                    const actionKey = `${statusOption}:${selectedChatThread.ThreadID}`;
+                    return (
+                      <button
+                        key={statusOption}
+                        type="button"
+                        disabled={chatStatusActionKey === actionKey}
+                        onClick={() => void handleChatThreadStatusUpdate(selectedChatThread, statusOption)}
+                        className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                      >
+                        {chatStatusActionKey === actionKey ? "Saving..." : statusOption}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="max-h-[420px] space-y-3 overflow-y-auto rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                  {selectedChatMessages.length === 0 ? (
+                    <p className="text-sm text-slate-500">No messages in this thread.</p>
+                  ) : (
+                    selectedChatMessages.map((message) => (
+                      <div key={message.MessageID} className="rounded-xl border border-slate-200 bg-white p-3 text-sm">
+                        <div className="flex items-center justify-between gap-3 text-xs text-slate-500">
+                          <span className="font-semibold uppercase tracking-wide text-slate-700">
+                            {message.SenderType || "-"}
+                          </span>
+                          <span>{formatDateTime(message.CreatedAt)}</span>
+                        </div>
+                        <p className="mt-2 whitespace-pre-wrap text-slate-800">{message.MessageText || "-"}</p>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </AccordionSection>
+
       <section className="space-y-6">
         <div>
           <h2 className="text-xl font-semibold text-slate-900">Notification Health</h2>
@@ -2938,21 +3565,23 @@ export default function AdminDashboardPage() {
               </div>
               <div className="flex flex-wrap gap-2">
                 <a
-                  href={`/admin/chat?taskId=${encodeURIComponent(selectedRequest.TaskID)}`}
+                  href="/admin/chats"
                   className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
                 >
                   Open Chat
                 </a>
-                <button
-                  type="button"
-                  disabled={Boolean(pendingManagementActions[`close:${selectedRequest.TaskID}`])}
-                  onClick={() => void handleCloseRequest(selectedRequest.TaskID)}
-                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
-                >
-                  {pendingManagementActions[`close:${selectedRequest.TaskID}`]
-                    ? "Closing..."
-                    : "Close Request"}
-                </button>
+                {(selectedRequest.Status === "RESPONDED" || selectedRequest.Status === "ASSIGNED") ? (
+                  <button
+                    type="button"
+                    disabled={Boolean(pendingManagementActions[`close:${selectedRequest.TaskID}`])}
+                    onClick={() => void handleCloseRequest(selectedRequest.TaskID)}
+                    className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                  >
+                    {pendingManagementActions[`close:${selectedRequest.TaskID}`]
+                      ? "Closing..."
+                      : "Close Request"}
+                  </button>
+                ) : null}
               </div>
             </div>
             <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -2966,7 +3595,7 @@ export default function AdminDashboardPage() {
               </div>
               <div className="rounded-xl bg-slate-50 px-4 py-3 text-sm text-slate-700">
                 <p className="font-semibold text-slate-900">Status</p>
-                <p>{selectedRequest.Status || "-"}</p>
+                <p>{getTaskStatusLabel(selectedRequest.Status)}</p>
               </div>
               <div className="rounded-xl bg-slate-50 px-4 py-3 text-sm text-slate-700">
                 <p className="font-semibold text-slate-900">User Phone</p>
@@ -3064,7 +3693,7 @@ export default function AdminDashboardPage() {
                       </td>
                       <td className="px-4 py-3">{request.Category || "-"}</td>
                       <td className="px-4 py-3">{request.Area || "-"}</td>
-                      <td className="px-4 py-3">{request.Status || "-"}</td>
+                      <td className="px-4 py-3">{getTaskStatusLabel(request.Status)}</td>
                       <td className="px-4 py-3">
                         <div className="flex flex-col gap-2">
                           <span

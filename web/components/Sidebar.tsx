@@ -8,12 +8,14 @@ import {
   ChevronLeft,
   Home,
   ClipboardList,
+  MessageSquareWarning,
   User,
   LayoutDashboard,
   ShieldCheck,
   LogOut,
   LogIn,
   UserPlus,
+  ListTodo,
 } from "lucide-react";
 import {
   PROVIDER_PROFILE_UPDATED_EVENT,
@@ -23,7 +25,6 @@ import {
 import { clearAuthSession, getAuthSession } from "@/lib/auth";
 import { isProviderVerifiedBadge } from "@/lib/providerPresentation";
 
-const BASE_URL = process.env.NEXT_PUBLIC_APPS_SCRIPT_URL!;
 const PROVIDER_PROFILE_STORAGE_KEY = "kk_provider_profile";
 const ADMIN_SESSION_STORAGE_KEY = "kk_admin_session";
 
@@ -113,15 +114,24 @@ export default function Sidebar() {
   const [providerExists, setProviderExists] = useState<boolean | null>(null);
   const [myNeedsUnreadCount, setMyNeedsUnreadCount] = useState(0);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [iNeedOpen, setINeedOpen] = useState(false);
   const isLoggedIn = Boolean(session?.phone);
   const shouldHide = pathname?.startsWith("/admin");
 
   useEffect(() => {
     const handler = (event: Event) => {
-      const detail = (event as CustomEvent).detail;
+      const detail = (event as CustomEvent<{ type?: string; open?: boolean; close?: boolean }>).detail;
       if (detail?.type === "auth-updated") {
         setSession(getAuthSession());
         setIsAdmin(readAdminSession());
+        return;
+      }
+      if (detail?.open === true) {
+        setIsOpen(true);
+        return;
+      }
+      if (detail?.close === true) {
+        setIsOpen(false);
         return;
       }
       const isDesktop =
@@ -238,21 +248,15 @@ export default function Sidebar() {
     let ignore = false;
     const loadProviderProfile = async () => {
       try {
-        const response = await fetch(
-          `${BASE_URL}?action=get_provider_profile&phone=${encodeURIComponent(phone)}`,
-          { cache: "no-store" }
-        );
+        const response = await fetch("/api/provider/dashboard-profile", { cache: "no-store" });
         const data = (await response.json()) as ProviderProfileResponse;
         if (!ignore && data?.ok && data.provider) {
-          if (process.env.NODE_ENV !== "production") {
-            console.log("[Sidebar provider profile]", data.provider);
-          }
           setProviderProfile(data.provider);
           window.localStorage.setItem(
             PROVIDER_PROFILE_STORAGE_KEY,
             JSON.stringify(data.provider)
           );
-        } else if (!ignore && data?.error === "NOT_FOUND") {
+        } else if (!ignore && response.status === 404) {
           setProviderProfile(null);
           window.localStorage.removeItem(PROVIDER_PROFILE_STORAGE_KEY);
         }
@@ -415,13 +419,14 @@ export default function Sidebar() {
         shellNode.style.removeProperty("--kk-sidebar-width");
       }
     };
-  }, [isCollapsed, shouldHide, isOpen, isLoggedIn]);
+  }, [isCollapsed, shouldHide, isOpen, isLoggedIn, isMobile]);
 
   const navItems: NavItem[] = isLoggedIn
-    ? [
+      ? [
         { label: "Home", href: "/" },
         { label: "My Requests", href: "/dashboard/my-requests" },
         { label: "My Needs", href: "/i-need/my-needs" },
+        { label: "Report an Issue", href: "/report-issue" },
         ...(providerExists === true
           ? [{ label: "Provider Dashboard", href: "/provider/dashboard" }]
           : []),
@@ -472,6 +477,7 @@ export default function Sidebar() {
       Home: Home,
       "My Requests": ClipboardList,
       "My Needs": ClipboardList,
+      "Report an Issue": MessageSquareWarning,
       Profile: User,
       "Provider Dashboard": LayoutDashboard,
       "Admin Dashboard": ShieldCheck,
@@ -486,7 +492,7 @@ export default function Sidebar() {
     <>
       {/* Mobile overlay */}
       <div
-        className={`fixed inset-0 bg-black/40 transition-opacity ${
+        className={`fixed inset-0 z-30 bg-black/40 transition-opacity ${
           isOpen ? "opacity-100" : "pointer-events-none opacity-0"
         }`}
         onClick={() => setIsOpen(false)}
@@ -571,41 +577,88 @@ export default function Sidebar() {
             const Icon = iconByLabel[item.label];
             const showMyNeedsBadge = item.label === "My Needs" && myNeedsUnreadCount > 0;
             return (
-              <Link
-                key={item.href}
-                href={item.href}
-                onClick={() => setIsOpen(false)}
-                className={`flex items-center gap-3 rounded-lg px-3 py-2 font-semibold text-white transition ${
-                  active
-                    ? "bg-white/20 text-white shadow-sm"
-                    : "hover:bg-white/10 hover:text-white"
-                }`}
-              >
-                {Icon && (
-                  <span className="relative inline-flex shrink-0">
-                    <Icon className="h-4 w-4 text-white/90" />
-                    {isCollapsed && showMyNeedsBadge ? (
-                      <span className="absolute -right-2 -top-2 inline-flex min-w-[18px] items-center justify-center rounded-full bg-violet-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
-                        {myNeedsBadgeLabel}
-                      </span>
-                    ) : null}
-                  </span>
+              <div key={item.href}>
+                {item.label === "Home" && (
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => setINeedOpen((v) => !v)}
+                      className="flex w-full items-center gap-3 rounded-lg border-l-4 border-orange-400 bg-orange-100 px-3 py-2 font-semibold text-orange-700 transition hover:bg-orange-200"
+                    >
+                      <ListTodo className="h-4 w-4 shrink-0 text-orange-600" />
+                      {isCollapsed ? (
+                        <span className="sr-only">I NEED</span>
+                      ) : (
+                        <>
+                          <span className="text-sm whitespace-nowrap">I NEED</span>
+                          <ChevronRight
+                            className={`ml-auto h-3.5 w-3.5 text-orange-500 transition-transform duration-200 ${iNeedOpen ? "rotate-90" : ""}`}
+                          />
+                        </>
+                      )}
+                    </button>
+
+                    {iNeedOpen && !isCollapsed && (
+                      <div className="ml-7 mt-0.5 space-y-0.5">
+                        {[
+                          { label: "Naukri", emoji: "💼", category: "Employer" },
+                          { label: "Property", emoji: "🏗️", category: "Property Buyer" },
+                          { label: "Rent", emoji: "🏠", category: "Tenant" },
+                          { label: "Buy / Sell", emoji: "🤝", category: "Vehicle Buyer" },
+                        ].map((needItem) => (
+                          <button
+                            key={needItem.label}
+                            type="button"
+                            onClick={() => {
+                              setIsOpen(false);
+                              router.push(`/i-need?category=${encodeURIComponent(needItem.category)}`);
+                            }}
+                            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-orange-700 transition hover:bg-orange-100"
+                          >
+                            <span>{needItem.emoji}</span>
+                            {needItem.label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 )}
-                {isCollapsed ? (
-                  <span className="sr-only">{item.label}</span>
-                ) : (
-                  <>
-                    <span className="text-sm whitespace-nowrap">
-                      {item.label}
+
+                <Link
+                  href={item.href}
+                  onClick={() => setIsOpen(false)}
+                  className={`flex items-center gap-3 rounded-lg px-3 py-2 font-semibold text-white transition ${
+                    active
+                      ? "bg-white/20 text-white shadow-sm"
+                      : "hover:bg-white/10 hover:text-white"
+                  }`}
+                >
+                  {Icon && (
+                    <span className="relative inline-flex shrink-0">
+                      <Icon className="h-4 w-4 text-white/90" />
+                      {isCollapsed && showMyNeedsBadge ? (
+                        <span className="absolute -right-2 -top-2 inline-flex min-w-[18px] items-center justify-center rounded-full bg-violet-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
+                          {myNeedsBadgeLabel}
+                        </span>
+                      ) : null}
                     </span>
-                    {showMyNeedsBadge ? (
-                      <span className="ml-auto inline-flex min-w-[18px] items-center justify-center rounded-full bg-violet-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
-                        {myNeedsBadgeLabel}
+                  )}
+                  {isCollapsed ? (
+                    <span className="sr-only">{item.label}</span>
+                  ) : (
+                    <>
+                      <span className="text-sm whitespace-nowrap">
+                        {item.label}
                       </span>
-                    ) : null}
-                  </>
-                )}
-              </Link>
+                      {showMyNeedsBadge ? (
+                        <span className="ml-auto inline-flex min-w-[18px] items-center justify-center rounded-full bg-violet-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
+                          {myNeedsBadgeLabel}
+                        </span>
+                      ) : null}
+                    </>
+                  )}
+                </Link>
+              </div>
             );
           })}
           {providerExists === false ? (

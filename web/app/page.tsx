@@ -63,47 +63,6 @@ const MASTER_AREAS = [
   "Mahamandir",
 ];
 
-type CategoryGroup = {
-  title: string;
-  items: { label: string; image: string }[];
-  accent: string;
-};
-
-const CATEGORY_GROUPS: CategoryGroup[] = [
-  {
-    title: "Home Services",
-    items: [
-      { label: "Electrician", image: "/subcategories/home-electrician.svg" },
-      { label: "Plumber", image: "/subcategories/home-plumber.svg" },
-      { label: "Carpenter", image: "/subcategories/home-carpenter.svg" },
-      { label: "Cleaning", image: "/subcategories/home-cleaning.svg" },
-    ],
-    accent: "bg-amber-50",
-  },
-  {
-    title: "Education",
-    items: [
-      { label: "Home Tutor", image: "/subcategories/edu-tutor.svg" },
-      { label: "Play School", image: "/subcategories/edu-play.svg" },
-      { label: "Tuition", image: "/subcategories/edu-tuition.svg" },
-      { label: "Coaching", image: "/subcategories/edu-coaching.svg" },
-    ],
-    accent: "bg-sky-50",
-  },
-  {
-    title: "Repairs & Others",
-    items: [
-      { label: "AC Repair", image: "/subcategories/repair-ac.svg" },
-      { label: "RO Repair", image: "/subcategories/repair-ro.svg" },
-      { label: "Pest Control", image: "/subcategories/repair-pest.svg" },
-      { label: "Painter", image: "/subcategories/repair-paint.svg" },
-    ],
-    accent: "bg-emerald-50",
-  },
-];
-
-const ITEMS_PER_PAGE = 4;
-const ROTATION_INTERVAL_MS = 3500;
 
 function getTodayLocalDateString() {
   const now = new Date();
@@ -126,252 +85,6 @@ function normalizeDateOnly(value: string) {
   return "";
 }
 
-const toGroupKey = (title: string) =>
-  title
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-
-function FeaturedCategoryGrid() {
-  const router = useRouter();
-  const [pageByGroup, setPageByGroup] = useState<Record<string, number>>({});
-  const [pausedGroups, setPausedGroups] = useState<Record<string, boolean>>({});
-  const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const media = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const update = () => setPrefersReducedMotion(media.matches);
-    update();
-    if (media.addEventListener) {
-      media.addEventListener("change", update);
-      return () => media.removeEventListener("change", update);
-    }
-    media.addListener(update);
-    return () => media.removeListener(update);
-  }, []);
-
-  useEffect(() => {
-    if (prefersReducedMotion) return;
-    const intervalId = setInterval(() => {
-      setPageByGroup((prev) => {
-        let changed = false;
-        const next = { ...prev };
-        CATEGORY_GROUPS.forEach((group) => {
-          const groupKey = toGroupKey(group.title);
-          if (pausedGroups[groupKey]) return;
-          const totalPages = Math.max(
-            1,
-            Math.ceil(group.items.length / ITEMS_PER_PAGE)
-          );
-          if (totalPages <= 1) return;
-          const currentPage = prev[groupKey] ?? 0;
-          const nextPage = (currentPage + 1) % totalPages;
-          next[groupKey] = nextPage;
-          changed = true;
-        });
-        return changed ? next : prev;
-      });
-    }, ROTATION_INTERVAL_MS);
-    return () => clearInterval(intervalId);
-  }, [prefersReducedMotion, pausedGroups]);
-
-  const handleManualChange = (
-    groupKey: string,
-    nextPage: number,
-    totalPages: number
-  ) => {
-    if (totalPages <= 1) return;
-    setPageByGroup((prev) => ({ ...prev, [groupKey]: nextPage }));
-  };
-
-  return (
-    <section className="mb-6 w-full">
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
-        {CATEGORY_GROUPS.map((category) => {
-          const groupKey = toGroupKey(category.title);
-          const totalPages = Math.max(
-            1,
-            Math.ceil(category.items.length / ITEMS_PER_PAGE)
-          );
-          const currentPage = (pageByGroup[groupKey] ?? 0) % totalPages;
-          const startIndex = currentPage * ITEMS_PER_PAGE;
-          const featuredItems = category.items.slice(
-            startIndex,
-            startIndex + ITEMS_PER_PAGE
-          );
-
-          return (
-            <div
-              key={category.title}
-              className={`rounded-2xl ${category.accent} p-4 shadow-sm`}
-              onMouseEnter={() =>
-                setPausedGroups((prev) => ({ ...prev, [groupKey]: true }))
-              }
-              onMouseLeave={() =>
-                setPausedGroups((prev) => ({ ...prev, [groupKey]: false }))
-              }
-            >
-              <div className="flex items-center justify-between gap-2">
-                <h3 className="text-sm font-semibold text-slate-900">
-                  {category.title}
-                </h3>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    aria-label={`Previous ${category.title} services`}
-                    disabled={totalPages <= 1}
-                    onClick={() =>
-                      handleManualChange(
-                        groupKey,
-                        (currentPage - 1 + totalPages) % totalPages,
-                        totalPages
-                      )
-                    }
-                    className="flex h-7 w-7 items-center justify-center rounded-full border border-white/60 bg-white/80 text-slate-600 shadow-sm transition hover:text-slate-900 disabled:opacity-40"
-                  >
-                    <svg
-                      width="12"
-                      height="12"
-                      viewBox="0 0 20 20"
-                      fill="none"
-                      aria-hidden="true"
-                    >
-                      <path
-                        d="M12.5 4.5L7 10l5.5 5.5"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                    </svg>
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`Next ${category.title} services`}
-                    disabled={totalPages <= 1}
-                    onClick={() =>
-                      handleManualChange(
-                        groupKey,
-                        (currentPage + 1) % totalPages,
-                        totalPages
-                      )
-                    }
-                    className="flex h-7 w-7 items-center justify-center rounded-full border border-white/60 bg-white/80 text-slate-600 shadow-sm transition hover:text-slate-900 disabled:opacity-40"
-                  >
-                    <svg
-                      width="12"
-                      height="12"
-                      viewBox="0 0 20 20"
-                      fill="none"
-                      aria-hidden="true"
-                    >
-                      <path
-                        d="M7.5 4.5L13 10l-5.5 5.5"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                    </svg>
-                  </button>
-                </div>
-              </div>
-              <ul
-                key={`${groupKey}-${currentPage}`}
-                className={`mt-4 grid grid-cols-2 gap-3 text-xs text-slate-700 ${
-                  prefersReducedMotion ? "" : "featured-fade"
-                }`}
-              >
-                {featuredItems.map((item) => (
-                  <li key={item.label} className="flex flex-col items-center">
-                    <div className="h-12 w-12 rounded-full bg-white/90 p-2 shadow-sm">
-                      <img
-                        src={item.image}
-                        alt={item.label}
-                        className="h-full w-full rounded-full object-cover"
-                      />
-                    </div>
-                    <span className="mt-2 text-center font-medium">
-                      {item.label}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-              <button
-                type="button"
-                className="mt-4 inline-flex text-sm font-semibold text-slate-700 hover:text-slate-900"
-              >
-                View all
-              </button>
-            </div>
-          );
-        })}
-
-        {/* I NEED card */}
-        <div className="relative rounded-2xl bg-violet-500 p-4 shadow-sm">
-          <button
-            type="button"
-            aria-label="Open I NEED"
-            onClick={() => router.push("/i-need")}
-            className="absolute inset-0 z-10 rounded-2xl bg-transparent"
-          >
-            <span className="sr-only">Open I NEED</span>
-          </button>
-          <div className="flex min-h-7 items-center justify-between gap-2">
-            <div>
-              <h3 className="text-sm font-semibold leading-none text-white">I NEED</h3>
-              <p className="mt-0.5 text-[10px] leading-none text-violet-100">Post your need &amp; get responses</p>
-            </div>
-          </div>
-          <ul className="mt-4 grid grid-cols-2 gap-3 text-xs text-white">
-            {[
-              { label: "Naukri", icon: "N" },
-              { label: "Property", icon: "P" },
-              { label: "Rent", icon: "R" },
-              { label: "Buy / Sell", icon: "B/S" },
-            ].map((item) => (
-              <li key={item.label} className="flex flex-col items-center">
-                <div className="h-12 w-12 rounded-full bg-white/15 p-2 shadow-sm ring-1 ring-white/20">
-                  <div className="flex h-full w-full items-center justify-center rounded-full text-sm font-bold text-white">
-                    {item.icon}
-                  </div>
-                </div>
-                <span className="mt-2 text-center font-medium">{item.label}</span>
-              </li>
-            ))}
-          </ul>
-          <button
-            type="button"
-            className="mt-4 inline-flex text-sm font-semibold text-white hover:text-violet-100"
-          >
-            Post or Browse &rarr;
-          </button>
-        </div>
-      </div>
-      <style jsx>{`
-        .featured-fade {
-          animation: featuredFade 260ms ease;
-        }
-        @keyframes featuredFade {
-          from {
-            opacity: 0;
-            transform: translateY(4px);
-          }
-          to {
-            opacity: 1;
-            transform: translateY(0);
-          }
-        }
-        @media (prefers-reduced-motion: reduce) {
-          .featured-fade {
-            animation: none;
-          }
-        }
-      `}</style>
-    </section>
-  );
-}
 
 type CategoryOption = {
   name: string;
@@ -503,9 +216,6 @@ const resolveCategory = (
 };
 
 const TASK_DRAFT_STORAGE_KEY = "kk_task_draft_v1";
-const APPS_SCRIPT_BASE_URL = (process.env.NEXT_PUBLIC_APPS_SCRIPT_URL || "")
-  .trim()
-  .replace(/\/$/, "");
 
 type TaskDraft = {
   category?: string;
@@ -515,12 +225,6 @@ type TaskDraft = {
   serviceDate?: string;
   timeSlot?: string;
   details?: string;
-};
-
-type ServiceStatsResponse = Record<string, unknown>;
-type MatchProvidersResponse = {
-  count?: number;
-  providers?: unknown[];
 };
 
 const saveTaskDraftToSessionStorage = (draft: TaskDraft) => {
@@ -610,13 +314,6 @@ function PageContent() {
   const [selectedCategory, setSelectedCategory] = useState(
     (params.get("category") || "").trim()
   );
-  const [selectedArea, setSelectedArea] = useState("");
-  const [serviceStats, setServiceStats] = useState<ServiceStatsResponse | null>(
-    null
-  );
-  const [matchLoading, setMatchLoading] = useState(false);
-  const [matchCount, setMatchCount] = useState<number | null>(null);
-  const [matchedProviders, setMatchedProviders] = useState<unknown[]>([]);
   const [showOtpModal, setShowOtpModal] = useState(false);
   const [phone, setPhone] = useState("");
   const [otp, setOtp] = useState("");
@@ -631,8 +328,81 @@ function PageContent() {
   const [shakeOtp, setShakeOtp] = useState(false);
   const [isHydrated, setIsHydrated] = useState(false);
   const lastOtpSentAtRef = useRef(0);
-  const statsRequestIdRef = useRef(0);
-  const matchRequestIdRef = useRef(0);
+
+  // ── Typewriter animation ──────────────────────────────────────────────────
+  const TW_HINTS = ["Carpenter", "Plumber", "Electrician", "Mechanic", "Teacher", "Home Tutor", "AC Repair"];
+  const TW_TYPE_MS = 80;
+  const TW_DELETE_MS = 45;
+  const TW_PAUSE_COMPLETE_MS = 1400;
+  const TW_PAUSE_BETWEEN_MS = 380;
+
+  const [twText, setTwText] = useState("");
+  const [twCaretOn, setTwCaretOn] = useState(true);
+  const twTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const twCaretIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const twWordIdx = useRef(0);
+  const twCharIdx = useRef(0);
+  const twPhase = useRef<"typing" | "paused" | "deleting">("typing");
+
+  useEffect(() => {
+    const shouldAnimate = isHydrated && !isCategoryFocused && category === "";
+
+    const stopAll = () => {
+      if (twTimerRef.current) { clearTimeout(twTimerRef.current); twTimerRef.current = null; }
+      if (twCaretIntervalRef.current) { clearInterval(twCaretIntervalRef.current); twCaretIntervalRef.current = null; }
+    };
+
+    if (!shouldAnimate) {
+      stopAll();
+      setTwText("");
+      setTwCaretOn(true);
+      return;
+    }
+
+    // Reset to start of current word index (or beginning)
+    twCharIdx.current = 0;
+    twPhase.current = "typing";
+    setTwText("");
+
+    // Blinking caret — toggles every 530 ms
+    twCaretIntervalRef.current = setInterval(() => {
+      setTwCaretOn((v) => !v);
+    }, 530);
+
+    function tick() {
+      const word = TW_HINTS[twWordIdx.current % TW_HINTS.length];
+
+      if (twPhase.current === "typing") {
+        if (twCharIdx.current < word.length) {
+          twCharIdx.current += 1;
+          setTwText(word.slice(0, twCharIdx.current));
+          twTimerRef.current = setTimeout(tick, TW_TYPE_MS);
+        } else {
+          twPhase.current = "paused";
+          twTimerRef.current = setTimeout(tick, TW_PAUSE_COMPLETE_MS);
+        }
+      } else if (twPhase.current === "paused") {
+        twPhase.current = "deleting";
+        twTimerRef.current = setTimeout(tick, 0);
+      } else {
+        // deleting
+        if (twCharIdx.current > 0) {
+          twCharIdx.current -= 1;
+          setTwText(word.slice(0, twCharIdx.current));
+          twTimerRef.current = setTimeout(tick, TW_DELETE_MS);
+        } else {
+          twWordIdx.current = (twWordIdx.current + 1) % TW_HINTS.length;
+          twPhase.current = "typing";
+          twTimerRef.current = setTimeout(tick, TW_PAUSE_BETWEEN_MS);
+        }
+      }
+    }
+
+    twTimerRef.current = setTimeout(tick, TW_PAUSE_BETWEEN_MS);
+
+    return stopAll;
+  }, [isHydrated, isCategoryFocused, category]); // eslint-disable-line react-hooks/exhaustive-deps
+  // ─────────────────────────────────────────────────────────────────────────
 
   useEffect(() => {
     setIsHydrated(true);
@@ -660,7 +430,6 @@ function PageContent() {
     if (typeof draft.area === "string") {
       const normalizedDraftArea = normalizeAreaValue(draft.area);
       setArea(normalizedDraftArea);
-      setSelectedArea(normalizedDraftArea);
       console.debug("[home] area restored from draft:", normalizedDraftArea);
     }
     if (typeof draft.time === "string") {
@@ -851,110 +620,16 @@ function PageContent() {
     console.debug("[home] category selected:", name.trim());
   };
 
-  const fetchServiceStats = async (categoryValue: string) => {
-    const normalizedCategory = categoryValue.trim();
-    if (!normalizedCategory || !APPS_SCRIPT_BASE_URL) {
-      setServiceStats(null);
-      return;
-    }
-    const requestId = ++statsRequestIdRef.current;
-    try {
-      const url = `${APPS_SCRIPT_BASE_URL}?action=service_stats&service=${encodeURIComponent(
-        normalizedCategory
-      )}`;
-      const res = await fetch(url, { cache: "no-store" });
-      if (!res.ok) {
-        throw new Error(`service_stats failed: ${res.status}`);
-      }
-      const data = (await res.json()) as ServiceStatsResponse;
-      if (requestId !== statsRequestIdRef.current) return;
-      setServiceStats(data);
-    } catch (err) {
-      if (requestId !== statsRequestIdRef.current) return;
-      console.debug("[home] service_stats fetch failed", err);
-      setServiceStats(null);
-    }
-  };
-
-  const fetchMatch = async (categoryValue: string, areaValue: string) => {
-    const normalizedCategory = categoryValue.trim();
-    const normalizedArea = normalizeAreaValue(areaValue);
-    if (!normalizedCategory || !normalizedArea || !APPS_SCRIPT_BASE_URL) {
-      setMatchLoading(false);
-      setMatchCount(null);
-      setMatchedProviders([]);
-      return;
-    }
-    const requestId = ++matchRequestIdRef.current;
-    setMatchLoading(true);
-    try {
-      const url = `${APPS_SCRIPT_BASE_URL}?action=match_providers&service=${encodeURIComponent(
-        normalizedCategory
-      )}&area=${encodeURIComponent(normalizedArea)}&limit=20`;
-      const res = await fetch(url, { cache: "no-store" });
-      if (!res.ok) {
-        throw new Error(`match_providers failed: ${res.status}`);
-      }
-      const data = (await res.json()) as MatchProvidersResponse;
-      if (requestId !== matchRequestIdRef.current) return;
-      const providers = Array.isArray(data?.providers) ? data.providers : [];
-      const count =
-        typeof data?.count === "number" ? data.count : providers.length;
-      setMatchCount(count);
-      setMatchedProviders(providers);
-    } catch (err) {
-      if (requestId !== matchRequestIdRef.current) return;
-      console.debug("[home] match_providers fetch failed", err);
-      setMatchCount(0);
-      setMatchedProviders([]);
-    } finally {
-      if (requestId === matchRequestIdRef.current) {
-        setMatchLoading(false);
-      }
-    }
-  };
-
   useEffect(() => {
     const nextCategory = category.trim();
     if (!nextCategory) {
       setSelectedCategory("");
-      setServiceStats(null);
       return;
     }
     if (nextCategory !== selectedCategory) {
       setSelectedCategory(nextCategory);
     }
-    const timer = window.setTimeout(() => {
-      console.debug("[home] category selected:", nextCategory);
-      fetchServiceStats(nextCategory);
-    }, 250);
-    return () => window.clearTimeout(timer);
   }, [category, selectedCategory]);
-
-  useEffect(() => {
-    if (!selectedCategory || !selectedArea) {
-      setMatchLoading(false);
-      setMatchCount(null);
-      setMatchedProviders([]);
-      return;
-    }
-    fetchMatch(selectedCategory, selectedArea);
-  }, [selectedCategory, selectedArea]);
-
-  useEffect(() => {
-    if (!serviceStats) return;
-    console.debug("[home] service_stats cached for category:", selectedCategory);
-  }, [serviceStats, selectedCategory]);
-
-  useEffect(() => {
-    if (!selectedArea) return;
-    console.debug(
-      "[home] matched providers cached:",
-      matchedProviders.length,
-      "for area:",
-      selectedArea
-    );
-  }, [matchedProviders, selectedArea]);
 
   const handleCategoryKeyDown = (
     event: React.KeyboardEvent<HTMLInputElement>
@@ -1116,6 +791,13 @@ const submitResolvedRequest = async (resolution: CategoryResolution) => {
         throw new Error("Failed to submit approval request");
       }
 
+      const refId = `REQ-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
+      const params = new URLSearchParams();
+      params.set("status", "under_review");
+      params.set("ref", refId);
+      if (category.trim()) params.set("service", category.trim());
+      if (normalizedArea) params.set("area", normalizedArea);
+
       setShowDirectContactOption(false);
       setDetails("");
       if (typeof window !== "undefined") {
@@ -1123,7 +805,7 @@ const submitResolvedRequest = async (resolution: CategoryResolution) => {
       }
       clearTaskDraftFromSessionStorage();
       setIsRedirecting(true);
-      router.replace(buildSuccessRedirect(category, normalizedArea));
+      router.replace(`/success?${params.toString()}`);
       return;
     } catch (err: any) {
       setError(err?.message || "Something went wrong.");
@@ -1335,7 +1017,7 @@ const submitResolvedRequest = async (resolution: CategoryResolution) => {
   const handleShowProviders = async () => {
     try {
       const res = await fetch(
-        `/api/find-providers?category=${encodeURIComponent(
+        `/api/find-provider?category=${encodeURIComponent(
           category
         )}&area=${encodeURIComponent(area)}`
       );
@@ -1370,8 +1052,8 @@ const hasArea = area.trim() !== "";
   }
 
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center bg-slate-50 px-4 py-8 leading-relaxed">
-      <div className="w-full max-w-5xl rounded-3xl border border-slate-100 bg-white p-5 shadow-md md:p-7">
+    <div className="flex min-h-screen flex-col items-center bg-slate-50 px-4 py-4 leading-relaxed">
+      <div className="w-full max-w-5xl rounded-3xl border border-slate-200 bg-white p-5 shadow-md md:p-7">
         {/* Hero: Logo + Title + Tagline */}
         <div className="mb-4 flex flex-col items-center text-center">
           <div className="mb-3 flex items-center justify-center">
@@ -1384,15 +1066,21 @@ const hasArea = area.trim() !== "";
           </div>
         </div>
 
-        <FeaturedCategoryGrid />
+        {/* Two-column layout: main form + I NEED sidebar */}
+        <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
+
+          {/* Main column: search + steps */}
+          <div className="flex-1 min-w-0">
 
         {/* Step 1: Category search bar */}
-        <div className="relative mb-6">
-          <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-slate-500">
-            Step 1 · What help do you need?
+        <div className="relative mx-auto mb-6 mt-2 w-full max-w-3xl">
+          <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-slate-600">
+            What help do you need?
           </label>
-          <div className="mt-2 flex items-center rounded-full border border-slate-200 bg-slate-50 px-4 py-3 shadow-sm focus-within:border-sky-400 focus-within:ring-2 focus-within:ring-sky-400/30">
-            <span className="mr-2 text-slate-400">🔍</span>
+          <div
+            className="relative flex items-center rounded-full border border-slate-300 bg-white px-5 py-5 shadow-[0_8px_24px_rgba(0,0,0,0.08)] transition-all duration-200 focus-within:border-orange-400 focus-within:shadow-[0_8px_32px_rgba(249,115,22,0.15)] focus-within:ring-2 focus-within:ring-orange-400/20"
+          >
+            <span className="mr-3 text-xl text-orange-400">🔍</span>
             <input
               ref={categoryInputRef}
               type="text"
@@ -1404,10 +1092,27 @@ const hasArea = area.trim() !== "";
                 setHighlightIndex(-1);
               }}
               onFocus={() => setIsCategoryFocused(true)}
+              onBlur={() => { if (!category) setIsCategoryFocused(false); }}
               onKeyDown={handleCategoryKeyDown}
-              placeholder="Plumber, Electrician, Home Tutor, AC Mechanic..."
-              className="w-full bg-transparent text-sm text-slate-900 outline-none md:text-base"
+              placeholder={isHydrated && !isCategoryFocused && twText ? "" : "What service do you need? (e.g. Electrician, Plumber)"}
+              className="w-full bg-transparent text-base text-slate-900 outline-none placeholder:text-slate-500 md:text-lg"
             />
+            {/* Typewriter overlay — visible only when input is empty and not focused */}
+            {isHydrated && !isCategoryFocused && category === "" && twText !== "" && (
+              <div
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-y-0 flex items-center rounded-full bg-white pl-[52px] pr-5"
+                style={{ left: 0, right: 0 }}
+              >
+                <span className="text-base font-medium text-slate-600 md:text-lg">
+                  {twText}
+                  <span
+                    className="ml-px"
+                    style={{ opacity: twCaretOn ? 1 : 0, transition: "opacity 50ms" }}
+                  >|</span>
+                </span>
+              </div>
+            )}
           </div>
           {showSuggestions && (
             <div
@@ -1446,7 +1151,7 @@ const hasArea = area.trim() !== "";
         {/* Step 2: When do you need it? */}
         {hasCategory && (
           <div className="mb-6">
-            <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+            <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-slate-600">
               Step 2 · When do you need it?
             </label>
             <WhenNeedIt
@@ -1474,7 +1179,7 @@ const hasArea = area.trim() !== "";
         {/* Step 3: Where do you need it? */}
         {hasCategory && hasTime && (
           <div className="mb-6">
-            <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+            <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-slate-600">
               Step 3 · Where do you need it?
             </label>
             <AreaSelection
@@ -1482,7 +1187,6 @@ const hasArea = area.trim() !== "";
               onSelect={(value) => {
                 const normalizedArea = normalizeAreaValue(value);
                 setArea(normalizedArea);
-                setSelectedArea(normalizedArea);
                 setAreaError("");
                 console.debug("[home] area selected:", normalizedArea);
               }}
@@ -1495,7 +1199,7 @@ const hasArea = area.trim() !== "";
         {hasCategory && hasTime && hasArea && (
           <div className="space-y-4">
             <div className="space-y-2">
-              <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+              <label className="text-xs font-semibold uppercase tracking-wide text-slate-600">
                 Step 4 · Task details (optional)
               </label>
               <textarea
@@ -1577,7 +1281,10 @@ const hasArea = area.trim() !== "";
         Your phone number will be collected later in a quick step to send you updates on WhatsApp.
       </p>
     )}
-      </div>
+          </div>{/* end main column */}
+
+        </div>{/* end two-column layout */}
+      </div>{/* end white card */}
 
       {showOtpModal && !isLoggedIn && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
@@ -1705,6 +1412,23 @@ const hasArea = area.trim() !== "";
         </div>
       </div>
     )}
+
+      {/* Service Provider onboarding section */}
+      <section className="mt-10 rounded-2xl bg-orange-50 border border-orange-200 px-6 py-12 text-center">
+        <h2 className="text-2xl font-bold text-slate-900">
+          Are you a service provider?
+        </h2>
+        <p className="mt-3 text-sm leading-6 text-slate-600 max-w-md mx-auto">
+          Join Kaun Karega to get real customer leads in your area. Grow your business with zero upfront cost.
+        </p>
+        <button
+          type="button"
+          onClick={() => router.push("/provider/register")}
+          className="mt-6 inline-flex rounded-full bg-orange-500 px-6 py-3 text-sm font-semibold text-white shadow-md transition hover:bg-orange-600 hover:shadow-lg"
+        >
+          Register as Service Provider
+        </button>
+      </section>
   </div>
 );
 }

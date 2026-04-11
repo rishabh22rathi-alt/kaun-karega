@@ -14,7 +14,7 @@ export async function GET(request: Request) {
       );
     }
 
-    const scriptUrl = process.env.NEXT_PUBLIC_APPS_SCRIPT_URL;
+    const scriptUrl = process.env.APPS_SCRIPT_URL;
     if (!scriptUrl) {
       throw new Error("Missing Apps Script URL in .env");
     }

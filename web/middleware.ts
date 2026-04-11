@@ -2,23 +2,33 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAuthSession } from "@/lib/auth";
 
 /**
- * Server-side guard for /admin/* routes.
+ * Server-side route guards.
  *
- * Requires two cookies set by verify-otp after admin confirmation:
- *   kk_auth_session — valid user session with a phone number
- *   kk_admin        — presence confirms admin status (set only when GAS admin_verify passes)
+ * /admin/* — requires a valid user session AND the kk_admin=1 cookie.
+ *   /admin/login is excluded so the login page is always reachable.
  *
- * /admin/login is excluded so the login page is always reachable.
+ * /report-issue — requires any valid logged-in session (user or provider).
  */
 export function middleware(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
+  const cookieHeader = request.headers.get("cookie") ?? "";
 
-  // Only guard /admin/* — and always allow /admin/login through
+  // Guard /report-issue — any authenticated user is allowed
+  if (pathname === "/report-issue") {
+    const session = getAuthSession({ cookie: cookieHeader });
+    if (!session?.phone) {
+      const loginUrl = new URL("/login", request.url);
+      loginUrl.searchParams.set("next", `/report-issue`);
+      return NextResponse.redirect(loginUrl);
+    }
+    return NextResponse.next();
+  }
+
+  // Guard /admin/* — requires valid session + admin cookie
   if (!pathname.startsWith("/admin") || pathname === "/admin/login") {
     return NextResponse.next();
   }
 
-  const cookieHeader = request.headers.get("cookie") ?? "";
   const session = getAuthSession({ cookie: cookieHeader });
   const adminCookie = request.cookies.get("kk_admin")?.value;
 
@@ -32,5 +42,5 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/admin", "/admin/:path*"],
+  matcher: ["/report-issue", "/admin", "/admin/:path*"],
 };

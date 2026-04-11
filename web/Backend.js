@@ -98,6 +98,10 @@ function doGet(e) {
     });
   }
 
+  if (action === "admin_get_issue_reports") {
+    return json_(getIssueReports_(e.parameter || {}));
+  }
+
   return json_({
     ok: true,
     status: "active",
@@ -144,6 +148,9 @@ function doPost(e) {
 
       case "submit_task":
         return json_(submitTask_(data));
+
+      case "submit_issue_report":
+        return json_(submitIssueReport_(data));
 
       case "create_need":
         return json_(createNeed_(data));
@@ -238,6 +245,12 @@ function doPost(e) {
           summary: getNotificationSummaryByTask_(String(data.taskId || "").trim()),
         });
 
+      case "admin_get_issue_reports":
+        return json_(getIssueReports_(data));
+
+      case "admin_update_issue_report_status":
+        return json_(updateIssueReportStatus_(data));
+
       case "admin_get_providers":
         return json_({ ok: true, status: "success", providers: getAdminProviders_() });
 
@@ -261,6 +274,15 @@ function doPost(e) {
       case "reject_category_request":
       case "admin_reject_category":
         return json_(rejectCategoryRequest_(data));
+
+      case "admin_close_category_request":
+        return json_(updateCategoryRequestAdminAction_(data, "closed"));
+
+      case "admin_archive_category_request":
+        return json_(updateCategoryRequestAdminAction_(data, "archived"));
+
+      case "admin_delete_category_request_soft":
+        return json_(updateCategoryRequestAdminAction_(data, "deleted_by_admin"));
 
       case "set_provider_verified":
       case "admin_verify_provider":
@@ -364,6 +386,15 @@ function doPost(e) {
 
       case "chat_mark_read":
         return json_(chatMarkRead_(data));
+
+      case "admin_list_chat_threads":
+        return json_(adminListChatThreads_(data));
+
+      case "admin_get_chat_thread":
+        return json_(adminGetChatThread_(data));
+
+      case "admin_update_chat_thread_status":
+        return json_(adminUpdateChatThreadStatus_(data));
 
       case "send_provider_lead_notification":
         return json_(sendProviderLeadNotification_(data));

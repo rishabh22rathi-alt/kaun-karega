@@ -6,6 +6,7 @@ import InAppToastStack, { type InAppToast } from "@/components/InAppToastStack";
 import { getAuthSession } from "@/lib/auth";
 import { getVerifiedLabel, isProviderVerifiedBadge, normalizeVerifiedValue } from "@/lib/providerPresentation";
 import { getTaskDisplayLabel } from "@/lib/taskDisplay";
+import { getTaskStatusLabel } from "@/lib/taskStatus";
 
 type MatchedProviderRow = {
   providerId: string;
@@ -559,7 +560,7 @@ export default function MyRequestsList() {
                     <p className="text-slate-700">
                       <span className="font-semibold">Status:</span>{" "}
                       <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-700">
-                        {row.status}
+                        {getTaskStatusLabel(row.status)}
                       </span>
                     </p>
                     <p className="text-slate-700">

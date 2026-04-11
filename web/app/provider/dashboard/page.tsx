@@ -137,7 +137,6 @@ type CreateThreadResponse = {
   };
 };
 
-const PROVIDER_AUTO_START_MESSAGE = "Yes, mai karunga ye kaam";
 
 function normalizePhone10(phoneRaw: string): string {
   const digits = String(phoneRaw || "").replace(/\D/g, "");
@@ -605,20 +604,6 @@ export default function ProviderDashboardPage() {
         throw new Error(data?.error || data?.message || "Unable to open chat.");
       }
 
-      if (data.created === true) {
-        await fetch("/api/kk", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: "chat_send_message",
-            ActorType: "provider",
-            ThreadID: threadId,
-            loggedInProviderPhone: phone,
-            MessageText: PROVIDER_AUTO_START_MESSAGE,
-          }),
-        });
-      }
-
       router.push(finalHref);
     } catch (err) {
       setChatErrorByTaskId((current) => ({
@@ -868,7 +853,21 @@ export default function ProviderDashboardPage() {
                   {statusLabel}
                 </span>
               </div>
+              {profile.Phone ? (
+                <p className="text-sm text-slate-500">Phone: {profile.Phone}</p>
+              ) : null}
               <p className="text-sm text-slate-600">{verificationMessage}</p>
+              {profile && (
+                <div className="mt-4 rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-800">
+                  <p className="font-semibold">What happens next?</p>
+                  <p className="mt-1">
+                    When a customer posts a task in your area, you will receive a WhatsApp notification and can respond instantly.
+                  </p>
+                  <p className="mt-1">
+                    Make sure your services and areas are updated to receive relevant leads.
+                  </p>
+                </div>
+              )}
             </div>
             <div className="flex flex-col gap-3 lg:items-end">
               <Link
@@ -1232,9 +1231,20 @@ export default function ProviderDashboardPage() {
                 )})}
               </div>
             ) : (
-              <div className="mt-5 rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
-                No matched requests yet. As demand rises in your services and areas, leads will show up here.
-              </div>
+              <>
+                {Number(metrics.TotalRequestsMatchedToMe || 0) === 0 ? (
+                  <div className="mt-6 rounded-xl border border-orange-200 bg-orange-50 p-4 text-sm text-orange-800">
+                    <p className="font-semibold">No leads yet</p>
+                    <p className="mt-1">
+                      You’re all set. When a customer posts a task in your area, it will appear here and you’ll receive a WhatsApp notification.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="mt-5 rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
+                    No matched requests yet. As demand rises in your services and areas, leads will show up here.
+                  </div>
+                )}
+              </>
             )}
           </section>
 

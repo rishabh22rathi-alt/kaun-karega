@@ -1,22 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Menu } from "lucide-react";
+import { usePathname } from "next/navigation";
 import { SIDEBAR_STATE_EVENT, SIDEBAR_TOGGLE_EVENT } from "./sidebarEvents";
 
 export default function SidebarToggle() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const [isMobile, setIsMobile] = useState(false);
+  const pathname = usePathname();
 
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const updateIsMobile = () => {
-      const isDesktop = window.matchMedia("(min-width: 768px)").matches;
-      setIsMobile(!isDesktop);
-    };
-    updateIsMobile();
-    window.addEventListener("resize", updateIsMobile);
-    return () => window.removeEventListener("resize", updateIsMobile);
-  }, []);
+  const shouldHide = pathname?.startsWith("/admin");
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -30,23 +23,28 @@ export default function SidebarToggle() {
 
   const handleClick = () => {
     if (typeof window === "undefined") return;
-    window.dispatchEvent(new CustomEvent(SIDEBAR_TOGGLE_EVENT));
+    window.dispatchEvent(
+      new CustomEvent(SIDEBAR_TOGGLE_EVENT, {
+        detail: { open: true },
+      })
+    );
   };
 
-  if (!isMobile || isSidebarOpen) {
-    return null;
-  }
+  if (shouldHide || isSidebarOpen) return null;
 
   return (
-    <button
-      type="button"
-      onClick={handleClick}
-      className="fixed top-4 left-4 z-50 inline-flex flex-col gap-1 rounded-full bg-white/90 px-3 py-2 shadow-md border border-white/70"
-      aria-label="Open menu"
-    >
-      <span className="block h-0.5 w-5 bg-[#111827]" />
-      <span className="block h-0.5 w-5 bg-[#111827]" />
-      <span className="block h-0.5 w-5 bg-[#111827]" />
-    </button>
+    <div className="fixed inset-x-0 top-0 z-50 border-b border-slate-200 bg-white/95 shadow-sm backdrop-blur md:hidden">
+      <div className="flex h-14 items-center px-3">
+        <button
+          type="button"
+          onClick={handleClick}
+          aria-label="Open menu"
+          aria-expanded={false}
+          className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-slate-200 bg-[#003d20] text-white shadow-sm transition hover:bg-[#00542b] focus:outline-none focus:ring-2 focus:ring-[#003d20]/30"
+        >
+          <Menu className="h-5 w-5" />
+        </button>
+      </div>
+    </div>
   );
 }

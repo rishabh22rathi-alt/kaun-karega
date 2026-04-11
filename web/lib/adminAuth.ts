@@ -1,7 +1,6 @@
 import { getAuthSession } from "./auth";
 
-const APPS_SCRIPT_URL =
-  process.env.APPS_SCRIPT_URL || process.env.NEXT_PUBLIC_APPS_SCRIPT_URL || "";
+const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_URL || "";
 
 export type AdminSession = {
   phone: string;

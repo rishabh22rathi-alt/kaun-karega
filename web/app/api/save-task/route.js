@@ -18,11 +18,15 @@ export async function POST(req) {
       );
     }
 
-    // Google Apps Script URL
-    const SHEET_URL =
-      "https://script.google.com/macros/s/AKfycby3WrvppRyQkfjE8hr8AL05IEqTwqB0Vylyup4QVXTO4N8knWLVZlTUDzQJqctpWGI/exec";
+    const SHEET_URL = process.env.APPS_SCRIPT_URL;
 
-    // Send data to Google Sheet
+    if (!SHEET_URL) {
+      return NextResponse.json(
+        { success: false, error: "APPS_SCRIPT_URL not configured" },
+        { status: 500 }
+      );
+    }
+
     const response = await fetch(SHEET_URL, {
       method: "POST",
       headers: {

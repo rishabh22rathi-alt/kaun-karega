@@ -25,7 +25,7 @@ export async function POST(request: Request) {
             return NextResponse.json({ error: "Phone number required" }, { status: 400 });
         }
 
-        const scriptUrl = process.env.NEXT_PUBLIC_APPS_SCRIPT_URL;
+        const scriptUrl = process.env.APPS_SCRIPT_URL;
         if (!scriptUrl) {
             return NextResponse.json({ error: "Missing Apps Script URL in .env" }, { status: 500 });
         }

@@ -26,6 +26,7 @@ const ADMIN_ONLY_ACTIONS = new Set([
   "admin_get_notification_logs",
   "admin_get_notification_summary",
   "admin_get_team_members",
+  "admin_get_issue_reports",
   "admin_notification_summary",
   "get_admin_area_mappings",
   "admin_notification_logs",
@@ -33,6 +34,9 @@ const ADMIN_ONLY_ACTIONS = new Set([
   "admin_verify_provider",
   "admin_approve_category",
   "admin_reject_category",
+  "admin_close_category_request",
+  "admin_archive_category_request",
+  "admin_delete_category_request_soft",
   "admin_add_category",
   "admin_edit_category",
   "admin_toggle_category",
@@ -53,6 +57,7 @@ const ADMIN_ONLY_ACTIONS = new Set([
   "admin_add_team_member",
   "admin_update_team_member",
   "admin_delete_team_member",
+  "admin_update_issue_report_status",
   "set_provider_verified",
   "add_category",
   "edit_category",
@@ -70,6 +75,9 @@ const ADMIN_ONLY_ACTIONS = new Set([
   "get_admin_chat_threads",
   "close_chat_thread",
   "get_chat_messages",
+  "admin_list_chat_threads",
+  "admin_get_chat_thread",
+  "admin_update_chat_thread_status",
   // Admin needs management
   "admin_get_needs",
   "admin_close_need",
@@ -86,7 +94,7 @@ function extractAction(source: unknown): string {
   return "";
 }
 
-const APPS_SCRIPT_URL = process.env.NEXT_PUBLIC_APPS_SCRIPT_URL;
+const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_URL;
 const STANDARDIZED_ADMIN_ACTIONS = new Set([...ADMIN_ONLY_ACTIONS, "admin_verify", "get_admin_requests"]);
 
 function parseArrayLike(value: unknown): unknown[] {
@@ -118,7 +126,7 @@ function normalizeProxyBody(rawBody: unknown): Record<string, unknown> {
 
 function buildTargetUrl(request: NextRequest): URL {
   if (!APPS_SCRIPT_URL) {
-    throw new Error("NEXT_PUBLIC_APPS_SCRIPT_URL is not configured");
+    throw new Error("APPS_SCRIPT_URL is not configured");
   }
   const target = new URL(APPS_SCRIPT_URL);
   request.nextUrl.searchParams.forEach((value, key) => {

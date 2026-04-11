@@ -10,11 +10,7 @@ type AreasCache = {
 let areasCache: AreasCache | null = null;
 
 function resolveAppsScriptUrl(): string {
-  return (
-    process.env.APPS_SCRIPT_URL ||
-    process.env.NEXT_PUBLIC_APPS_SCRIPT_URL ||
-    ""
-  ).trim();
+  return (process.env.APPS_SCRIPT_URL || "").trim();
 }
 
 async function fetchAllAreas(): Promise<string[]> {

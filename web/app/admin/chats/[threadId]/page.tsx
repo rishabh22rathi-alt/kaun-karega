@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { getAuthSession } from "@/lib/auth";
 import { getTaskDisplayLabel } from "@/lib/taskDisplay";
 
 type PageProps = {
@@ -15,27 +16,30 @@ type ThreadRow = {
   TaskID: string;
   DisplayID?: string;
   UserPhone: string;
+  UserPhoneMasked?: string;
   ProviderID: string;
-  LastMessage: string;
   LastMessageAt: string;
-  Status: string;
-  ClosedBy: string;
-  ClosedAt: string;
-  BlockedFlag: string;
-  BlockedReason: string;
-  LastSenderType: string;
+  ThreadStatus: string;
+  ModerationReason?: string;
+  ProviderName?: string;
+  LastMessageBy?: string;
 };
 
 type ChatMessage = {
-  ChatID: string;
+  MessageID: string;
   ThreadID: string;
   TaskID: string;
-  UserPhone: string;
-  ProviderID: string;
   SenderType: string;
   MessageText: string;
   CreatedAt: string;
 };
+
+function getAdminActor() {
+  const session = getAuthSession();
+  return {
+    AdminActorPhone: String(session?.phone || "").replace(/\D/g, "").slice(-10),
+  };
+}
 
 function formatDisplayDate(value: string) {
   if (!value) return "-";
@@ -63,38 +67,18 @@ export default function AdminChatDetailPage({ params }: PageProps) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          action: "get_admin_chat_threads",
-        }),
-      });
-      const threadData = await threadRes.json();
-
-      if (!threadRes.ok || !threadData?.ok) {
-        throw new Error(threadData?.error || "Unable to load chat thread.");
-      }
-
-      const matchedThread = Array.isArray(threadData?.threads)
-        ? threadData.threads.find((item: ThreadRow) => String(item.ThreadID || "").trim() === threadId) || null
-        : null;
-
-      if (!matchedThread) {
-        throw new Error("Chat thread not found.");
-      }
-
-      const messageRes = await fetch("/api/kk", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "get_chat_messages",
+          action: "admin_get_chat_thread",
           ThreadID: threadId,
+          ...getAdminActor(),
         }),
       });
-      const messageData = await messageRes.json();
+      const messageData = await threadRes.json();
 
-      if (!messageRes.ok || !messageData?.ok) {
+      if (!threadRes.ok || !messageData?.ok || !messageData?.thread) {
         throw new Error(messageData?.error || "Unable to load chat messages.");
       }
 
-      setThread(matchedThread);
+      setThread(messageData.thread);
       setMessages(Array.isArray(messageData?.messages) ? messageData.messages : []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load chat detail.");
@@ -120,9 +104,11 @@ export default function AdminChatDetailPage({ params }: PageProps) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          action: "close_chat_thread",
+          action: "admin_update_chat_thread_status",
           ThreadID: threadId,
-          ClosedBy: "admin",
+          ThreadStatus: "closed",
+          Reason: "Closed by admin",
+          ...getAdminActor(),
         }),
       });
       const data = await res.json();
@@ -160,7 +146,7 @@ export default function AdminChatDetailPage({ params }: PageProps) {
     );
   }
 
-  const isClosed = String(thread.Status || "").trim().toLowerCase() === "closed";
+  const isClosed = String(thread.ThreadStatus || "").trim().toLowerCase() === "closed";
 
   return (
     <div className="space-y-4">
@@ -176,14 +162,11 @@ export default function AdminChatDetailPage({ params }: PageProps) {
               <span className="font-semibold text-slate-900">Kaam:</span>{" "}
               {getTaskDisplayLabel(thread, thread.TaskID)}
             </p>
-            <p><span className="font-semibold text-slate-900">UserPhone:</span> {thread.UserPhone || "-"}</p>
-            <p><span className="font-semibold text-slate-900">ProviderID:</span> {thread.ProviderID || "-"}</p>
-            <p><span className="font-semibold text-slate-900">Status:</span> {thread.Status || "-"}</p>
-            <p><span className="font-semibold text-slate-900">ClosedBy:</span> {thread.ClosedBy || "-"}</p>
-            <p><span className="font-semibold text-slate-900">ClosedAt:</span> {formatDisplayDate(thread.ClosedAt)}</p>
-            <p><span className="font-semibold text-slate-900">BlockedFlag:</span> {thread.BlockedFlag || "-"}</p>
-            <p><span className="font-semibold text-slate-900">BlockedReason:</span> {thread.BlockedReason || "-"}</p>
-            <p><span className="font-semibold text-slate-900">LastSenderType:</span> {thread.LastSenderType || "-"}</p>
+            <p><span className="font-semibold text-slate-900">UserPhone:</span> {thread.UserPhoneMasked || "-"}</p>
+            <p><span className="font-semibold text-slate-900">Provider:</span> {thread.ProviderName || thread.ProviderID || "-"}</p>
+            <p><span className="font-semibold text-slate-900">Status:</span> {thread.ThreadStatus || "-"}</p>
+            <p><span className="font-semibold text-slate-900">ModerationReason:</span> {thread.ModerationReason || "-"}</p>
+            <p><span className="font-semibold text-slate-900">LastSenderType:</span> {thread.LastMessageBy || "-"}</p>
           </div>
 
           {!isClosed ? (
@@ -206,7 +189,7 @@ export default function AdminChatDetailPage({ params }: PageProps) {
         ) : (
           <div className="mt-4 space-y-3">
             {messages.map((message) => (
-              <div key={message.ChatID} className="rounded border border-slate-200 p-3 text-sm">
+              <div key={message.MessageID} className="rounded border border-slate-200 p-3 text-sm">
                 <p className="font-semibold text-slate-900">{message.SenderType || "-"}</p>
                 <p className="mt-1 whitespace-pre-wrap text-slate-700">{message.MessageText || "-"}</p>
                 <p className="mt-2 text-xs text-slate-500">{formatDisplayDate(message.CreatedAt)}</p>

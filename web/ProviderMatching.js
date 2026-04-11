@@ -160,6 +160,8 @@ function matchProviders_(serviceName, areaName, limit) {
     if (!eligibleProviderIds.has(pid)) continue;
     const p = pMap.get(pid);
     if (p) {
+      const isPending = String(p.pendingApproval || "").trim().toLowerCase() === "yes";
+      if (isPending) continue;
       out.push({
         providerId: p.providerId,
         name: p.name,

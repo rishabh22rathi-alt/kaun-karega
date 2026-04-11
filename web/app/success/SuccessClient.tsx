@@ -11,6 +11,8 @@ type SuccessClientProps = {
   taskId?: string;
   displayId?: string;
   userPhone?: string;
+  status?: string;
+  requestRef?: string;
 };
 
 type ProviderItem = {
@@ -53,6 +55,8 @@ export default function SuccessClient({
   taskId = "",
   displayId = "",
   userPhone = "",
+  status = "",
+  requestRef = "",
 }: SuccessClientProps) {
   const [showModal, setShowModal] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -191,12 +195,67 @@ export default function SuccessClient({
     }
   };
 
+  if (status === "under_review") {
+    return (
+      <div className="w-full max-w-xl rounded-3xl border border-amber-200 bg-amber-50 p-6 text-center shadow-lg md:p-8">
+        <h1 className="text-2xl font-semibold text-slate-900 md:text-3xl">
+          Request Received
+        </h1>
+
+        <p className="mt-3 text-sm text-slate-700">
+          Your request is under review. We are verifying the service category and will post it shortly.
+        </p>
+
+        <p className="mt-2 text-sm text-slate-500">
+          You will be notified on WhatsApp once your request is live and providers can see it.
+        </p>
+
+        {requestRef ? (
+          <p className="mx-auto mt-5 inline-flex rounded-full bg-white border border-amber-300 px-4 py-2 text-sm font-semibold text-amber-800">
+            Reference: {requestRef}
+          </p>
+        ) : null}
+
+        {(service || area) ? (
+          <p className="mx-auto mt-3 max-w-md text-xs text-slate-500">
+            {service ? `Service: ${service}` : ""}
+            {service && area ? " | " : ""}
+            {area ? `Area: ${area}` : ""}
+          </p>
+        ) : null}
+
+        <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+          <Link
+            href="/"
+            className="inline-flex w-full items-center justify-center rounded-full bg-sky-500 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-sky-600"
+          >
+            Post another request
+          </Link>
+          <Link
+            href="/dashboard/my-requests"
+            className="inline-flex w-full items-center justify-center rounded-full border border-slate-300 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+          >
+            Go to My Requests
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <>
       <div className="w-full max-w-xl rounded-3xl border border-slate-200 bg-white p-6 text-center shadow-lg md:p-8">
         <h1 className="text-2xl font-semibold text-slate-900 md:text-3xl">
           Task Submitted Successfully
         </h1>
+
+        <p className="mt-3 text-sm text-slate-600">
+          Nearby service providers have been notified. Most requests receive a response within a few minutes to a few hours.
+        </p>
+
+        <p className="mt-2 text-sm text-slate-500">
+          You will receive updates here and via WhatsApp when a provider responds.
+        </p>
 
         <p className="mx-auto mt-3 max-w-lg text-sm text-slate-600 md:text-base">
           Congratulations! Your task has been successfully posted.

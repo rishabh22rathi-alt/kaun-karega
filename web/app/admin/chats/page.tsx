@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { getAuthSession } from "@/lib/auth";
 import { getTaskDisplayLabel } from "@/lib/taskDisplay";
 
 type ThreadRow = {
@@ -9,21 +10,25 @@ type ThreadRow = {
   TaskID: string;
   DisplayID?: string;
   UserPhone: string;
+  UserPhoneMasked?: string;
   ProviderID: string;
-  LastMessage: string;
+  ProviderName?: string;
+  LastMessagePreview: string;
   LastMessageAt: string;
-  UnreadUser?: string | number;
-  UnreadProvider?: string | number;
   CreatedAt?: string;
-  Status: string;
-  ClosedBy: string;
-  ClosedAt: string;
-  BlockedFlag: string;
-  BlockedReason: string;
-  LastSenderType: string;
+  ThreadStatus: string;
+  ModerationReason?: string;
+  LastMessageBy?: string;
 };
 
-type FilterValue = "" | "active" | "closed";
+type FilterValue = "" | "active" | "flagged" | "muted" | "locked" | "closed";
+
+function getAdminActor() {
+  const session = getAuthSession();
+  return {
+    AdminActorPhone: String(session?.phone || "").replace(/\D/g, "").slice(-10),
+  };
+}
 
 function formatDisplayDate(value: string) {
   if (!value) return "-";
@@ -50,7 +55,7 @@ export default function AdminChatsPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          action: "get_admin_chat_threads",
+          action: "admin_list_chat_threads",
           Status: statusFilter || "",
         }),
       });
@@ -85,9 +90,11 @@ export default function AdminChatsPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          action: "close_chat_thread",
+          action: "admin_update_chat_thread_status",
           ThreadID: threadId,
-          ClosedBy: "admin",
+          ThreadStatus: "closed",
+          Reason: "Closed by admin",
+          ...getAdminActor(),
         }),
       });
       const data = await res.json();
@@ -105,12 +112,15 @@ export default function AdminChatsPage() {
   };
 
   const filterButtons = useMemo(
-    () => [
-      { label: "All", value: "" as FilterValue },
-      { label: "Active", value: "active" as FilterValue },
-      { label: "Closed", value: "closed" as FilterValue },
-    ],
-    []
+      () => [
+        { label: "All", value: "" as FilterValue },
+        { label: "Active", value: "active" as FilterValue },
+        { label: "Flagged", value: "flagged" as FilterValue },
+        { label: "Muted", value: "muted" as FilterValue },
+        { label: "Locked", value: "locked" as FilterValue },
+        { label: "Closed", value: "closed" as FilterValue },
+      ],
+      []
   );
 
   return (
@@ -152,22 +162,19 @@ export default function AdminChatsPage() {
                   <th className="py-2 pr-4 font-semibold">ThreadID</th>
                   <th className="py-2 pr-4 font-semibold">Kaam</th>
                   <th className="py-2 pr-4 font-semibold">UserPhone</th>
-                  <th className="py-2 pr-4 font-semibold">ProviderID</th>
+                  <th className="py-2 pr-4 font-semibold">Provider</th>
                   <th className="py-2 pr-4 font-semibold">LastMessage</th>
                   <th className="py-2 pr-4 font-semibold">LastMessageAt</th>
                   <th className="py-2 pr-4 font-semibold">Status</th>
-                  <th className="py-2 pr-4 font-semibold">ClosedBy</th>
-                  <th className="py-2 pr-4 font-semibold">ClosedAt</th>
-                  <th className="py-2 pr-4 font-semibold">BlockedFlag</th>
-                  <th className="py-2 pr-4 font-semibold">BlockedReason</th>
+                  <th className="py-2 pr-4 font-semibold">ModerationReason</th>
                   <th className="py-2 pr-4 font-semibold">LastSenderType</th>
                   <th className="py-2 pr-4 font-semibold">Action</th>
                 </tr>
               </thead>
               <tbody>
                 {threads.map((thread) => {
-                  const isBlocked = String(thread.BlockedFlag || "").trim().toLowerCase() === "yes";
-                  const isClosed = String(thread.Status || "").trim().toLowerCase() === "closed";
+                  const isBlocked = String(thread.ThreadStatus || "").trim().toLowerCase() === "flagged";
+                  const isClosed = String(thread.ThreadStatus || "").trim().toLowerCase() === "closed";
                   const currentActionKey = `close:${thread.ThreadID}`;
 
                   return (
@@ -186,16 +193,13 @@ export default function AdminChatsPage() {
                       <td className="py-2 pr-4">
                         {getTaskDisplayLabel(thread, thread.TaskID)}
                       </td>
-                      <td className="py-2 pr-4">{thread.UserPhone || "-"}</td>
-                      <td className="py-2 pr-4">{thread.ProviderID || "-"}</td>
-                      <td className="py-2 pr-4">{thread.LastMessage || "-"}</td>
+                      <td className="py-2 pr-4">{thread.UserPhoneMasked || "-"}</td>
+                      <td className="py-2 pr-4">{thread.ProviderName || thread.ProviderID || "-"}</td>
+                      <td className="py-2 pr-4">{thread.LastMessagePreview || "-"}</td>
                       <td className="py-2 pr-4">{formatDisplayDate(thread.LastMessageAt)}</td>
-                      <td className="py-2 pr-4">{thread.Status || "-"}</td>
-                      <td className="py-2 pr-4">{thread.ClosedBy || "-"}</td>
-                      <td className="py-2 pr-4">{formatDisplayDate(thread.ClosedAt)}</td>
-                      <td className="py-2 pr-4">{thread.BlockedFlag || "-"}</td>
-                      <td className="py-2 pr-4">{thread.BlockedReason || "-"}</td>
-                      <td className="py-2 pr-4">{thread.LastSenderType || "-"}</td>
+                      <td className="py-2 pr-4">{thread.ThreadStatus || "-"}</td>
+                      <td className="py-2 pr-4">{thread.ModerationReason || "-"}</td>
+                      <td className="py-2 pr-4">{thread.LastMessageBy || "-"}</td>
                       <td className="py-2 pr-4">
                         {!isClosed ? (
                           <button

@@ -149,11 +149,11 @@ function getAreaResolution_(value) {
   }
 
   const key = getNormalizedAreaKey_(normalized);
-  const canonicalAreas = getCanonicalAreasByKey_(true);
-  if (canonicalAreas[key] && canonicalAreas[key].AreaName) {
+  const activeCanonicalAreas = getCanonicalAreasByKey_(false);
+  if (activeCanonicalAreas[key] && activeCanonicalAreas[key].AreaName) {
     return {
       rawArea: normalized,
-      resolvedArea: canonicalAreas[key].AreaName,
+      resolvedArea: activeCanonicalAreas[key].AreaName,
       normalizedKey: key,
       matchedBy: "canonical",
       known: true,
@@ -167,6 +167,17 @@ function getAreaResolution_(value) {
       resolvedArea: aliasLookup[key],
       normalizedKey: key,
       matchedBy: "alias",
+      known: true,
+    };
+  }
+
+  const canonicalAreas = getCanonicalAreasByKey_(true);
+  if (canonicalAreas[key] && canonicalAreas[key].AreaName) {
+    return {
+      rawArea: normalized,
+      resolvedArea: canonicalAreas[key].AreaName,
+      normalizedKey: key,
+      matchedBy: "canonical",
       known: true,
     };
   }
@@ -1253,12 +1264,497 @@ function mergeAreaIntoCanonical_(data) {
   };
 }
 
+function ensurePhase2LongFormAliasPreserved_(sourceArea, canonicalArea) {
+  var longAreaName = normalizeAreaName_(sourceArea);
+  var shortAreaName = normalizeAreaName_(canonicalArea);
+  if (!longAreaName) {
+    return { ok: false, status: "error", error: "SourceArea required" };
+  }
+  if (!shortAreaName) {
+    return { ok: false, status: "error", error: "CanonicalArea required" };
+  }
+  if (!/\s+jodhpur$/i.test(longAreaName)) {
+    return { ok: false, status: "error", error: "SourceArea must end with trailing Jodhpur" };
+  }
+  if (
+    getNormalizedAreaKey_(normalizeAreaName_(longAreaName.replace(/\s+jodhpur$/i, ""))) !==
+    getNormalizedAreaKey_(shortAreaName)
+  ) {
+    return { ok: false, status: "error", error: "SourceArea and CanonicalArea are not an exact Phase 2 pair" };
+  }
+
+  var aliasResult = upsertAreaAliasRecord_(longAreaName, shortAreaName, true);
+  if (!aliasResult.ok) return aliasResult;
+
+  var deactivateResult = setCanonicalAreaActiveState_(longAreaName, false);
+  if (!deactivateResult.ok && String(deactivateResult.error || "") !== "Area not found") {
+    return deactivateResult;
+  }
+
+  var aliasState = findAreaAliasRowState_(longAreaName);
+  if (!aliasState.ok) {
+    return { ok: false, status: "error", error: "Alias verification failed after upsert" };
+  }
+  if (!aliasState.active) {
+    return { ok: false, status: "error", error: "Alias verification failed: alias inactive" };
+  }
+  if (getNormalizedAreaKey_(aliasState.canonicalArea) !== getNormalizedAreaKey_(aliasResult.alias.CanonicalArea)) {
+    return { ok: false, status: "error", error: "Alias verification failed: canonical mismatch" };
+  }
+
+  return {
+    ok: true,
+    status: "success",
+    alias: {
+      AliasName: aliasState.aliasName,
+      CanonicalArea: aliasState.canonicalArea,
+      Active: aliasState.active ? "yes" : "no",
+    },
+  };
+}
+
 function getAdminUnmappedAreasResponse_() {
   return {
     ok: true,
     status: "success",
     reviews: getAdminAreaReviewQueue_(),
   };
+}
+
+function getPhase2AreaCanonicalDedupCandidates_() {
+  var activeCanonicalsByKey = getCanonicalAreasByKey_(false);
+  var activeCanonicalKeys = Object.keys(activeCanonicalsByKey).sort(function (a, b) {
+    return String(activeCanonicalsByKey[a].AreaName || "").localeCompare(
+      String(activeCanonicalsByKey[b].AreaName || "")
+    );
+  });
+  var candidates = [];
+  var skipped = [];
+
+  for (var i = 0; i < activeCanonicalKeys.length; i++) {
+    var longKey = activeCanonicalKeys[i];
+    var longCanonical = activeCanonicalsByKey[longKey];
+    var longAreaName = longCanonical && longCanonical.AreaName ? longCanonical.AreaName : "";
+    if (!longAreaName || !/\s+jodhpur$/i.test(longAreaName)) continue;
+
+    var shortAreaName = normalizeAreaName_(longAreaName.replace(/\s+jodhpur$/i, ""));
+    var shortKey = getNormalizedAreaKey_(shortAreaName);
+    if (!shortAreaName || !shortKey || shortKey === longKey) {
+      skipped.push({
+        sourceArea: longAreaName,
+        canonicalArea: shortAreaName || "",
+        reason: "invalid-short-name-after-trailing-jodhpur-removal",
+      });
+      continue;
+    }
+
+    var shortCanonical = activeCanonicalsByKey[shortKey];
+    if (!shortCanonical || !shortCanonical.AreaName) {
+      skipped.push({
+        sourceArea: longAreaName,
+        canonicalArea: shortAreaName,
+        reason: "short-canonical-not-active",
+      });
+      continue;
+    }
+
+    var existingAlias = findAreaAliasRowState_(longAreaName);
+    if (existingAlias.ok) {
+      skipped.push({
+        sourceArea: longAreaName,
+        canonicalArea: shortCanonical.AreaName,
+        reason: "long-name-already-exists-as-alias",
+      });
+      continue;
+    }
+
+    candidates.push({
+      sourceArea: longAreaName,
+      canonicalArea: shortCanonical.AreaName,
+    });
+  }
+
+  return {
+    candidates: candidates,
+    skipped: skipped,
+  };
+}
+
+function getPhase2AliasBackfillCandidates_() {
+  var allCanonicalsByKey = getCanonicalAreasByKey_(true);
+  var activeCanonicalsByKey = getCanonicalAreasByKey_(false);
+  var canonicalKeys = Object.keys(allCanonicalsByKey).sort(function (a, b) {
+    return String(allCanonicalsByKey[a].AreaName || "").localeCompare(
+      String(allCanonicalsByKey[b].AreaName || "")
+    );
+  });
+  var candidates = [];
+  var skipped = [];
+
+  for (var i = 0; i < canonicalKeys.length; i++) {
+    var longKey = canonicalKeys[i];
+    var longCanonical = allCanonicalsByKey[longKey];
+    var longAreaName = longCanonical && longCanonical.AreaName ? longCanonical.AreaName : "";
+    if (!longAreaName || !/\s+jodhpur$/i.test(longAreaName)) continue;
+
+    var shortAreaName = normalizeAreaName_(longAreaName.replace(/\s+jodhpur$/i, ""));
+    var shortKey = getNormalizedAreaKey_(shortAreaName);
+    if (!shortAreaName || !shortKey || shortKey === longKey) {
+      skipped.push({
+        sourceArea: longAreaName,
+        canonicalArea: shortAreaName || "",
+        reason: "invalid-short-name-after-trailing-jodhpur-removal",
+      });
+      continue;
+    }
+
+    var shortCanonical = activeCanonicalsByKey[shortKey];
+    if (!shortCanonical || !shortCanonical.AreaName) {
+      skipped.push({
+        sourceArea: longAreaName,
+        canonicalArea: shortAreaName,
+        reason: "short-canonical-not-active",
+      });
+      continue;
+    }
+
+    if (String(longCanonical.Active || "yes").trim().toLowerCase() === "yes") {
+      skipped.push({
+        sourceArea: longAreaName,
+        canonicalArea: shortCanonical.AreaName,
+        reason: "long-canonical-still-active",
+      });
+      continue;
+    }
+
+    var aliasState = findAreaAliasRowState_(longAreaName);
+    if (
+      aliasState.ok &&
+      aliasState.active &&
+      getNormalizedAreaKey_(aliasState.canonicalArea) === getNormalizedAreaKey_(shortCanonical.AreaName)
+    ) {
+      skipped.push({
+        sourceArea: longAreaName,
+        canonicalArea: shortCanonical.AreaName,
+        reason: "active-alias-already-exists",
+      });
+      continue;
+    }
+
+    candidates.push({
+      sourceArea: longAreaName,
+      canonicalArea: shortCanonical.AreaName,
+    });
+  }
+
+  return {
+    candidates: candidates,
+    skipped: skipped,
+  };
+}
+
+/*
+ * runPhase2AreaCanonicalDedup_
+ *
+ * Safe Phase 2 cleanup for exact duplicate canonical pairs only:
+ *   X
+ *   X Jodhpur
+ *
+ * Rules:
+ *   - Both rows must currently exist as active canonicals
+ *   - Only the trailing " Jodhpur" suffix may differ
+ *   - The short name remains canonical
+ *   - The long name becomes an alias to the short canonical
+ *   - ProviderAreas + Providers summary rows are migrated via existing helpers
+ *
+ * Intentionally deferred:
+ *   - Broad variant cluster consolidation
+ *   - Ambiguous variants not matching the exact trailing suffix rule
+ *   - Human-review items from Phase 1
+ */
+function runPhase2AreaCanonicalDedup_(dryRun, startIndex, limit) {
+  var DRY_RUN = dryRun !== false;
+  var batchStartIndex = Number(startIndex);
+  var batchLimit = Number(limit);
+  var log = [];
+  var errors = [];
+  var plan = getPhase2AreaCanonicalDedupCandidates_();
+  var candidates = plan.candidates || [];
+  var skipped = plan.skipped || [];
+  var totalCandidates = candidates.length;
+  if (!isFinite(batchStartIndex) || batchStartIndex < 0) batchStartIndex = 0;
+  if (!isFinite(batchLimit) || batchLimit < 0) batchLimit = 10;
+  var batchCandidates = candidates.slice(batchStartIndex, batchStartIndex + batchLimit);
+
+  log.push("Phase 2 Area Canonical Dedup | DRY_RUN=" + DRY_RUN + " | " + new Date().toISOString());
+  log.push("Rule: active canonical X + active canonical X Jodhpur -> keep X canonical, alias X Jodhpur");
+  log.push("Total candidates=" + totalCandidates);
+  log.push(
+    "Batch range startIndex=" +
+      batchStartIndex +
+      " limit=" +
+      batchLimit +
+      " endIndexExclusive=" +
+      (batchStartIndex + batchLimit)
+  );
+
+  for (var i = 0; i < skipped.length; i++) {
+    var skippedPair = skipped[i];
+    log.push(
+      "[SKIP] \"" +
+        skippedPair.sourceArea +
+        "\" -> \"" +
+        skippedPair.canonicalArea +
+        "\" | reason=" +
+        skippedPair.reason
+    );
+  }
+
+  if (!totalCandidates) {
+    log.push("[SKIP] no safe duplicate canonical pairs found");
+  }
+
+  for (var j = 0; j < batchCandidates.length; j++) {
+    var pair = batchCandidates[j];
+    if (DRY_RUN) {
+      log.push("[DRY] \"" + pair.sourceArea + "\" -> \"" + pair.canonicalArea + "\"");
+      continue;
+    }
+
+    try {
+      var result = mergeAreaIntoCanonical_({
+        sourceArea: pair.sourceArea,
+        canonicalArea: pair.canonicalArea,
+      });
+      if (result.ok) {
+        var preserveResult = ensurePhase2LongFormAliasPreserved_(pair.sourceArea, result.canonicalArea);
+        if (!preserveResult.ok) {
+          log.push(
+            "[ERROR] alias preserve failed \"" +
+              pair.sourceArea +
+              "\" -> \"" +
+              result.canonicalArea +
+              "\" | error=" +
+              (preserveResult.error || "unknown")
+          );
+          errors.push(
+            "[ERROR] alias preserve failed \"" +
+              pair.sourceArea +
+              "\" -> \"" +
+              result.canonicalArea +
+              "\" | error=" +
+              (preserveResult.error || "unknown")
+          );
+          continue;
+        }
+      }
+      log.push(
+        result.ok
+          ? "[OK] merged \"" + pair.sourceArea + "\" -> \"" + result.canonicalArea + "\""
+          : "[SKIP] merge failed \"" + pair.sourceArea + "\" -> \"" + pair.canonicalArea + "\" | reason=" + (result.error || "unknown")
+      );
+    } catch (e) {
+      var errorMessage =
+        "[ERROR] merge \"" +
+        pair.sourceArea +
+        "\" -> \"" +
+        pair.canonicalArea +
+        "\" | error=" +
+        String(e && e.message ? e.message : e);
+      log.push(errorMessage);
+      errors.push(errorMessage);
+    }
+  }
+
+  log.push(
+    "Phase 2 done | candidates=" +
+      totalCandidates +
+      " | processed=" +
+      batchCandidates.length +
+      " | skipped=" +
+      skipped.length +
+      " | errors=" +
+      errors.length
+  );
+  var summary = log.join("\n");
+  console.log(summary);
+  return summary;
+}
+
+function runPhase2AreaCanonicalDedup() {
+  return runPhase2AreaCanonicalDedup_();
+}
+
+function runPhase2AliasBackfill_(dryRun) {
+  var DRY_RUN = dryRun !== false;
+  var log = [];
+  var errors = [];
+  var plan = getPhase2AliasBackfillCandidates_();
+  var candidates = plan.candidates || [];
+  var skipped = plan.skipped || [];
+
+  log.push("Phase 2 Alias Backfill | DRY_RUN=" + DRY_RUN + " | " + new Date().toISOString());
+  log.push("Rule: inactive canonical X Jodhpur + active canonical X + no active alias -> upsert active alias X Jodhpur -> X");
+
+  for (var i = 0; i < skipped.length; i++) {
+    var skippedPair = skipped[i];
+    log.push(
+      "[SKIP] \"" +
+        skippedPair.sourceArea +
+        "\" -> \"" +
+        skippedPair.canonicalArea +
+        "\" | reason=" +
+        skippedPair.reason
+    );
+  }
+
+  if (!candidates.length) {
+    log.push("[SKIP] no Phase 2 alias backfill candidates found");
+  }
+
+  for (var j = 0; j < candidates.length; j++) {
+    var pair = candidates[j];
+    if (DRY_RUN) {
+      log.push("[DRY] backfill alias \"" + pair.sourceArea + "\" -> \"" + pair.canonicalArea + "\"");
+      continue;
+    }
+
+    try {
+      var result = ensurePhase2LongFormAliasPreserved_(pair.sourceArea, pair.canonicalArea);
+      log.push(
+        result.ok
+          ? "[OK] backfilled alias \"" + pair.sourceArea + "\" -> \"" + result.alias.CanonicalArea + "\""
+          : "[SKIP] backfill failed \"" + pair.sourceArea + "\" -> \"" + pair.canonicalArea + "\" | reason=" + (result.error || "unknown")
+      );
+    } catch (e) {
+      var errorMessage =
+        "[ERROR] backfill \"" +
+        pair.sourceArea +
+        "\" -> \"" +
+        pair.canonicalArea +
+        "\" | error=" +
+        String(e && e.message ? e.message : e);
+      log.push(errorMessage);
+      errors.push(errorMessage);
+    }
+  }
+
+  log.push("Phase 2 Alias Backfill done | candidates=" + candidates.length + " | errors=" + errors.length);
+  var summary = log.join("\n");
+  console.log(summary);
+  return summary;
+}
+
+function runPhase2AliasBackfill() {
+  return runPhase2AliasBackfill_();
+}
+
+/*
+ * runPhase1AreaCleanup_
+ *
+ * One-time maintenance function. Run from the GAS editor.
+ *
+ * Removes two classes of bad canonical areas:
+ *   Group 1 — junk/test/generic/wrong-geography entries: deactivated only.
+ *             No provider migration because no legitimate provider should be
+ *             registered under "road", "gate", "Bhatinda", etc.
+ *   Group 2 — typo canonicals that have a confirmed correct equivalent:
+ *             merged via mergeAreaIntoCanonical_() which creates an alias
+ *             (so old strings still resolve), deactivates the typo as a
+ *             canonical, and migrates any ProviderAreas + Providers summary rows.
+ *
+ * Intentionally limited — Phase 2 items deferred:
+ *   - <Name> / <Name> Jodhpur suffix deduplication (~35 pairs)
+ *   - Kudi / Sangariya / Basni / Pal / Mahamandir / BJS / Boranada /
+ *     Chopasni / Shikargarh variant cluster consolidation
+ *   - AKHALIYA CIRCLE, indra nagar 3, sector c, DHINANA — skipped because
+ *     no confirmed correct canonical equivalent exists yet
+ *
+ * Usage:
+ *   1. Open GAS editor, run with DRY_RUN = true (default) and check logs.
+ *   2. Set DRY_RUN = false, run again to execute.
+ */
+function runPhase1AreaCleanup_() {
+  var DRY_RUN = true; // Set to false to execute — review dry-run logs first
+
+  // Group 1: deactivate only (no alias, no provider migration)
+  var DEACTIVATE_ONLY = [
+    "test area 1",     // explicit test data
+    "B",               // single-letter junk
+    "rod",             // typo of "road", no legitimate area use
+    "lane",            // generic English word, not a Jodhpur locality
+    "road",            // generic word
+    "gate",            // generic word — Jodhpur has specific named gates, not this
+    "mandir",          // Hindi for "temple", not a locality
+    "Scheme",          // planning generic
+    "juni",            // informal Hindi ("old"), not a locality name
+    "Mohallah",        // misspelled generic (Mohalla), not a specific area
+    "cercle",          // typo of "circle", generic
+    "Chouraha",        // Hindi for "crossroads" — generic; specific entries like Munjasar Chouraha exist
+    "chouarha",        // typo variant of Chouraha
+    "RAILWAY STATION", // landmark, not a residential/service area
+    "Bhatinda",        // city in Punjab — wrong geography
+    "Sri Ganganagar",  // city in northern Rajasthan — not Jodhpur
+    "राजस्थान 342008", // Hindi state name + postal code — not an area
+    "jodhour",         // typo of city name, no locality value
+  ];
+
+  // Group 2: merge typo-canonical → correct canonical
+  // mergeAreaIntoCanonical_ handles: alias creation + canonical deactivation + provider migration
+  // Only includes entries with a confirmed correct canonical in the live Areas sheet.
+  // Skipped (no confirmed canonical): AKHALIYA CIRCLE, indra nagar 3, sector c, DHINANA
+  var ALIAS_TO_CANONICAL = [
+    { source: "badwasiya",         canonical: "Bhadwasiya" },
+    { source: "Boranaada Jodhpur", canonical: "Boranada Jodhpur" },
+    { source: "Shikargrah",        canonical: "Shikargarh" },
+    { source: "SANGRIA",           canonical: "Sangariya" },
+  ];
+
+  var log = [];
+  var errors = [];
+
+  log.push("Phase 1 Area Cleanup | DRY_RUN=" + DRY_RUN + " | " + new Date().toISOString());
+
+  for (var i = 0; i < DEACTIVATE_ONLY.length; i++) {
+    var name = DEACTIVATE_ONLY[i];
+    if (DRY_RUN) {
+      log.push("[DRY] deactivate: \"" + name + "\"");
+      continue;
+    }
+    try {
+      var r = setCanonicalAreaActiveState_(name, false);
+      log.push(r.ok
+        ? "[OK] deactivated: \"" + name + "\""
+        : "[SKIP] not found: \"" + name + "\" — " + (r.error || ""));
+    } catch (e) {
+      var msg = "[ERROR] deactivate \"" + name + "\": " + String(e && e.message ? e.message : e);
+      log.push(msg);
+      errors.push(msg);
+    }
+  }
+
+  for (var j = 0; j < ALIAS_TO_CANONICAL.length; j++) {
+    var pair = ALIAS_TO_CANONICAL[j];
+    if (DRY_RUN) {
+      log.push("[DRY] merge: \"" + pair.source + "\" → \"" + pair.canonical + "\"");
+      continue;
+    }
+    try {
+      var mr = mergeAreaIntoCanonical_({ sourceArea: pair.source, canonicalArea: pair.canonical });
+      log.push(mr.ok
+        ? "[OK] merged: \"" + pair.source + "\" → \"" + pair.canonical + "\""
+        : "[SKIP] merge failed: \"" + pair.source + "\" — " + (mr.error || ""));
+    } catch (e) {
+      var merr = "[ERROR] merge \"" + pair.source + "\": " + String(e && e.message ? e.message : e);
+      log.push(merr);
+      errors.push(merr);
+    }
+  }
+
+  log.push("Phase 1 done | errors=" + errors.length);
+  var summary = log.join("\n");
+  console.log(summary);
+  return summary;
 }
 
 function mapUnmappedAreaReview_(data) {

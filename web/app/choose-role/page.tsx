@@ -64,7 +64,7 @@ function PageContent() {
 
           <button
             type="button"
-            onClick={() => goTo("/provider/register")}
+            onClick={() => goTo("/")}
             className="rounded-2xl border-2 border-orange-400 bg-orange-50 px-5 py-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg"
           >
             <p className="text-sm uppercase tracking-wide text-orange-500">Service Receiver</p>

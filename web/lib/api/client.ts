@@ -1,15 +1,13 @@
-const DEFAULT_APPS_SCRIPT_URL =
-  "https://script.google.com/macros/s/AKfycbwnCwMjFbL3xuKMRY2tHGIOJx-9vnxoneLPgtPnP1MRNXE_xlWDhu7mr5iH-e5HyEqk5w/exec";
-
-const RAW_BASE_URL = (process.env.NEXT_PUBLIC_APPS_SCRIPT_URL || "").trim();
-
 export const ADMIN_KEY = process.env.NEXT_PUBLIC_ADMIN_KEY || "";
 
 function resolveBaseUrl() {
-  if (RAW_BASE_URL && !RAW_BASE_URL.includes("XXXX")) {
-    return RAW_BASE_URL.replace(/\/$/, "");
+  const baseUrl = (process.env.APPS_SCRIPT_URL || "").trim();
+
+  if (!baseUrl || baseUrl.includes("XXXX")) {
+    throw new Error("APPS_SCRIPT_URL is not configured.");
   }
-  return DEFAULT_APPS_SCRIPT_URL;
+
+  return baseUrl.replace(/\/$/, "");
 }
 
 export const APPS_SCRIPT_BASE_URL = resolveBaseUrl();

@@ -28,10 +28,10 @@ export async function POST(request: Request) {
       );
     }
 
-    const GOOGLE_SCRIPT_URL = process.env.NEXT_PUBLIC_APPS_SCRIPT_URL;
+    const GOOGLE_SCRIPT_URL = process.env.APPS_SCRIPT_URL;
     if (!GOOGLE_SCRIPT_URL) {
       throw new Error(
-        "NEXT_PUBLIC_APPS_SCRIPT_URL is missing in environment variables"
+        "APPS_SCRIPT_URL is missing in environment variables"
       );
     }
 

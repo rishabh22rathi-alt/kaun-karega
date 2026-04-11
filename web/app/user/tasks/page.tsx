@@ -4,11 +4,13 @@
 import { useEffect, useState } from "react";
 import { UserTask, getUserTasks } from "@/lib/api/userTasks";
 import { getTaskDisplayLabel } from "@/lib/taskDisplay";
+import { getTaskStatusLabel } from "@/lib/taskStatus";
 
 const statusClasses: Record<UserTask["status"], string> = {
   submitted: "bg-amber-50 text-amber-700 border-amber-200",
   notified: "bg-sky-50 text-sky-700 border-sky-200",
   responded: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  no_providers_matched: "bg-slate-100 text-slate-700 border-slate-200",
   "": "bg-slate-100 text-slate-700 border-slate-200",
 };
 
@@ -93,7 +95,7 @@ export default function UserTasksPage() {
                           "bg-slate-100 text-slate-700 border-slate-200"
                         }`}
                       >
-                        {task.status}
+                        {getTaskStatusLabel(task.status)}
                       </span>
                     </td>
                   </tr>

@@ -9,6 +9,7 @@ const SHEET_CATEGORIES = "Categories";
 const SHEET_TASKS = "Tasks";
 const SHEET_AREAS = "Areas";
 const SHEET_NEEDS = "Needs";
+const SHEET_ISSUE_REPORTS = "IssueReports";
 
 const SHEET_PROVIDER_AREAS = "ProviderAreas";
 const SHEET_PROVIDER_SERVICES = "ProviderServices";

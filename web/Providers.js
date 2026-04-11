@@ -216,6 +216,10 @@ function upsertCategoryApplications_(providerId, providerName, phone, categories
     "RequestedCategory",
     "Status",
     "CreatedAt",
+    "UpdatedAt",
+    "AdminActionBy",
+    "AdminActionAt",
+    "AdminActionReason",
   ]);
   const headers = ensureSheetHeaders_(sheet, [
     "RequestID",
@@ -225,6 +229,10 @@ function upsertCategoryApplications_(providerId, providerName, phone, categories
     "RequestedCategory",
     "Status",
     "CreatedAt",
+    "UpdatedAt",
+    "AdminActionBy",
+    "AdminActionAt",
+    "AdminActionReason",
   ]);
   const values = sheet.getDataRange().getValues();
 
@@ -767,6 +775,84 @@ function getAdminByPhone_(phoneRaw) {
   return { ok: false, error: "ACCESS_DENIED" };
 }
 
+function getAdminTeamMembers_() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Admins");
+  if (!sheet || sheet.getLastRow() < 2) {
+    return { ok: true, status: "success", members: [] };
+  }
+
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0] || [];
+  const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, headers.length).getValues();
+  const idxPhone = findHeaderIndexByAliases_(headers, ["Phone", "Mobile"]);
+  const idxName = findHeaderIndexByAliases_(headers, ["Name", "AdminName"]);
+  const idxRole = findHeaderIndexByAliases_(headers, ["Role"]);
+  const idxPermissions = findHeaderIndexByAliases_(headers, ["Permissions", "Permission"]);
+  const idxActive = findHeaderIndexByAliases_(headers, ["Active", "IsActive", "Status"]);
+  const idxTimestamp = findHeaderIndexByAliases_(headers, [
+    "Timestamp",
+    "CreatedAt",
+    "UpdatedAt",
+  ]);
+
+  if (idxPhone === -1) {
+    return { ok: false, status: "error", error: "Admins sheet missing Phone column" };
+  }
+
+  const members = rows
+    .map(function (row) {
+      const phone = normalizeIndianMobile_(row[idxPhone]);
+      if (!phone) return null;
+
+      const name =
+        idxName !== -1 && row[idxName] !== undefined
+          ? String(row[idxName]).trim()
+          : "";
+      const roleRaw =
+        idxRole !== -1 && row[idxRole] !== undefined
+          ? String(row[idxRole]).trim().toLowerCase()
+          : "";
+      const permissionsRaw =
+        idxPermissions !== -1 && row[idxPermissions] !== undefined
+          ? String(row[idxPermissions]).trim()
+          : "";
+      const activeRaw =
+        idxActive !== -1 && row[idxActive] !== undefined
+          ? String(row[idxActive]).trim().toLowerCase()
+          : "yes";
+      const timestamp =
+        idxTimestamp !== -1 && row[idxTimestamp] !== undefined
+          ? String(row[idxTimestamp]).trim()
+          : "";
+
+      return {
+        name: name || "Admin",
+        phone: phone,
+        role: roleRaw || "admin",
+        permissions: permissionsRaw
+          ? permissionsRaw
+              .split(",")
+              .map(function (value) {
+                return String(value || "").trim();
+              })
+              .filter(Boolean)
+          : [],
+        active:
+          activeRaw === "" ||
+          activeRaw === "yes" ||
+          activeRaw === "true" ||
+          activeRaw === "1" ||
+          activeRaw === "active",
+        timestamp: timestamp,
+      };
+    })
+    .filter(Boolean)
+    .sort(function (a, b) {
+      return String(a.name || "").localeCompare(String(b.name || ""));
+    });
+
+  return { ok: true, status: "success", members: members };
+}
+
 function getAdminCategoryApplications_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName("CategoryApplications");
@@ -780,8 +866,12 @@ function getAdminCategoryApplications_() {
   const idxRequestedCategory = findHeaderIndexByAliases_(headers, ["RequestedCategory", "Category"]);
   const idxStatus = findHeaderIndexByAliases_(headers, ["Status"]);
   const idxCreatedAt = findHeaderIndexByAliases_(headers, ["CreatedAt", "Timestamp"]);
+  const idxUpdatedAt = findHeaderIndexByAliases_(headers, ["UpdatedAt"]);
   const idxSource = findHeaderIndexByAliases_(headers, ["Source"]);
   const idxTaskId = findHeaderIndexByAliases_(headers, ["TaskID"]);
+  const idxAdminActionBy = findHeaderIndexByAliases_(headers, ["AdminActionBy"]);
+  const idxAdminActionAt = findHeaderIndexByAliases_(headers, ["AdminActionAt"]);
+  const idxAdminActionReason = findHeaderIndexByAliases_(headers, ["AdminActionReason"]);
 
   return rows
     .map((row) => ({
@@ -805,6 +895,10 @@ function getAdminCategoryApplications_() {
         idxCreatedAt !== -1 && row[idxCreatedAt] !== undefined
           ? String(row[idxCreatedAt]).trim()
           : "",
+      UpdatedAt:
+        idxUpdatedAt !== -1 && row[idxUpdatedAt] !== undefined
+          ? String(row[idxUpdatedAt]).trim()
+          : "",
       Source:
         idxSource !== -1 && row[idxSource] !== undefined
           ? String(row[idxSource]).trim()
@@ -812,6 +906,18 @@ function getAdminCategoryApplications_() {
       TaskID:
         idxTaskId !== -1 && row[idxTaskId] !== undefined
           ? String(row[idxTaskId]).trim()
+          : "",
+      AdminActionBy:
+        idxAdminActionBy !== -1 && row[idxAdminActionBy] !== undefined
+          ? String(row[idxAdminActionBy]).trim()
+          : "",
+      AdminActionAt:
+        idxAdminActionAt !== -1 && row[idxAdminActionAt] !== undefined
+          ? String(row[idxAdminActionAt]).trim()
+          : "",
+      AdminActionReason:
+        idxAdminActionReason !== -1 && row[idxAdminActionReason] !== undefined
+          ? String(row[idxAdminActionReason]).trim()
           : "",
     }))
     .filter((item) => item.RequestID || item.ProviderName || item.RequestedCategory)
@@ -879,8 +985,12 @@ function getCategoryApplicationsState_() {
     "RequestedCategory",
     "Status",
     "CreatedAt",
+    "UpdatedAt",
     "Source",
     "TaskID",
+    "AdminActionBy",
+    "AdminActionAt",
+    "AdminActionReason",
   ]);
   const headers = ensureSheetHeaders_(sheet, [
     "RequestID",
@@ -890,8 +1000,12 @@ function getCategoryApplicationsState_() {
     "RequestedCategory",
     "Status",
     "CreatedAt",
+    "UpdatedAt",
     "Source",
     "TaskID",
+    "AdminActionBy",
+    "AdminActionAt",
+    "AdminActionReason",
   ]);
   const values = sheet.getDataRange().getValues();
 
@@ -904,8 +1018,12 @@ function getCategoryApplicationsState_() {
     idxPhone: findHeaderIndexByAliases_(headers, ["Phone", "ProviderPhone"]),
     idxCategory: findHeaderIndexByAliases_(headers, ["RequestedCategory", "Category"]),
     idxStatus: findHeaderIndexByAliases_(headers, ["Status"]),
+    idxUpdatedAt: findHeaderIndexByAliases_(headers, ["UpdatedAt"]),
     idxSource: findHeaderIndexByAliases_(headers, ["Source"]),
     idxTaskId: findHeaderIndexByAliases_(headers, ["TaskID"]),
+    idxAdminActionBy: findHeaderIndexByAliases_(headers, ["AdminActionBy"]),
+    idxAdminActionAt: findHeaderIndexByAliases_(headers, ["AdminActionAt"]),
+    idxAdminActionReason: findHeaderIndexByAliases_(headers, ["AdminActionReason"]),
   };
 }
 
@@ -1266,7 +1384,23 @@ function reconcileProviderApprovalStates_() {
   }
 }
 
-function updateCategoryApplicationStatus_(requestId, status) {
+function resolveAdminActionActor_(data) {
+  const actorBy = String(
+    (data && (data.AdminActionBy || data.adminActionBy || data.AdminActorName || data.adminActorName)) || ""
+  ).trim();
+  const actorPhone = normalizePhone10_(
+    data &&
+      (data.AdminActionPhone ||
+        data.adminActionPhone ||
+        data.AdminActorPhone ||
+        data.adminActorPhone ||
+        data.phone)
+  );
+
+  return actorBy || actorPhone || "admin";
+}
+
+function updateCategoryApplicationStatus_(requestId, status, options) {
   const normalizedRequestId = String(requestId || "").trim();
   const normalizedStatus = String(status || "").trim().toLowerCase();
   if (!normalizedRequestId) {
@@ -1305,9 +1439,18 @@ function updateCategoryApplicationStatus_(requestId, status) {
       state.idxStatus !== -1 && row[state.idxStatus] !== undefined
         ? String(row[state.idxStatus]).trim().toLowerCase()
         : "";
-    const updates = { Status: normalizedStatus };
-    if (findHeaderIndexByAliases_(state.headers, ["UpdatedAt"]) !== -1) {
-      updates.UpdatedAt = new Date();
+    const updates = {
+      Status: normalizedStatus,
+      UpdatedAt: new Date(),
+    };
+    if (options && Object.prototype.hasOwnProperty.call(options, "adminActionBy")) {
+      updates.AdminActionBy = options.adminActionBy || "";
+    }
+    if (options && Object.prototype.hasOwnProperty.call(options, "adminActionAt")) {
+      updates.AdminActionAt = options.adminActionAt || "";
+    }
+    if (options && Object.prototype.hasOwnProperty.call(options, "adminActionReason")) {
+      updates.AdminActionReason = options.adminActionReason || "";
     }
 
     updateRowFromData_(state.sheet, i + 1, updates);
@@ -1339,8 +1482,30 @@ function approveCategoryRequest_(data) {
     const categoryResult = ensureCategoryExists_(categoryName);
     if (!categoryResult.ok) return categoryResult;
 
-    const requestResult = updateCategoryApplicationStatus_(requestId, "approved");
+    const requestResult = updateCategoryApplicationStatus_(requestId, "approved", {
+      adminActionBy: resolveAdminActionActor_(data),
+      adminActionAt: new Date(),
+      adminActionReason: String(data.reason || data.adminActionReason || "").trim(),
+    });
     if (!requestResult.ok) return requestResult;
+
+    if (typeof appendModerationLog_ === "function") {
+      appendModerationLog_({
+        ThreadID: "",
+        MessageID: "",
+        ActorType: "admin",
+        ActorId: resolveAdminActionActor_(data),
+        EventType: "category_request_approved",
+        Severity: "info",
+        Reason: String(data.reason || data.adminActionReason || "").trim(),
+        ActionTaken: "approved",
+        Metadata: JSON.stringify({
+          requestId: requestId,
+          categoryName: categoryResult.categoryName,
+          providerId: requestResult.providerId || "",
+        }),
+      });
+    }
 
     // Skip provider sync for task-originated entries (no ProviderID)
     if (!requestResult.providerId) {
@@ -1383,14 +1548,38 @@ function approveCategoryRequest_(data) {
 
 function rejectCategoryRequest_(data) {
   const requestId = String(data.requestId || "").trim();
+  const reason = String(data.reason || data.adminActionReason || "").trim();
   if (!requestId) return { ok: false, status: "error", error: "RequestID required" };
+  if (!reason) return { ok: false, status: "error", error: "Reason required" };
 
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
 
   try {
-    const requestResult = updateCategoryApplicationStatus_(requestId, "rejected");
+    const requestResult = updateCategoryApplicationStatus_(requestId, "rejected", {
+      adminActionBy: resolveAdminActionActor_(data),
+      adminActionAt: new Date(),
+      adminActionReason: reason,
+    });
     if (!requestResult.ok) return requestResult;
+
+    if (typeof appendModerationLog_ === "function") {
+      appendModerationLog_({
+        ThreadID: "",
+        MessageID: "",
+        ActorType: "admin",
+        ActorId: resolveAdminActionActor_(data),
+        EventType: "category_request_rejected",
+        Severity: "warning",
+        Reason: reason,
+        ActionTaken: "rejected",
+        Metadata: JSON.stringify({
+          requestId: requestId,
+          providerId: requestResult.providerId || "",
+          requestedCategory: requestResult.requestedCategory || "",
+        }),
+      });
+    }
 
     // Skip provider sync for task-originated entries (no ProviderID)
     if (!requestResult.providerId) {
@@ -1421,6 +1610,70 @@ function rejectCategoryRequest_(data) {
         status: providerSyncResult.providerStatus,
         pendingCategories: providerSyncResult.pendingCategories,
       },
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function updateCategoryRequestAdminAction_(data, nextStatus) {
+  const requestId = String(data.requestId || data.RequestID || "").trim();
+  const normalizedStatus = String(nextStatus || "").trim().toLowerCase();
+  const reason = String(data.reason || data.adminActionReason || "").trim();
+  if (!requestId) return { ok: false, status: "error", error: "RequestID required" };
+  if (!normalizedStatus) return { ok: false, status: "error", error: "Status required" };
+  if (!reason) return { ok: false, status: "error", error: "Reason required" };
+
+  const allowedStatuses = {
+    closed: true,
+    archived: true,
+    deleted_by_admin: true,
+  };
+  if (!allowedStatuses[normalizedStatus]) {
+    return { ok: false, status: "error", error: "Unsupported status" };
+  }
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+
+  try {
+    const actor = resolveAdminActionActor_(data);
+    const requestResult = updateCategoryApplicationStatus_(requestId, normalizedStatus, {
+      adminActionBy: actor,
+      adminActionAt: new Date(),
+      adminActionReason: reason,
+    });
+    if (!requestResult.ok) return requestResult;
+
+    if (requestResult.providerId) {
+      const providerSyncResult = syncProviderApprovalState_(requestResult.providerId, requestResult.phone, {});
+      if (!providerSyncResult.ok) return providerSyncResult;
+    }
+
+    if (typeof appendModerationLog_ === "function") {
+      appendModerationLog_({
+        ThreadID: "",
+        MessageID: "",
+        ActorType: "admin",
+        ActorId: actor,
+        EventType: "category_request_" + normalizedStatus,
+        Severity: normalizedStatus === "deleted_by_admin" ? "warning" : "info",
+        Reason: reason,
+        ActionTaken: normalizedStatus,
+        Metadata: JSON.stringify({
+          requestId: requestId,
+          providerId: requestResult.providerId || "",
+          requestedCategory: requestResult.requestedCategory || "",
+        }),
+      });
+    }
+
+    return {
+      ok: true,
+      status: "success",
+      requestId: requestId,
+      updatedStatus: normalizedStatus,
+      providerId: requestResult.providerId || "",
     };
   } finally {
     lock.releaseLock();
@@ -2168,6 +2421,34 @@ function getProviderDashboardAnalytics_(providerId, services, areas) {
       return String(a.AreaName || "").localeCompare(String(b.AreaName || ""));
     });
 
+  // Build a set of TaskIDs where this provider has opened a chat thread.
+  // Single sheet read — avoids per-task lookups.
+  const chatEngagedTaskIds = new Set();
+  try {
+    const chatSheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SHEET_CHAT_THREADS);
+    if (chatSheet) {
+      const chatValues = chatSheet.getDataRange().getValues();
+      if (chatValues.length > 1) {
+        const chatHeader = chatValues[0].map(function (h) { return String(h || "").trim(); });
+        const ciTaskId = chatHeader.indexOf("TaskID");
+        const ciProviderId = chatHeader.indexOf("ProviderID");
+        if (ciTaskId !== -1 && ciProviderId !== -1) {
+          for (var ci = 1; ci < chatValues.length; ci++) {
+            const chatRow = chatValues[ci];
+            const chatTaskId = String(chatRow[ciTaskId] || "").trim();
+            const chatProviderId = String(chatRow[ciProviderId] || "").trim();
+            if (chatProviderId === normalizedProviderId && matchedTaskIds.has(chatTaskId)) {
+              chatEngagedTaskIds.add(chatTaskId);
+            }
+          }
+        }
+      }
+    }
+  } catch (e) {
+    // Non-blocking: if chat sheet read fails, fall back to matchRows-only Responded signal.
+    Logger.log("getProviderDashboardAnalytics_: chat thread lookup failed: " + e);
+  }
+
   const recentMatchedRequests = Array.from(matchedTaskIds)
     .map(function (taskId) {
       const task = taskLookup.byTaskId[taskId] || {};
@@ -2179,7 +2460,7 @@ function getProviderDashboardAnalytics_(providerId, services, areas) {
         Details: task.Details || "",
         CreatedAt: task.CreatedAt || "",
         Accepted: acceptedTaskIds.has(taskId),
-        Responded: respondedTaskIds.has(taskId),
+        Responded: respondedTaskIds.has(taskId) || chatEngagedTaskIds.has(taskId),
       };
     })
     .sort(function (a, b) {

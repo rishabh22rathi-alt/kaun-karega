@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 
 const CATEGORY_OPTIONS = [
@@ -265,7 +266,12 @@ function EmptyState({ onClear }: { onClear: () => void }) {
 }
 
 export default function INeedPage() {
-  const [selectedCategory, setSelectedCategory] = useState("All Categories");
+  const searchParams = useSearchParams();
+  const categoryFromUrl = searchParams.get("category") ?? "";
+
+  const [selectedCategory, setSelectedCategory] = useState(
+    categoryFromUrl || "All Categories"
+  );
   const [selectedArea, setSelectedArea] = useState("All Areas");
   const [needs, setNeeds] = useState<NeedCardItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -287,8 +293,8 @@ export default function INeedPage() {
   }
 
   useEffect(() => {
-    void loadNeeds();
-  }, []);
+    void loadNeeds(selectedCategory);
+  }, [selectedCategory]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleApplyFilters() {
     void loadNeeds(selectedCategory, selectedArea);
@@ -400,15 +406,6 @@ export default function INeedPage() {
           )}
         </section>
 
-        <div className="mt-8 flex justify-center">
-          <button
-            type="button"
-            disabled
-            className="rounded-2xl border border-slate-200 bg-white px-6 py-3 text-sm font-medium text-slate-400 shadow-sm"
-          >
-            Load more
-          </button>
-        </div>
       </div>
     </div>
   );

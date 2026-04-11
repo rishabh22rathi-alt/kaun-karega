@@ -20,11 +20,7 @@ function normalizeStringArray(value: unknown): string[] {
 }
 
 function resolveAppsScriptUrl(): string {
-  return (
-    process.env.APPS_SCRIPT_URL ||
-    process.env.NEXT_PUBLIC_APPS_SCRIPT_URL ||
-    ""
-  ).trim();
+  return (process.env.APPS_SCRIPT_URL || "").trim();
 }
 
 export async function POST(request: Request) {
