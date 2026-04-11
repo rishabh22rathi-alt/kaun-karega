@@ -930,7 +930,7 @@ const submitResolvedRequest = async (resolution: CategoryResolution) => {
           toPhoneNumber: "91" + trimmedPhone,
         requestId: nextRequestId,
           otpCode: "789012",
-          buttonUrl: "http://localhost:3000/login",
+          buttonUrl: `${process.env.NEXT_PUBLIC_SITE_URL || ""}/login`,
         }),
         // ----------------------------------------------------
       });

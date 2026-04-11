@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 
@@ -265,7 +265,7 @@ function EmptyState({ onClear }: { onClear: () => void }) {
   );
 }
 
-export default function INeedPage() {
+function INeedPageInner() {
   const searchParams = useSearchParams();
   const categoryFromUrl = searchParams.get("category") ?? "";
 
@@ -408,5 +408,13 @@ export default function INeedPage() {
 
       </div>
     </div>
+  );
+}
+
+export default function INeedPage() {
+  return (
+    <Suspense>
+      <INeedPageInner />
+    </Suspense>
   );
 }

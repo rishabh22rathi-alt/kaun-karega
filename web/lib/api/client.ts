@@ -10,15 +10,13 @@ function resolveBaseUrl() {
   return baseUrl.replace(/\/$/, "");
 }
 
-export const APPS_SCRIPT_BASE_URL = resolveBaseUrl();
-
 type QueryValue = string | number | boolean | undefined | null;
 
 export function buildAppsScriptUrl(
   path: string,
   params?: Record<string, QueryValue>
 ) {
-  const url = new URL(APPS_SCRIPT_BASE_URL);
+  const url = new URL(resolveBaseUrl());
   url.searchParams.set("path", path.replace(/^\//, ""));
   if (params) {
     Object.entries(params).forEach(([key, value]) => {
