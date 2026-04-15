@@ -42,7 +42,7 @@ async function injectUserCookie(page: Page) {
     {
       name: "kk_auth_session",
       value: makeSessionCookieValue(),
-      url: "http://localhost:3000",
+      url: "https://kaun-karega.vercel.app",
       sameSite: "Lax",
     },
   ]);

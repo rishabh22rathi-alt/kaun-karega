@@ -529,7 +529,9 @@ export default function Sidebar() {
                   >
                     {isProviderVerified(providerProfile)
                       ? "Phone Verified"
-                      : "Not Verified"}
+                      : String(providerProfile?.PendingApproval || "").toLowerCase() === "yes"
+                        ? "Pending Admin Approval"
+                        : "Not Verified"}
                   </span>
                 </>
               ) : (

@@ -1051,109 +1051,225 @@ const hasArea = area.trim() !== "";
     );
   }
 
+
   return (
-    <div className="flex min-h-screen flex-col items-center bg-slate-50 px-4 py-4 leading-relaxed">
-      <div className="w-full max-w-5xl rounded-3xl border border-slate-200 bg-white p-5 shadow-md md:p-7">
-        {/* Hero: Logo + Title + Tagline */}
-        <div className="mb-4 flex flex-col items-center text-center">
-          <div className="mb-3 flex items-center justify-center">
+    <div className="min-h-screen bg-slate-50">
+
+      {/* ── HERO ─────────────────────────────────────────────────────── */}
+      {/*
+          Brand-colored hero: orange-500 background with white text.
+          Logo is wrapped in a white pill so it reads on any bg color.
+          ALL input/typewriter/suggestions logic is untouched.
+      */}
+      <section className="relative overflow-hidden bg-orange-500 px-4 pb-16 pt-10 text-center">
+        {/* Subtle dot-grid texture for depth */}
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 opacity-[0.06]"
+          style={{
+            backgroundImage: "radial-gradient(circle, white 1px, transparent 1px)",
+            backgroundSize: "22px 22px",
+          }}
+        />
+
+        <div className="relative mx-auto max-w-2xl">
+
+          {/* Logo in white container so it reads on any bg */}
+          <div className="mb-5 inline-flex items-center rounded-2xl bg-white px-5 py-2 shadow-md">
             <Image
               src={logo}
               alt="Kaun Karega logo"
               priority
-              className="mx-auto w-full max-w-[300px] md:max-w-[420px]"
+              className="h-9 w-auto md:h-11"
             />
           </div>
-        </div>
 
-        {/* Two-column layout: main form + I NEED sidebar */}
-        <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
+          {/* Eyebrow — establishes location & category */}
+          <p className="mb-2 text-sm font-semibold uppercase tracking-widest text-orange-100">
+            Local Services &#183; Jodhpur
+          </p>
 
-          {/* Main column: search + steps */}
-          <div className="flex-1 min-w-0">
+          {/* Headline */}
+          <h1 className="text-4xl font-extrabold leading-tight tracking-tight text-white md:text-5xl">
+            Kaam hai?{" "}
+            <span className="text-orange-100">Kaun Karega!</span>
+          </h1>
+          <p className="mx-auto mt-3 max-w-md text-base text-orange-100 md:text-lg">
+            Book trusted local services — Electrician, Plumber, Tutor and more.
+          </p>
 
-        {/* Step 1: Category search bar */}
-        <div className="relative mx-auto mb-6 mt-2 w-full max-w-3xl">
-          <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-slate-600">
-            What help do you need?
-          </label>
-          <div
-            className="relative flex items-center rounded-full border border-slate-300 bg-white px-5 py-5 shadow-[0_8px_24px_rgba(0,0,0,0.08)] transition-all duration-200 focus-within:border-orange-400 focus-within:shadow-[0_8px_32px_rgba(249,115,22,0.15)] focus-within:ring-2 focus-within:ring-orange-400/20"
-          >
-            <span className="mr-3 text-xl text-orange-400">🔍</span>
-            <input
-              ref={categoryInputRef}
-              type="text"
-              value={category}
-              onChange={(e) => {
-                const value = e.target.value;
-                setCategory(value);
-                setSelectedCategory(value.trim());
-                setHighlightIndex(-1);
-              }}
-              onFocus={() => setIsCategoryFocused(true)}
-              onBlur={() => { if (!category) setIsCategoryFocused(false); }}
-              onKeyDown={handleCategoryKeyDown}
-              placeholder={isHydrated && !isCategoryFocused && twText ? "" : "What service do you need? (e.g. Electrician, Plumber)"}
-              className="w-full bg-transparent text-base text-slate-900 outline-none placeholder:text-slate-500 md:text-lg"
-            />
-            {/* Typewriter overlay — visible only when input is empty and not focused */}
-            {isHydrated && !isCategoryFocused && category === "" && twText !== "" && (
-              <div
-                aria-hidden="true"
-                className="pointer-events-none absolute inset-y-0 flex items-center rounded-full bg-white pl-[52px] pr-5"
-                style={{ left: 0, right: 0 }}
-              >
-                <span className="text-base font-medium text-slate-600 md:text-lg">
-                  {twText}
-                  <span
-                    className="ml-px"
-                    style={{ opacity: twCaretOn ? 1 : 0, transition: "opacity 50ms" }}
-                  >|</span>
-                </span>
-              </div>
-            )}
-          </div>
-          {showSuggestions && (
-            <div
-              ref={categoryDropdownRef}
-              className="absolute left-0 right-0 z-50 mt-2 rounded-xl border border-slate-200 bg-sky-50 shadow-lg"
-            >
-              {filteredCategories.map((item, index) => {
-                const isHighlighted = index === highlightIndex;
-                return (
-                  <button
-                    key={item.name}
-                    type="button"
-                    className={`w-full px-4 py-2 text-left text-sm text-slate-800 ${
-                      isHighlighted ? "bg-sky-100" : "hover:bg-sky-100"
-                    }`}
-                    onMouseEnter={() => setHighlightIndex(index)}
-                    onClick={() => selectCategory(item.name)}
+          {/* Search card */}
+          <div className="mx-auto mt-8 max-w-xl">
+
+            {/* Category input — all logic unchanged */}
+            <div className="relative">
+              <div className="relative flex items-center rounded-2xl border border-transparent bg-white px-5 py-4 shadow-xl transition-all duration-200 focus-within:ring-2 focus-within:ring-white/60">
+                <span className="mr-3 shrink-0 text-xl text-orange-500">&#128269;</span>
+                <input
+                  ref={categoryInputRef}
+                  type="text"
+                  value={category}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    setCategory(value);
+                    setSelectedCategory(value.trim());
+                    setHighlightIndex(-1);
+                  }}
+                  onFocus={() => setIsCategoryFocused(true)}
+                  onBlur={() => { if (!category) setIsCategoryFocused(false); }}
+                  onKeyDown={handleCategoryKeyDown}
+                  placeholder={isHydrated && !isCategoryFocused && twText ? "" : "What service do you need? (e.g. Electrician)"}
+                  className="min-w-0 flex-1 bg-transparent text-base text-slate-900 outline-none placeholder:text-slate-400 md:text-lg"
+                />
+                {/* Typewriter overlay — must cover placeholder when active */}
+                {isHydrated && !isCategoryFocused && category === "" && twText !== "" && (
+                  <div
+                    aria-hidden="true"
+                    className="pointer-events-none absolute inset-y-0 left-0 right-0 flex items-center rounded-2xl bg-white pl-[52px] pr-5"
                   >
-                    {renderHighlightedMatch(item.name, category)}
-                  </button>
-                );
-              })}
-            </div>
-          )}
-          {categoryResolution.isConfident &&
-            categoryResolution.reason !== "exact" && (
-              <p className="mt-2 text-xs text-slate-500">
-                Using category:
-                <span className="font-semibold text-slate-700">
-                  {categoryResolution.resolvedName}
-                </span>
-              </p>
-            )}
-        </div>
+                    <span className="text-base font-medium text-slate-500 md:text-lg">
+                      {twText}
+                      <span
+                        className="ml-px"
+                        style={{ opacity: twCaretOn ? 1 : 0, transition: "opacity 50ms" }}
+                      >|</span>
+                    </span>
+                  </div>
+                )}
+              </div>
 
-        {/* Step 2: When do you need it? */}
-        {hasCategory && (
-          <div className="mb-6">
-            <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-slate-600">
-              Step 2 · When do you need it?
-            </label>
+              {/* Suggestions dropdown */}
+              {showSuggestions && (
+                <div
+                  ref={categoryDropdownRef}
+                  className="absolute left-0 right-0 z-50 mt-1 overflow-hidden rounded-xl border border-slate-100 bg-white shadow-2xl"
+                >
+                  {filteredCategories.map((item, index) => {
+                    const isHighlighted = index === highlightIndex;
+                    return (
+                      <button
+                        key={item.name}
+                        type="button"
+                        className={`w-full px-4 py-2.5 text-left text-sm text-slate-800 transition-colors ${
+                          isHighlighted
+                            ? "bg-orange-50 text-orange-800"
+                            : "hover:bg-orange-50 hover:text-orange-800"
+                        }`}
+                        onMouseEnter={() => setHighlightIndex(index)}
+                        onClick={() => selectCategory(item.name)}
+                      >
+                        {renderHighlightedMatch(item.name, category)}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Fuzzy match hint */}
+              {categoryResolution.isConfident && categoryResolution.reason !== "exact" && (
+                <p className="mt-2 text-left text-xs text-orange-100">
+                  Using category:{" "}
+                  <span className="font-semibold text-white">
+                    {categoryResolution.resolvedName}
+                  </span>
+                </p>
+              )}
+            </div>
+
+            {/* Section label above chips */}
+            <p className="mt-5 text-left text-xs font-bold uppercase tracking-wider text-orange-100">
+              Popular services:
+            </p>
+
+            {/* Quick service chips — icon + label grid */}
+            <div className="mt-2 grid grid-cols-3 gap-2 sm:grid-cols-6">
+              {(
+                [
+                  ["Electrician", "⚡"],
+                  ["Plumber",     "🔧"],
+                  ["Carpenter",   "🔨"],
+                  ["AC Repair",   "❄️"],
+                  ["Home Tutor",  "📚"],
+                  ["Painter",     "🖌️"],
+                ] as [string, string][]
+              ).map(([label, icon]) => (
+                <button
+                  key={label}
+                  type="button"
+                  onClick={() => {
+                    selectCategory(label);
+                    categoryInputRef.current?.focus();
+                  }}
+                  className={`flex flex-col items-center gap-1.5 rounded-xl border px-2 py-3 text-center text-xs font-semibold transition ${
+                    category === label
+                      ? "border-white bg-white text-orange-600 shadow-sm"
+                      : "border-orange-400/60 bg-white/10 text-white hover:bg-white/20"
+                  }`}
+                >
+                  <span className="text-base leading-none">{icon}</span>
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ── STATS BAR ────────────────────────────────────────────────── */}
+      {!hasCategory && (
+        <div className="border-b border-slate-100 bg-white">
+          <div className="mx-auto grid max-w-2xl grid-cols-3 divide-x divide-slate-100">
+            <div className="py-4 text-center">
+              <p className="text-xl font-extrabold text-orange-500">50+</p>
+              <p className="mt-0.5 text-xs text-slate-500">Service Types</p>
+            </div>
+            <div className="py-4 text-center">
+              <p className="text-xl font-extrabold text-orange-500">40+</p>
+              <p className="mt-0.5 text-xs text-slate-500">Areas in Jodhpur</p>
+            </div>
+            <div className="py-4 text-center">
+              <p className="text-xl font-extrabold text-orange-500">Free</p>
+              <p className="mt-0.5 text-xs text-slate-500">To Post a Request</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── PROGRESSIVE FORM STEPS ───────────────────────────────────── */}
+      {hasCategory && (
+        <div className="mx-auto max-w-xl space-y-4 px-4 py-8">
+
+          {/* Selected service breadcrumb */}
+          <div className="flex items-center gap-2 rounded-xl bg-orange-50 px-4 py-2.5">
+            <span className="text-sm font-semibold text-orange-700">
+              Service:
+            </span>
+            <span className="rounded-full bg-orange-500 px-3 py-0.5 text-xs font-bold text-white">
+              {category}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setCategory("");
+                setSelectedCategory("");
+                setTime("");
+                setArea("");
+                setDetails("");
+              }}
+              className="ml-auto text-xs text-orange-400 hover:text-orange-600"
+            >
+              Change
+            </button>
+          </div>
+
+          {/* Step 2: When */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <p className="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-400">
+              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-orange-500 text-[10px] font-bold text-white">
+                2
+              </span>
+              When do you need it?
+            </p>
             <WhenNeedIt
               selectedTime={time}
               serviceDate={serviceDate}
@@ -1173,266 +1289,316 @@ const hasArea = area.trim() !== "";
                 if (error) setError("");
               }}
             />
-            </div>
-        )}
-
-        {/* Step 3: Where do you need it? */}
-        {hasCategory && hasTime && (
-          <div className="mb-6">
-            <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-slate-600">
-              Step 3 · Where do you need it?
-            </label>
-            <AreaSelection
-              selectedArea={area}
-              onSelect={(value) => {
-                const normalizedArea = normalizeAreaValue(value);
-                setArea(normalizedArea);
-                setAreaError("");
-                console.debug("[home] area selected:", normalizedArea);
-              }}
-              errorMessage={areaError}
-            />
           </div>
-        )}
 
-        {/* Step 4: Task details + Submit */}
-        {hasCategory && hasTime && hasArea && (
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <label className="text-xs font-semibold uppercase tracking-wide text-slate-600">
-                Step 4 · Task details (optional)
-              </label>
-              <textarea
-                value={details}
-                onChange={(e) => setDetails(e.target.value)}
-                placeholder="Describe your work in 1–2 sentences (e.g. &quot;Kitchen tap is leaking, need plumber today evening&quot;)..."
-                rows={3}
-                className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-400/30"
+          {/* Step 3: Where */}
+          {hasTime && (
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <p className="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-400">
+                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-orange-500 text-[10px] font-bold text-white">
+                  3
+                </span>
+                Where do you need it?
+              </p>
+              <AreaSelection
+                selectedArea={area}
+                onSelect={(value) => {
+                  const normalizedArea = normalizeAreaValue(value);
+                  setArea(normalizedArea);
+                  setAreaError("");
+                  console.debug("[home] area selected:", normalizedArea);
+                }}
+                errorMessage={areaError}
               />
             </div>
+          )}
 
-            {error && <div className="mt-2 text-sm text-red-600">{error}</div>}
-            {debug && (
-              <pre className="mt-2 text-xs whitespace-pre-wrap rounded border bg-gray-50 p-2">
-                {debug}
-              </pre>
-            )}
-            {showDirectContactOption && (
-              <div className="mt-4 p-4 bg-slate-50 border rounded-xl">
-                <p className="text-sm font-medium text-slate-700">
-                  Do you want to contact providers yourself?
+          {/* Step 4: Details + Submit */}
+          {hasTime && hasArea && (
+            <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div>
+                <p className="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-400">
+                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-orange-500 text-[10px] font-bold text-white">
+                    4
+                  </span>
+                  Task details (optional)
                 </p>
-                <div className="flex gap-3 mt-2">
-                  <button
-                    className="px-4 py-2 rounded-lg bg-green-600 text-white"
-                    onClick={handleShowProviders}
-                  >
-                    Yes, show numbers
-                  </button>
-                  <button
-                    className="px-4 py-2 rounded-lg bg-slate-200 text-slate-700"
-                    onClick={() => setShowProvidersList(false)}
-                  >
-                    No
-                  </button>
-                </div>
+                <textarea
+                  value={details}
+                  onChange={(e) => setDetails(e.target.value)}
+                  placeholder="Describe your work in 1&#8211;2 sentences (e.g. &quot;Kitchen tap is leaking, need plumber today evening&quot;)..."
+                  rows={3}
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-800 focus:border-orange-400 focus:outline-none focus:ring-2 focus:ring-orange-400/20"
+                />
               </div>
-            )}
-            {showProvidersList && (
-              <div className="mt-4 space-y-3">
-                {providersList.map((p) => (
-                  <div key={p.phone} className="border rounded-lg p-3">
-                    <p className="font-semibold">{p.name}</p>
-                    <p className="text-sm text-slate-600">📍 {p.area}</p>
-                    <p className="text-sm text-slate-600">📞 {p.phone}</p>
-                    <a
-                      href={`tel:${p.phone}`}
-                      className="mt-2 inline-block px-3 py-1 bg-blue-500 text-white rounded-lg"
+
+              {error && <div className="text-sm text-red-600">{error}</div>}
+              {debug && (
+                <pre className="text-xs whitespace-pre-wrap rounded border bg-gray-50 p-2">
+                  {debug}
+                </pre>
+              )}
+
+              {showDirectContactOption && (
+                <div className="rounded-xl border bg-slate-50 p-4">
+                  <p className="text-sm font-medium text-slate-700">
+                    Do you want to contact providers yourself?
+                  </p>
+                  <div className="mt-2 flex gap-3">
+                    <button
+                      className="rounded-lg bg-green-600 px-4 py-2 text-sm text-white"
+                      onClick={handleShowProviders}
                     >
-                      Call
-                    </a>
+                      Yes, show numbers
+                    </button>
+                    <button
+                      className="rounded-lg bg-slate-200 px-4 py-2 text-sm text-slate-700"
+                      onClick={() => setShowProvidersList(false)}
+                    >
+                      No
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {showProvidersList && (
+                <div className="space-y-3">
+                  {providersList.map((p) => (
+                    <div key={p.phone} className="rounded-xl border border-slate-200 p-3">
+                      <p className="font-semibold text-slate-800">{p.name}</p>
+                      <p className="mt-0.5 text-sm text-slate-500">&#128205; {p.area}</p>
+                      <p className="text-sm text-slate-500">&#128222; {p.phone}</p>
+                      <a
+                        href={`tel:${p.phone}`}
+                        className="mt-2 inline-block rounded-lg bg-blue-500 px-3 py-1 text-sm text-white"
+                      >
+                        Call
+                      </a>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <button
+                type="button"
+                onClick={handleSubmit}
+                disabled={loading || isRedirecting || !canSubmit || Boolean(serviceDateError)}
+                className="w-full rounded-xl bg-orange-500 px-4 py-4 text-base font-bold text-white shadow-md transition hover:bg-orange-600 hover:shadow-lg active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {loading || isRedirecting ? "Submitting..." : "Find Providers"}
+              </button>
+
+              {!isLoggedIn && (
+                <p className="text-center text-xs text-slate-400">
+                  Your number will be collected in the next step to send you updates on WhatsApp.
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── HOW IT WORKS ─────────────────────────────────────────────── */}
+      {!hasCategory && (
+        <section className="bg-white px-4 py-14">
+          <div className="mx-auto max-w-2xl">
+            <h2 className="text-center text-2xl font-bold text-slate-900">How it works</h2>
+            <p className="mt-1 text-center text-sm text-slate-500">Simple. Fast. Reliable.</p>
+
+            <div className="relative mt-10">
+              {/* Horizontal connector line — desktop only */}
+              <div
+                aria-hidden="true"
+                className="absolute left-[16.7%] right-[16.7%] top-10 hidden h-0.5 bg-orange-100 sm:block"
+              />
+
+              <div className="grid grid-cols-1 gap-6 sm:grid-cols-3">
+                {[
+                  { step: "1", icon: "📋", title: "Post your task",    desc: "Tell us what you need and where. Takes under a minute." },
+                  { step: "2", icon: "🔔", title: "Providers respond", desc: "Matched, verified providers in your area are notified instantly." },
+                  { step: "3", icon: "✅", title: "Get work done",     desc: "Connect via private chat and get your job completed." },
+                ].map(({ step, icon, title, desc }) => (
+                  <div
+                    key={step}
+                    className="relative flex flex-col items-center rounded-2xl border border-slate-100 bg-slate-50 px-5 py-8 text-center shadow-sm"
+                  >
+                    <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-full bg-orange-500 text-sm font-bold text-white shadow">
+                      {step}
+                    </div>
+                    <span className="mb-2 text-3xl leading-none">{icon}</span>
+                    <p className="text-sm font-bold text-slate-800">{title}</p>
+                    <p className="mt-2 text-xs leading-5 text-slate-500">{desc}</p>
                   </div>
                 ))}
               </div>
-            )}
-
-            <button
-              type="button"
-              onClick={handleSubmit}
-              disabled={loading || isRedirecting || !canSubmit || Boolean(serviceDateError)}
-              className="w-full rounded-full bg-sky-500 px-4 py-3 text-sm font-semibold text-white shadow-md transition hover:bg-sky-600 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-60 md:text-base"
-            >
-              {loading || isRedirecting
-                ? "Submitting your request..."
-                : "Submit Request"}
-            </button>
-            {error && <div className="mt-2 text-sm text-red-600">{error}</div>}
-            {debug && (
-              <pre className="mt-2 text-xs whitespace-pre-wrap rounded border bg-gray-50 p-2">
-                {debug}
-              </pre>
-            )}
+            </div>
           </div>
-        )}
+        </section>
+      )}
 
-    {/* Small hint at the bottom */}
-    {!isLoggedIn && (
-      <p className="mt-6 text-center text-xs text-gray-600 font-medium">
-        Your phone number will be collected later in a quick step to send you updates on WhatsApp.
-      </p>
-    )}
-          </div>{/* end main column */}
+      {/* ── PROVIDER CTA ─────────────────────────────────────────────── */}
+      {!hasCategory && (
+        <section className="bg-gradient-to-br from-slate-800 to-slate-900 px-4 py-14">
+          <div className="mx-auto max-w-2xl sm:flex sm:items-center sm:gap-12">
 
-        </div>{/* end two-column layout */}
-      </div>{/* end white card */}
+            {/* Left: copy */}
+            <div className="flex-1 text-center sm:text-left">
+              <p className="text-xs font-bold uppercase tracking-widest text-orange-400">
+                For Service Providers
+              </p>
+              <h2 className="mt-2 text-2xl font-bold text-white">
+                Grow your business with Kaun Karega
+              </h2>
+              <p className="mt-2 text-sm leading-6 text-slate-300">
+                Get real customer leads in your area — free.
+              </p>
 
+              {/* Benefit bullets */}
+              <ul className="mt-4 space-y-1.5 text-sm text-slate-300">
+                {[
+                  "Zero upfront cost or commission",
+                  "Customers come to you — no cold calling",
+                  "Manage leads from your dashboard",
+                ].map((b) => (
+                  <li key={b} className="flex items-start gap-2 sm:justify-start">
+                    <span className="mt-0.5 shrink-0 text-orange-400">&#10003;</span>
+                    {b}
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            {/* Right: CTA button */}
+            <div className="mt-8 text-center sm:mt-0 sm:shrink-0">
+              <button
+                type="button"
+                onClick={() => router.push("/provider/register")}
+                className="inline-flex items-center gap-2 rounded-xl bg-orange-500 px-7 py-3.5 text-sm font-bold text-white shadow-lg transition hover:bg-orange-600 hover:shadow-xl"
+              >
+                Register as Provider &#8594;
+              </button>
+              <p className="mt-2 text-xs text-slate-400">Free registration. No commitment.</p>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* ── OTP MODAL ────────────────────────────────────────────────── */}
       {showOtpModal && !isLoggedIn && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
-          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl space-y-4">
-            <div className="space-y-2 text-center">
-              <h3 className="text-xl font-semibold text-slate-900">
-                Verify your phone number
-              </h3>
-              <p className="text-sm text-slate-600 mt-2">
-                To serve you better, please verify your number.
-                <br />
-                This helps us connect your request to the right nearby providers.
-                <br />
-                <br />
-                Be assured — your phone number will NOT be shared with any provider.
-                <br />
-                You will receive a WhatsApp notification where a secure chat box
-                <br />
-                will appear for your negotiation.
-              </p>
-            </div>
+          <div className="w-full max-w-md space-y-4 rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="space-y-2 text-center">
+              <h3 className="text-xl font-semibold text-slate-900">
+                Verify your phone number
+              </h3>
+              <p className="mt-2 text-sm text-slate-600">
+                To serve you better, please verify your number.
+                <br />
+                This helps us connect your request to the right nearby providers.
+                <br />
+                <br />
+                Be assured &#8212; your phone number will NOT be shared with any provider.
+                <br />
+                You will receive a WhatsApp notification where a secure chat box
+                <br />
+                will appear for your negotiation.
+              </p>
+            </div>
 
-            <div className="space-y-2">
-              <label className="text-sm font-semibold text-slate-700">
-                Phone Number
-              </label>
-              <input
-                type="tel"
-                value={phone}
-                onChange={(e) => setPhone(e.target.value.replace(/\D/g, "").slice(0, 10))}
-                className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-400/30"
-                placeholder="10-digit mobile number"
-                inputMode="numeric"
-              />
-                  <button
-                    type="button"
-                    onClick={sendOtp}
-                    disabled={isSending || isLoading || otpLoading || phone.trim().length !== 10}
-                    className="w-full rounded-full bg-sky-500 px-4 py-3 text-sm font-semibold text-white shadow-md transition hover:bg-sky-600 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {isSending ? "Sending..." : "Send OTP"}
+            <div className="space-y-2">
+              <label className="text-sm font-semibold text-slate-700">
+                Phone Number
+              </label>
+              <input
+                type="tel"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value.replace(/\D/g, "").slice(0, 10))}
+                className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-400/30"
+                placeholder="10-digit mobile number"
+                inputMode="numeric"
+              />
+              <button
+                type="button"
+                onClick={sendOtp}
+                disabled={isSending || isLoading || otpLoading || phone.trim().length !== 10}
+                className="w-full rounded-full bg-sky-500 px-4 py-3 text-sm font-semibold text-white shadow-md transition hover:bg-sky-600 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isSending ? "Sending..." : "Send OTP"}
+              </button>
+            </div>
+
+            {otpSent && (
+              <div className="space-y-2">
+                <label className="text-sm font-semibold text-slate-700">
+                  Enter OTP
+                </label>
+                <input
+                  type="tel"
+                  value={otp}
+                  onChange={(e) => {
+                    const value = e.target.value.replace(/\D/g, "");
+                    if (value.length <= 4) setOtp(value);
+                    if (value.length === 4) {
+                      setTimeout(() => {
+                        document.getElementById("verifyOtpBtn")?.focus();
+                      }, 50);
+                    }
+                  }}
+                  maxLength={4}
+                  inputMode="numeric"
+                  pattern="\\d{4}"
+                  className={`w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-center text-lg tracking-[0.25em] shadow-sm focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-400/30 ${
+                    shakeOtp ? "shake" : ""
+                  }`}
+                  placeholder="____"
+                />
+                <button
+                  type="button"
+                  id="verifyOtpBtn"
+                  onClick={verifyOtp}
+                  disabled={otpLoading || otp.trim().length !== 4}
+                  className="w-full rounded-full bg-emerald-500 px-4 py-3 text-sm font-semibold text-white shadow-md transition hover:bg-emerald-600 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {otpLoading ? "Verifying..." : "Verify OTP"}
+                </button>
+              </div>
+            )}
+
+            {otpSent && (
+              <div className="mt-2 text-center text-sm text-slate-600">
+                {!canResend ? (
+                  <span>
+                    Resend OTP in {String(Math.floor(otpTimer / 60)).padStart(2, "0")}:
+                    {String(otpTimer % 60).padStart(2, "0")}
+                  </span>
+                ) : (
+                  <button onClick={handleResendOtp} className="font-medium text-blue-600">
+                    Resend OTP
                   </button>
-            </div>
+                )}
+              </div>
+            )}
 
-            {otpSent && (
-              <div className="space-y-2">
-                <label className="text-sm font-semibold text-slate-700">
-                  Enter OTP
-                </label>
-                <input
-                  type="tel"
-                  value={otp}
-                  onChange={(e) => {
-                    const value = e.target.value.replace(/\D/g, ""); // allow only digits
-                    if (value.length <= 4) setOtp(value);
-                    if (value.length === 4) {
-                      setTimeout(() => {
-                        document.getElementById("verifyOtpBtn")?.focus();
-                      }, 50);
-                    }
-                  }}
-                  maxLength={4}
-                  inputMode="numeric"
-                  pattern="\\d{4}"
-                  className={`w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-center text-lg tracking-[0.25em] shadow-sm focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-400/30 ${
-                    shakeOtp ? "shake" : ""
-                  }`}
-                  placeholder="____"
-                />
-                <button
-                  type="button"
-                  id="verifyOtpBtn"
-                  onClick={verifyOtp}
-                  disabled={otpLoading || otp.trim().length !== 4}
-                  className="w-full rounded-full bg-emerald-500 px-4 py-3 text-sm font-semibold text-white shadow-md transition hover:bg-emerald-600 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {otpLoading ? "Verifying..." : "Verify OTP"}
-                </button>
-              </div>
-            )}
-
-            {otpSent && (
-              <div className="text-center mt-2 text-sm text-slate-600">
-                {!canResend ? (
-                  <span>
-                    Resend OTP in {String(Math.floor(otpTimer / 60)).padStart(2, "0")}:
-                    {String(otpTimer % 60).padStart(2, "0")}
-                  </span>
-                ) : (
-                  <button onClick={handleResendOtp} className="text-blue-600 font-medium">
-                    Resend OTP
-                  </button>
-                )}
-              </div>
-            )}
-
-            {otpError && (
-              <p className="text-sm text-red-600 text-center">{otpError}</p>
-            )}
-            <style jsx>{`
-              .shake {
-                animation: shake 0.3s linear;
-              }
-              @keyframes shake {
-                0% {
-                  transform: translateX(0);
-                }
-                20% {
-                  transform: translateX(-4px);
-                }
-                40% {
-                  transform: translateX(4px);
-                }
-                60% {
-                  transform: translateX(-4px);
-                }
-                80% {
-                  transform: translateX(4px);
-                }
-                100% {
-                  transform: translateX(0);
-                }
-              }
-            `}</style>
+            {otpError && (
+              <p className="text-center text-sm text-red-600">{otpError}</p>
+            )}
+            <style jsx>{`
+              .shake {
+                animation: shake 0.3s linear;
+              }
+              @keyframes shake {
+                0% { transform: translateX(0); }
+                20% { transform: translateX(-4px); }
+                40% { transform: translateX(4px); }
+                60% { transform: translateX(-4px); }
+                80% { transform: translateX(4px); }
+                100% { transform: translateX(0); }
+              }
+            `}</style>
+          </div>
         </div>
-      </div>
-    )}
+      )}
 
-      {/* Service Provider onboarding section */}
-      <section className="mt-10 rounded-2xl bg-orange-50 border border-orange-200 px-6 py-12 text-center">
-        <h2 className="text-2xl font-bold text-slate-900">
-          Are you a service provider?
-        </h2>
-        <p className="mt-3 text-sm leading-6 text-slate-600 max-w-md mx-auto">
-          Join Kaun Karega to get real customer leads in your area. Grow your business with zero upfront cost.
-        </p>
-        <button
-          type="button"
-          onClick={() => router.push("/provider/register")}
-          className="mt-6 inline-flex rounded-full bg-orange-500 px-6 py-3 text-sm font-semibold text-white shadow-md transition hover:bg-orange-600 hover:shadow-lg"
-        >
-          Register as Service Provider
-        </button>
-      </section>
-  </div>
-);
+    </div>
+  );
 }
-
-
-
-

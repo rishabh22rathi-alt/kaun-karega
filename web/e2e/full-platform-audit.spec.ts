@@ -13,7 +13,7 @@
 
 import { test, expect, Page, Route } from "@playwright/test";
 
-const BASE_URL = "http://localhost:3000";
+const BASE_URL = "https://kaun-karega.vercel.app";
 const ZZ_CATEGORY = "Electrician";
 const ZZ_AREA = "Sardarpura";
 const ZZ_DETAILS = "ZZ QA full platform audit phase 1 task. Please ignore.";
@@ -748,7 +748,7 @@ test.describe("Kaun Karega - Full Platform Audit", () => {
 
     // 1. homepage loads
     await gotoHome(page);
-    await expect(page).toHaveURL(/http:\/\/localhost:3000\/?$/);
+    await expect(page).toHaveURL(new RegExp(`${new URL(BASE_URL).origin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/?$`));
 
     // 2. service/category entry works
     await fillCategory(page, ZZ_CATEGORY);

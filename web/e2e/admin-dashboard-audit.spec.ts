@@ -8,7 +8,7 @@
  *               verify-otp returns { isAdmin:true } → localStorage kk_admin_session set
  *               → router.replace("/admin/dashboard")
  *
- * Runs with pw-e2e-temp.config.ts (headless, baseURL=http://localhost:3000)
+ * Runs against the live deployment via the shared Playwright baseURL.
  */
 
 import { test, expect, Page } from "@playwright/test";
@@ -19,7 +19,7 @@ import * as crypto from "crypto";
 // ─── Config ──────────────────────────────────────────────────────────────────
 
 const ADMIN_PHONE = "9462098100";
-const BASE_URL = "http://localhost:3000";
+const BASE_URL = "https://kaun-karega.vercel.app";
 
 // ─── Load .env.local ─────────────────────────────────────────────────────────
 
@@ -267,7 +267,7 @@ test("Admin Dashboard — Full E2E Audit", async ({ page }) => {
 
   // STEP 1: Open homepage
   console.log(`\n─── STEP 1: Open homepage ${elapsed()} ───`);
-  await page.goto(BASE_URL, { waitUntil: "domcontentloaded" });
+  await page.goto("/", { waitUntil: "domcontentloaded" });
   const homeLoaded = await page.locator("text=Kaun Karega").first().isVisible().catch(() => false);
   if (homeLoaded) {
     pass("Homepage Load", "Homepage rendered without crash");
@@ -277,7 +277,7 @@ test("Admin Dashboard — Full E2E Audit", async ({ page }) => {
 
   // STEP 2: Navigate to /admin/login
   console.log("\n─── STEP 2: Navigate to /admin/login ───");
-  await page.goto(`${BASE_URL}/admin/login`, { waitUntil: "domcontentloaded" });
+  await page.goto("/admin/login", { waitUntil: "domcontentloaded" });
   // Admin login page redirects immediately to /login?next=/admin/dashboard
   await expect(page).toHaveURL(/\/login/, { timeout: 10_000 });
   const loginHeading = await page.locator("text=Verify your phone").isVisible().catch(() => false);

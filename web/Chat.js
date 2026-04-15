@@ -1143,6 +1143,36 @@ function chatSendMessage_(data) {
       }
     }
 
+    if (actor.actorType === "user") {
+      const providerPhone = normalizePhone10_(threadState.thread.ProviderPhone);
+      const taskLookup = typeof getTaskDisplayLookup_ === "function" ? getTaskDisplayLookup_() : {};
+      const displayId =
+        taskLookup &&
+        taskLookup[String(threadState.thread.TaskID || "").trim()] &&
+        String(taskLookup[String(threadState.thread.TaskID || "").trim()].DisplayID || "").trim();
+
+      if (providerPhone && threadId && displayId) {
+        try {
+          sendProviderUserRepliedNotification_(providerPhone, displayId, threadId);
+        } catch (err) {
+          Logger.log(
+            "sendProviderUserRepliedNotification_ failed | threadId=%s | taskId=%s | error=%s",
+            threadId,
+            String(threadState.thread.TaskID || "").trim(),
+            String(err && err.message ? err.message : err)
+          );
+        }
+      } else {
+        Logger.log(
+          "sendProviderUserRepliedNotification_ skipped | threadId=%s | taskId=%s | missingProviderPhone=%s | missingDisplayId=%s",
+          threadId,
+          String(threadState.thread.TaskID || "").trim(),
+          !providerPhone,
+          !displayId
+        );
+      }
+    }
+
     const threadUpdates = {
       UpdatedAt: now,
       LastMessageAt: now,

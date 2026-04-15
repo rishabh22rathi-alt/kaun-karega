@@ -33,7 +33,7 @@ const ZZ_PROVIDER_ID = "ZZ-PROV-QA-CTA-001";
 // The fixed chat link format that buildChatThreadLink_ should now produce:
 const EXPECTED_CHAT_PATH = `/chat/thread/${encodeURIComponent(ZZ_THREAD_ID)}?actor=user`;
 
-const BASE_URL = "http://localhost:3000";
+const BASE_URL = "https://kaun-karega.vercel.app";
 
 // ─── Auth helpers ─────────────────────────────────────────────────────────────
 
@@ -233,7 +233,7 @@ test.describe("WhatsApp Chat CTA — ?actor=user Fix", () => {
     await setupChatThreadRoutes(page, { actorType: "user" });
 
     // No auth cookie injected — simulate fresh WhatsApp click
-    await page.goto(`${BASE_URL}${EXPECTED_CHAT_PATH}`, { waitUntil: "domcontentloaded" });
+    await page.goto(EXPECTED_CHAT_PATH, { waitUntil: "domcontentloaded" });
 
     console.log(`${elapsed()} [B] Navigated to chat link, waiting for redirect`);
 
@@ -276,7 +276,7 @@ test.describe("WhatsApp Chat CTA — ?actor=user Fix", () => {
     await injectUserCookie(page);
     await setupChatThreadRoutes(page, { actorType: "user" });
 
-    await page.goto(`${BASE_URL}${EXPECTED_CHAT_PATH}`, { waitUntil: "domcontentloaded" });
+    await page.goto(EXPECTED_CHAT_PATH, { waitUntil: "domcontentloaded" });
     console.log(`${elapsed()} [C] Navigated, waiting for chat to load`);
 
     // Should NOT redirect to any login page
@@ -329,7 +329,7 @@ test.describe("WhatsApp Chat CTA — ?actor=user Fix", () => {
 
     // Provider URL has NO ?actor=user
     const providerChatPath = `/chat/thread/${encodeURIComponent(ZZ_THREAD_ID)}`;
-    await page.goto(`${BASE_URL}${providerChatPath}`, { waitUntil: "domcontentloaded" });
+    await page.goto(providerChatPath, { waitUntil: "domcontentloaded" });
     console.log(`${elapsed()} [D] Navigated as provider`);
 
     await page.waitForTimeout(2_000);
@@ -398,7 +398,7 @@ test.describe("WhatsApp Chat CTA — ?actor=user Fix", () => {
 
     // Open WITHOUT ?actor=user
     const brokenPath = `/chat/thread/${encodeURIComponent(ZZ_THREAD_ID)}`;
-    await page.goto(`${BASE_URL}${brokenPath}`, { waitUntil: "domcontentloaded" });
+    await page.goto(brokenPath, { waitUntil: "domcontentloaded" });
 
     // Wait for client-side redirect
     await page.waitForTimeout(3_000);

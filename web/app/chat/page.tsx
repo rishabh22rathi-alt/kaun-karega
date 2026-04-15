@@ -1,8 +1,30 @@
 "use client";
 
-import { Suspense } from "react";
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { getAuthSession } from "@/lib/auth";
+
+type CreateThreadResponse = {
+  ok?: boolean;
+  error?: string;
+  message?: string;
+  ThreadID?: string;
+  threadId?: string;
+  thread?: {
+    ThreadID?: string;
+    threadId?: string;
+  };
+};
+
+function extractThreadId(data: CreateThreadResponse): string {
+  return String(
+    data?.thread?.ThreadID ||
+      data?.thread?.threadId ||
+      data?.ThreadID ||
+      data?.threadId ||
+      ""
+  ).trim();
+}
 
 export default function ChatEntryPage() {
   return (
@@ -29,47 +51,63 @@ function PageContent() {
 
   useEffect(() => {
     if (!taskId || !provider) {
-      setError("Missing task details.");
+      router.replace("/dashboard/my-requests");
       return;
     }
 
-    if (typeof window === "undefined") return;
-    const phone =
-      localStorage.getItem("kk_user_phone") || localStorage.getItem("kk_phone") || "";
+    const session = getAuthSession();
+    const phone = String(session?.phone || "").replace(/\D/g, "").slice(-10);
 
     if (!phone) {
-      const redirect = `/login?redirectTo=${encodeURIComponent(
-        `/chat?taskId=${taskId}&provider=${provider}`
-      )}`;
-      router.replace(redirect);
+      router.replace(
+        `/login?next=${encodeURIComponent(`/chat?taskId=${taskId}&provider=${provider}`)}`
+      );
       return;
     }
 
     const openChat = async () => {
       try {
-        const res = await fetch("/api/chat/open", {
+        const res = await fetch("/api/kk", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ taskId, provider }),
+          body: JSON.stringify({
+            action: "chat_create_or_get_thread",
+            ActorType: "user",
+            UserPhone: phone,
+            TaskID: taskId,
+            ProviderID: provider,
+          }),
         });
-        const data = await res.json();
-        if (!res.ok || !data.roomId) {
-          setError(data.error || "Unable to open chat.");
+        const data = (await res.json()) as CreateThreadResponse;
+        const threadId = extractThreadId(data);
+
+        if (!res.ok || !data?.ok || !threadId) {
+          setError(data?.error || data?.message || "Unable to open chat.");
           return;
         }
-        router.replace(`/chat/${data.roomId}`);
-      } catch (err) {
+
+        router.replace(`/chat/thread/${encodeURIComponent(threadId)}?actor=user`);
+      } catch {
         setError("Network error. Please try again.");
       }
     };
 
-    openChat();
+    void openChat();
   }, [provider, router, taskId]);
 
   return (
     <main className="min-h-screen bg-[#FFE3C2] flex items-center justify-center px-4 py-8">
       <div className="rounded-xl bg-white shadow-lg px-6 py-4 text-sm text-slate-700">
-        {error ? error : "Opening chat..."}
+        {error ? (
+          <div>
+            <p className="mb-3">{error}</p>
+            <a href="/dashboard/my-requests" className="text-sky-700 underline">
+              Back to My Requests
+            </a>
+          </div>
+        ) : (
+          "Opening chat..."
+        )}
       </div>
     </main>
   );

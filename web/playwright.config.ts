@@ -10,7 +10,7 @@ export default defineConfig({
   retries: 0,
   workers: 1,
   use: {
-    baseURL: "http://localhost:3000",
+    baseURL: "https://kaun-karega.vercel.app",
     headless: false,
     viewport: { width: 1400, height: 900 },
     screenshot: "only-on-failure",

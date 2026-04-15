@@ -14,6 +14,10 @@ export function getTaskStatusLabel(status: unknown): string {
       return "Provider assigned";
     case "completed":
       return "Work completed";
+    case "pending":
+      return "Request submitted";
+    case "pending_category_review":
+      return "Service request under review";
     default:
       return String(status ?? "").trim() || "-";
   }

@@ -166,7 +166,7 @@ function sendUserFirstProviderMessageNotification_(userPhone, displayId, threadI
   const sendResult = sendWhatsAppTemplateViaMeta_({
     Phone: userPhone,
     TemplateName: templateName,
-    LanguageCode: "en_US",
+    LanguageCode: "en",
     BodyParameters: [
       { type: "text", text: String(displayId || "").trim() || "-" },
     ],
@@ -181,6 +181,58 @@ function sendUserFirstProviderMessageNotification_(userPhone, displayId, threadI
       },
     ],
   });
+
+  Logger.log(
+    "sendUserFirstProviderMessageNotification_ | TemplateName=%s | Status=%s | StatusCode=%s | MessageId=%s | threadId=%s | RawResponse=%s",
+    sendResult.templateName,
+    sendResult.status,
+    sendResult.statusCode,
+    sendResult.messageId,
+    String(threadId || "").trim(),
+    sendResult.responseText
+  );
+
+  if (sendResult.ok) {
+    return {
+      ok: true,
+      templateName: templateName,
+      response: sendResult.response,
+    };
+  }
+
+  throw new Error(sendResult.responseText || "WhatsApp API returned HTTP " + sendResult.statusCode);
+}
+
+function sendProviderUserRepliedNotification_(providerPhone, displayId, threadId) {
+  const templateName = "provider_user_replied_message";
+  const sendResult = sendWhatsAppTemplateViaMeta_({
+    Phone: providerPhone,
+    TemplateName: templateName,
+    LanguageCode: "en",
+    BodyParameters: [
+      { type: "text", text: String(displayId || "").trim() || "-" },
+    ],
+    ButtonParameters: [
+      {
+        type: "button",
+        sub_type: "url",
+        index: "0",
+        parameters: [
+          { type: "text", text: String(threadId || "").trim() },
+        ],
+      },
+    ],
+  });
+
+  Logger.log(
+    "sendProviderUserRepliedNotification_ | TemplateName=%s | Status=%s | StatusCode=%s | MessageId=%s | threadId=%s | RawResponse=%s",
+    sendResult.templateName,
+    sendResult.status,
+    sendResult.statusCode,
+    sendResult.messageId,
+    String(threadId || "").trim(),
+    sendResult.responseText
+  );
 
   if (sendResult.ok) {
     return {

@@ -16,7 +16,7 @@
 
 import { test, expect, Page, Route } from "@playwright/test";
 
-const BASE_URL = "http://localhost:3000";
+const BASE_URL = "https://kaun-karega.vercel.app";
 
 const ZZ_CATEGORY = "Electrician";
 const ZZ_AREA = "Sardarpura";

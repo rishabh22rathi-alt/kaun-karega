@@ -29,7 +29,7 @@ import * as crypto from "crypto";
 // ─── Config ───────────────────────────────────────────────────────────────────
 
 const TEST_PHONE = "9462098100";
-const BASE_URL = "http://localhost:3000";
+const BASE_URL = "https://kaun-karega.vercel.app";
 
 // ─── Timing ───────────────────────────────────────────────────────────────────
 
@@ -221,7 +221,7 @@ async function getLatestOtpFromSheet(phone: string, requestId?: string): Promise
 async function loginWithOtp(page: Page, phone: string): Promise<void> {
   console.log(`${elapsed()} [AUTH] Starting OTP login for ${phone}`);
 
-  await page.goto(`${BASE_URL}/login`, { waitUntil: "domcontentloaded" });
+  await page.goto("/login", { waitUntil: "domcontentloaded" });
 
   // Wait for the phone input (id=phone, type=tel) to be visible and stable
   const phoneInput = page.locator("#phone");
@@ -326,7 +326,7 @@ async function injectAdminCookies(context: BrowserContext, phone: string) {
   ]);
   // Use a new page to set localStorage
   const adminPage = await context.newPage();
-  await adminPage.goto(BASE_URL, { waitUntil: "domcontentloaded" });
+  await adminPage.goto("/", { waitUntil: "domcontentloaded" });
   await adminPage.evaluate(() => {
     localStorage.setItem(
       "kk_admin_session",
@@ -363,7 +363,7 @@ test.describe.serial("WhatsApp Chat CTA vs Website Open Chat — Real Flow", () 
 
     // ── Step 2: Navigate to My Requests ───────────────────────────────────
     console.log(`${elapsed()} [1] Navigating to My Requests`);
-    await page.goto(`${BASE_URL}/dashboard/my-requests`, { waitUntil: "domcontentloaded" });
+    await page.goto("/dashboard/my-requests", { waitUntil: "domcontentloaded" });
     await page.waitForTimeout(3_000); // allow list to load
 
     const currentUrl = page.url();
@@ -495,7 +495,7 @@ test.describe.serial("WhatsApp Chat CTA vs Website Open Chat — Real Flow", () 
 
     try {
       await injectAdminCookies(context, TEST_PHONE);
-      await page.goto(BASE_URL, { waitUntil: "domcontentloaded" });
+      await page.goto("/", { waitUntil: "domcontentloaded" });
 
       console.log(`${elapsed()} [2] Calling admin_get_notification_logs`);
 
