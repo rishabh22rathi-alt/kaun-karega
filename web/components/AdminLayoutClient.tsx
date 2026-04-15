@@ -27,7 +27,6 @@ export default function AdminLayoutClient({
   const [role, setRole] = useState("admin");
   const [permissions, setPermissions] = useState<string[]>([]);
   const isLoginRoute = pathname === "/admin/login";
-  const sidebarWidthClass = isDesktop ? (isSidebarCollapsed ? "md:ml-20" : "md:ml-72") : "";
 
   const redirectToLogin = () => {
     const nextPath =
@@ -111,16 +110,7 @@ export default function AdminLayoutClient({
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
-      <AdminTopbar
-        name={name}
-        role={role}
-        onLogout={handleLogout}
-        onMenuToggle={handleSidebarToggle}
-        isSidebarCollapsed={isSidebarCollapsed}
-        isDesktop={isDesktop}
-      />
-
-      <div className="flex min-h-[calc(100vh-4rem)] pt-16">
+      <div className="flex min-h-screen">
         <AdminSidebar
           isOpen={isSidebarOpen}
           onClose={() => setIsSidebarOpen(false)}
@@ -129,9 +119,21 @@ export default function AdminLayoutClient({
           isDesktop={isDesktop}
           onCollapseToggle={() => setIsSidebarCollapsed((current) => !current)}
         />
-        <main className={`min-w-0 flex-1 overflow-x-auto p-4 transition-[margin] duration-200 md:p-6 xl:p-8 ${sidebarWidthClass}`}>
-          <div className="mx-auto w-full max-w-none">{children}</div>
-        </main>
+
+        <div className="flex min-w-0 flex-1 flex-col">
+          <AdminTopbar
+            name={name}
+            role={role}
+            onLogout={handleLogout}
+            onMenuToggle={handleSidebarToggle}
+            isSidebarCollapsed={isSidebarCollapsed}
+            isDesktop={isDesktop}
+          />
+
+          <main className="min-w-0 flex-1 overflow-x-auto p-4 md:p-6 xl:p-8">
+            <div className="mx-auto w-full max-w-none">{children}</div>
+          </main>
+        </div>
       </div>
     </div>
   );

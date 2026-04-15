@@ -210,12 +210,13 @@ export default function AdminSidebar({
         onClick={onClose}
       />
       <aside
-        className={`fixed top-0 left-0 z-40 flex h-full flex-col bg-slate-900 text-slate-100 shadow-2xl transition-[width,transform] duration-200 ${
+        className={`z-40 flex flex-col bg-slate-900 text-slate-100 shadow-2xl transition-[width,transform] duration-200 ${
           isCollapsed ? "w-20" : "w-72"
         } ${
-          isOpen ? "translate-x-0" : "-translate-x-full"
-        } ${isDesktop ? "md:translate-x-0" : ""}
-        `}
+          isDesktop
+            ? "sticky top-0 h-screen shrink-0 translate-x-0"
+            : `fixed top-0 left-0 h-full ${isOpen ? "translate-x-0" : "-translate-x-full"}`
+        }`}
       >
         <div className={`border-b border-white/10 ${isCollapsed ? "px-3 py-5" : "px-5 py-6"}`}>
           <div className="flex items-start justify-between gap-3">
