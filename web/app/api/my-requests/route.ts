@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
 import { getAuthSession } from "@/lib/auth";
+import { createClient } from "@/lib/supabase/server";
+
+function normalizePhone10(value: string): string {
+  return String(value || "").replace(/\D/g, "").slice(-10);
+}
 
 export async function GET(request: Request) {
   try {
@@ -14,77 +19,41 @@ export async function GET(request: Request) {
       );
     }
 
-    const scriptUrl = process.env.APPS_SCRIPT_URL;
-    if (!scriptUrl) {
-      throw new Error("Missing Apps Script URL in .env");
-    }
+    const normalizedPhone = normalizePhone10(session.phone);
+    const supabase = await createClient();
+    const { data: tasks, error } = await supabase
+      .from("tasks")
+      .select("task_id, display_id, category, area, details, status, created_at")
+      .eq("phone", normalizedPhone)
+      .order("created_at", { ascending: false });
 
-    const response = await fetch(scriptUrl, {
-      method: "POST",
-      headers: { "Content-Type": "text/plain" },
-      body: JSON.stringify({
-        action: "get_user_requests",
-        phone: session.phone,
-      }),
-    });
-
-    const text = await response.text();
-    if (!text.startsWith("{")) {
-      console.error("Script Error Response:", text);
+    if (error) {
       return NextResponse.json(
-        { ok: false, error: "Script returned an error." },
+        { ok: false, error: error.message || "Failed to load requests" },
         { status: 500 }
       );
     }
 
-    const result = JSON.parse(text);
-    if (!response.ok || result?.ok !== true) {
-      return NextResponse.json(result, { status: response.status || 500 });
-    }
-
-    const adminResponse = await fetch(scriptUrl, {
-      method: "POST",
-      headers: { "Content-Type": "text/plain" },
-      body: JSON.stringify({
-        action: "get_admin_requests",
-      }),
-    });
-
-    const adminText = await adminResponse.text();
-    const adminResult = adminText.startsWith("{") ? JSON.parse(adminText) : null;
-    const adminRequests = Array.isArray(adminResult?.requests) ? adminResult.requests : [];
-    const byTaskId = new Map(
-      adminRequests.map((item: any) => [String(item?.TaskID || "").trim(), item || {}])
-    );
-
-    const requests = Array.isArray(result?.requests) ? result.requests : [];
-    const mergedRequests = requests.map((item: any) => {
-      const taskId = String(item?.TaskID || item?.taskId || "").trim();
-      const adminItem = (byTaskId.get(taskId) || {}) as {
-        DisplayID?: string;
-        MatchedProviders?: unknown[];
-        MatchedProviderDetails?: unknown[];
-        RespondedProvider?: string;
-        RespondedProviderName?: string;
-      };
-
-      return {
-        ...item,
-        DisplayID: String(adminItem?.DisplayID || item?.DisplayID || item?.displayId || "").trim(),
-        MatchedProviders: Array.isArray(adminItem?.MatchedProviders)
-          ? adminItem.MatchedProviders
-          : [],
-        MatchedProviderDetails: Array.isArray(adminItem?.MatchedProviderDetails)
-          ? adminItem.MatchedProviderDetails
-          : [],
-        RespondedProvider: String(adminItem?.RespondedProvider || "").trim(),
-        RespondedProviderName: String(adminItem?.RespondedProviderName || "").trim(),
-      };
-    });
-
     return NextResponse.json({
-      ...result,
-      requests: mergedRequests,
+      ok: true,
+      requests: Array.isArray(tasks)
+        ? tasks.map((task) => ({
+            TaskID: String(task.task_id || "").trim(),
+            DisplayID:
+              typeof task.display_id === "string" || typeof task.display_id === "number"
+                ? String(task.display_id).trim()
+                : "",
+            Category: String(task.category || "").trim(),
+            Area: String(task.area || "").trim(),
+            Details: String(task.details || "").trim(),
+            Status: String(task.status || "").trim(),
+            CreatedAt: String(task.created_at || "").trim(),
+            MatchedProviders: 0,
+            MatchedProviderDetails: [],
+            RespondedProvider: "",
+            RespondedProviderName: "",
+          }))
+        : [],
     });
   } catch (error: any) {
     console.error("My requests error:", error);

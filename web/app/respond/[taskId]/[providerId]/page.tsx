@@ -1,14 +1,14 @@
 "use client";
 
 "use client";
-import { useEffect, useState } from "react";
+import { use, useEffect, useState } from "react";
 
 type PageProps = {
-  params: { taskId: string; providerId: string };
+  params: Promise<{ taskId: string; providerId: string }>;
 };
 
 export default function RespondPage({ params }: PageProps) {
-  const { taskId, providerId } = params;
+  const { taskId, providerId } = use(params);
   const [message, setMessage] = useState(
     "Recording your response. Please wait..."
   );

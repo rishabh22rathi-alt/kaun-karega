@@ -229,7 +229,7 @@ function ProviderRegisterPageInner() {
       setIsLoadingCategories(true);
       setCategoriesError("");
       try {
-        const response = await fetch("/api/kk?action=get_all_categories", {
+        const response = await fetch("/api/categories", {
           cache: "no-store",
         });
         const text = await response.text();
@@ -246,9 +246,15 @@ function ProviderRegisterPageInner() {
               : text.slice(0, 120);
           throw new Error(`HTTP_ERROR: HTTP ${response.status} ${apiMessage}`.trim());
         }
-        if (Array.isArray(data?.categories)) {
+        if (Array.isArray(data?.data)) {
           setCategories(
-            data.categories.filter((value: unknown): value is string => typeof value === "string")
+            data.data
+              .map((item: unknown) =>
+                item && typeof item === "object" && typeof (item as { name?: unknown }).name === "string"
+                  ? (item as { name: string }).name
+                  : null
+              )
+              .filter((value: string | null): value is string => typeof value === "string")
           );
         } else {
           setCategories([]);

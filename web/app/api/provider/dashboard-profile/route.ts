@@ -1,10 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthSession } from "@/lib/auth";
+import { createClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
-
-const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_URL;
 
 function normalizePhone10(value: string): string {
   const digits = String(value || "").replace(/\D/g, "");
@@ -49,71 +48,41 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  if (!APPS_SCRIPT_URL) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error: "APPS_SCRIPT_URL_MISSING",
-        message: "Provider dashboard backend is not configured.",
-      },
-      { status: 500 }
-    );
-  }
-
-  const upstreamUrl = new URL(APPS_SCRIPT_URL);
-  upstreamUrl.searchParams.set("action", "get_provider_by_phone");
-  upstreamUrl.searchParams.set("phone", normalizedPhone);
-
-  console.log("[provider/dashboard-profile] upstream request", {
-    action: "get_provider_by_phone",
-    payload: {
-      phone: normalizedPhone,
-    },
-  });
-
   try {
-    const upstream = await fetch(upstreamUrl.toString(), {
-      method: "GET",
-      cache: "no-store",
-      headers: {
-        Accept: "application/json, text/plain, */*",
-      },
+    const supabase = await createClient();
+    const { data: provider, error: providerError } = await supabase
+      .from("providers")
+      .select("*")
+      .eq("phone", normalizedPhone)
+      .maybeSingle();
+
+    console.log("[provider/dashboard-profile] supabase provider response", {
+      ok: !providerError,
+      provider: provider
+        ? {
+            ProviderID: String(provider.provider_id || ""),
+            Phone: String(provider.phone || ""),
+          }
+        : null,
+      error: providerError?.message || null,
     });
 
-    const text = await upstream.text();
-    let data: any = null;
-
-    try {
-      data = text ? JSON.parse(text) : null;
-    } catch {
+    if (providerError) {
       return NextResponse.json(
         {
           ok: false,
-          error: "INVALID_PROVIDER_RESPONSE",
-          message: "Provider backend returned invalid JSON.",
+          error: "PROVIDER_LOOKUP_REQUEST_FAILED",
+          message: providerError.message || "Failed to load provider dashboard.",
         },
-        { status: 502 }
+        { status: 500 }
       );
     }
 
-    console.log("[provider/dashboard-profile] upstream response", {
-      ok: upstream.ok,
-      status: upstream.status,
-      provider:
-        data?.provider && typeof data.provider === "object"
-          ? {
-              ProviderID: String(data.provider.ProviderID || ""),
-              Phone: String(data.provider.Phone || ""),
-            }
-          : null,
-      error: data?.error || null,
-    });
-
-    if (!upstream.ok || data?.ok !== true || !data?.provider) {
+    if (!provider) {
       return NextResponse.json(
         {
           ok: false,
-          error: data?.error || "PROVIDER_LOOKUP_FAILED",
+          error: "PROVIDER_LOOKUP_FAILED",
           message: "Logged-in provider profile could not be found for this phone number.",
           debug: {
             normalizedPhone,
@@ -123,7 +92,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const matchedPhone = normalizePhone10(String(data.provider.Phone || ""));
+    const matchedPhone = normalizePhone10(String(provider.phone || ""));
     if (matchedPhone !== normalizedPhone) {
       return NextResponse.json(
         {
@@ -133,16 +102,70 @@ export async function GET(request: NextRequest) {
           debug: {
             requestedPhone: normalizedPhone,
             matchedPhone,
-            providerId: String(data.provider.ProviderID || ""),
+            providerId: String(provider.provider_id || ""),
           },
         },
         { status: 409 }
       );
     }
 
+    const { data: providerServices, error: servicesError } = await supabase
+      .from("provider_services")
+      .select("category")
+      .eq("provider_id", provider.provider_id);
+
+    if (servicesError) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "PROVIDER_SERVICES_LOOKUP_FAILED",
+          message: servicesError.message || "Failed to load provider services.",
+        },
+        { status: 500 }
+      );
+    }
+
+    const { data: providerAreas, error: areasError } = await supabase
+      .from("provider_areas")
+      .select("area")
+      .eq("provider_id", provider.provider_id);
+
+    if (areasError) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "PROVIDER_AREAS_LOOKUP_FAILED",
+          message: areasError.message || "Failed to load provider areas.",
+        },
+        { status: 500 }
+      );
+    }
+
     return NextResponse.json({
       ok: true,
-      provider: data.provider,
+      provider: {
+        ProviderID: String(provider.provider_id || ""),
+        ProviderName: String(provider.full_name || ""),
+        Phone: String(provider.phone || ""),
+        Verified: String(provider.verified || ""),
+        OtpVerified: "yes",
+        OtpVerifiedAt: String(provider.created_at || ""),
+        LastLoginAt: String(provider.created_at || ""),
+        PendingApproval: String(provider.status || "").trim().toLowerCase() === "pending" ? "yes" : "no",
+        Status: String(provider.status || ""),
+        Services: Array.isArray(providerServices)
+          ? providerServices.map((item) => ({
+              Category: String(item.category || ""),
+            }))
+          : [],
+        Areas: Array.isArray(providerAreas)
+          ? providerAreas.map((item) => ({
+              Area: String(item.area || ""),
+            }))
+          : [],
+        AreaCoverage: null,
+        Analytics: null,
+      },
     });
   } catch (error: any) {
     return NextResponse.json(

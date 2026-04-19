@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { getTaskDisplayLabel } from "@/lib/taskDisplay";
-import { getVerifiedLabel, isProviderVerifiedBadge, normalizeVerifiedValue } from "@/lib/providerPresentation";
+import { normalizeVerifiedValue } from "@/lib/providerPresentation";
 
 type SuccessClientProps = {
   service: string;
@@ -45,7 +45,7 @@ function toProviderItem(item: unknown): ProviderItem | null {
   return {
     name,
     phone,
-    verified: isProviderVerifiedBadge(record) ? "yes" : "no",
+    verified: normalizeVerifiedValue(record.verified),
   };
 }
 
@@ -101,11 +101,11 @@ export default function SuccessClient({
     }
 
     triggerStartedRef.current = true;
-    sessionStorage.setItem(storageKey, "1");
     console.log("[success] notification trigger allowed for task", taskId);
     setNotificationStatus("queued");
 
     const timer = window.setTimeout(async () => {
+      sessionStorage.setItem(storageKey, "1");
       setNotificationStatus("processing");
 
       try {
@@ -147,7 +147,10 @@ export default function SuccessClient({
       }
     }, 3000);
 
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      triggerStartedRef.current = false;
+    };
   }, [taskId]);
 
   const handleShowProviders = async () => {
@@ -367,7 +370,7 @@ export default function SuccessClient({
                                 : "inline-flex rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-700"
                             }
                           >
-                            {getVerifiedLabel(provider.verified)}
+                            {provider.verified === "yes" ? "Verified" : "Not Verified"}
                           </span>
                         </td>
                       </tr>

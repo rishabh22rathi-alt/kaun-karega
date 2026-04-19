@@ -1,4 +1,4 @@
-import { fetchProviderMatches } from "@/lib/api/providerMatching";
+import { createClient } from "@/lib/supabase/server";
 
 const clean = (s: string) => (s || "").trim().replace(/\s+/g, " ");
 
@@ -42,19 +42,124 @@ async function handle(req: Request) {
     area,
     taskId,
     userPhone,
-    limit: Number.isFinite(limit) ? limit : 20,
+    limit: Math.min(Number.isFinite(limit) ? limit : 20, 50),
   };
   console.log("MATCH_API_IN", body && Object.keys(body).length ? body : inBody);
 
-  let matchResult;
   try {
-    matchResult = await fetchProviderMatches({
-      category,
-      area,
-      taskId,
-      userPhone,
-      limit: Number.isFinite(limit) ? limit : 20,
-    });
+    const supabase = await createClient();
+    const safeLimit = Math.min(Number.isFinite(limit) ? limit : 20, 50);
+
+    const { data: serviceRows, error: servicesError } = await supabase
+      .from("provider_services")
+      .select("provider_id, category")
+      .eq("category", category)
+      .limit(200);
+
+    if (servicesError) {
+      throw new Error(servicesError.message || "Unable to load provider services.");
+    }
+
+    const { data: areaRows, error: areasError } = await supabase
+      .from("provider_areas")
+      .select("provider_id, area")
+      .eq("area", area)
+      .limit(200);
+
+    if (areasError) {
+      throw new Error(areasError.message || "Unable to load provider areas.");
+    }
+
+    const serviceProviderIds = new Set(
+      Array.isArray(serviceRows)
+        ? serviceRows.map((row) => String(row.provider_id || "").trim()).filter(Boolean)
+        : []
+    );
+    const areaProviderIds = new Set(
+      Array.isArray(areaRows)
+        ? areaRows.map((row) => String(row.provider_id || "").trim()).filter(Boolean)
+        : []
+    );
+
+    const matchedProviderIds = [...serviceProviderIds]
+      .filter((providerId) => areaProviderIds.has(providerId))
+      .slice(0, safeLimit);
+
+    if (matchedProviderIds.length === 0) {
+      return Response.json(
+        {
+          ok: true,
+          count: 0,
+          providers: [],
+          usedFallback: false,
+        },
+        { status: 200 }
+      );
+    }
+
+    const { data: providers, error: providersError } = await supabase
+      .from("providers")
+      .select("provider_id, full_name, phone, verified")
+      .in("provider_id", matchedProviderIds);
+
+    if (providersError) {
+      throw new Error(providersError.message || "Unable to load providers.");
+    }
+
+    const providersList = Array.isArray(providers)
+      ? matchedProviderIds
+          .map((providerId) => {
+            const provider = providers.find((item) => String(item.provider_id || "").trim() === providerId);
+            if (!provider) return null;
+            return {
+              ProviderID: String(provider.provider_id || "").trim(),
+              name: String(provider.full_name || "").trim(),
+              phone: String(provider.phone || "").trim(),
+              category,
+              area,
+              verified: String(provider.verified || "").trim(),
+            };
+          })
+          .filter((provider): provider is {
+            ProviderID: string;
+            name: string;
+            phone: string;
+            category: string;
+            area: string;
+            verified: string;
+          } => Boolean(provider))
+      : [];
+
+    if (taskId && providersList.length > 0) {
+      const matchRows = providersList.map((provider) => ({
+        task_id: taskId,
+        provider_id: provider.ProviderID,
+      }));
+      try {
+        const { error: matchesError } = await supabase
+          .from("provider_task_matches")
+          .upsert(matchRows, { onConflict: "task_id,provider_id", ignoreDuplicates: true });
+
+        if (matchesError) {
+          console.warn(
+            "[find-provider] unable to store provider_task_matches",
+            matchesError.message || matchesError
+          );
+        }
+      } catch (error) {
+        console.warn("[find-provider] provider_task_matches insert failed", error);
+      }
+    }
+
+    return Response.json(
+      {
+        ok: true,
+        count: providersList.length,
+        providers: providersList,
+        usedFallback: false,
+      },
+      { status: 200 }
+    );
   } catch (error) {
     return Response.json(
       {
@@ -62,19 +167,12 @@ async function handle(req: Request) {
         error:
           error instanceof Error ? error.message : "Unable to fetch matched providers.",
         providers: [],
+        count: 0,
+        usedFallback: false,
       },
       { status: 502 }
     );
   }
-  return Response.json(
-    {
-      ok: matchResult.ok,
-      count: matchResult.count,
-      providers: matchResult.providers,
-      usedFallback: matchResult.usedFallback,
-    },
-    { status: matchResult.ok ? 200 : 502 }
-  );
 }
 
 export async function GET(req: Request) {

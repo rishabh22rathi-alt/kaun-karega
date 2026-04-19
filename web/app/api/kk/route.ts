@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdminSession } from "@/lib/adminAuth";
+import { createClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -241,6 +242,110 @@ export async function POST(request: NextRequest) {
       }
     }
     const body = normalizeProxyBody(rawBody);
+    if (action === "provider_register") {
+      const phone = typeof body.phone === "string" ? body.phone.trim() : "";
+      const name = typeof body.name === "string" ? body.name.trim() : "";
+      const categories = Array.isArray(body.categories) ? body.categories : [];
+      const areas = Array.isArray(body.areas) ? body.areas : [];
+      const pendingNewCategories = Array.isArray(body.pendingNewCategories)
+        ? body.pendingNewCategories
+        : [];
+      const pendingNewAreas = Array.isArray(body.pendingNewAreas)
+        ? body.pendingNewAreas
+        : [];
+      const requiresAdminApproval =
+        typeof body.requiresAdminApproval === "string"
+          ? body.requiresAdminApproval.trim()
+          : "";
+
+      if (!phone || !name || categories.length === 0 || areas.length === 0) {
+        return withNoCache(
+          NextResponse.json(
+            { ok: false, error: "Missing required provider registration fields" },
+            { status: 400 }
+          )
+        );
+      }
+
+      const supabase = await createClient();
+      const providerId = `PR-${Date.now()}`;
+      const pendingApproval = requiresAdminApproval === "true" ? "yes" : "no";
+
+      const { error: providerError } = await supabase.from("providers").insert({
+        provider_id: providerId,
+        full_name: name,
+        phone,
+        business_name: null,
+        experience_years: null,
+        notes: null,
+        status: "pending",
+        verified: "yes",
+      });
+
+      if (providerError) {
+        return withNoCache(
+          NextResponse.json(
+            { ok: false, error: providerError.message || "Failed to create provider" },
+            { status: 500 }
+          )
+        );
+      }
+
+      const serviceRows = categories.map((category) => ({
+        provider_id: providerId,
+        category: String(category),
+      }));
+
+      const { error: servicesError } = await supabase
+        .from("provider_services")
+        .insert(serviceRows);
+
+      if (servicesError) {
+        return withNoCache(
+          NextResponse.json(
+            { ok: false, error: servicesError.message || "Failed to create provider services" },
+            { status: 500 }
+          )
+        );
+      }
+
+      const areaRows = areas.map((area) => ({
+        provider_id: providerId,
+        area: String(area),
+      }));
+
+      const { error: areasError } = await supabase
+        .from("provider_areas")
+        .insert(areaRows);
+
+      if (areasError) {
+        return withNoCache(
+          NextResponse.json(
+            { ok: false, error: areasError.message || "Failed to create provider areas" },
+            { status: 500 }
+          )
+        );
+      }
+
+      return withNoCache(
+        NextResponse.json({
+          ok: true,
+          providerId,
+          verified: "yes",
+          pendingApproval,
+          requestedNewCategories: pendingNewCategories,
+          requestedNewAreas: pendingNewAreas,
+          provider: {
+            ProviderID: providerId,
+            Name: name,
+            Phone: phone,
+            Verified: "yes",
+            PendingApproval: pendingApproval,
+            Status: "pending",
+          },
+        })
+      );
+    }
     const upstream = await fetch(targetUrl.toString(), {
       method: "POST",
       cache: "no-store",

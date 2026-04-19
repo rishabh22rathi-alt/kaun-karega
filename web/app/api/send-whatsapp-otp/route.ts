@@ -1,15 +1,10 @@
-import path from "path";
-import { config as loadEnv } from "dotenv";
 import { NextResponse } from "next/server";
-import { hasOTPRequestId, saveOTP } from "@/lib/googleSheets";
+import { adminSupabase } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
 
 const DEDUPE_WINDOW_MS = 2000;
 const recentRequestIds = new Map<string, number>();
-
-// Ensure .env.local is loaded when running in server environment (e.g., local dev)
-loadEnv({ path: path.join(process.cwd(), ".env.local") });
 
 export async function POST(req: Request) {
   try {
@@ -66,6 +61,8 @@ export async function POST(req: Request) {
 
     const effectiveRequestId = requestId || crypto.randomUUID();
     const nowMs = Date.now();
+
+    // In-memory dedup: reject duplicate requestIds within a 2-second window
     if (effectiveRequestId) {
       const lastSeen = recentRequestIds.get(effectiveRequestId);
       if (lastSeen && nowMs - lastSeen < DEDUPE_WINDOW_MS) {
@@ -86,16 +83,22 @@ export async function POST(req: Request) {
       recentRequestIds.set(effectiveRequestId, nowMs);
     }
     for (const [id, ts] of recentRequestIds) {
-      if (nowMs - ts > DEDUPE_WINDOW_MS) {
-        recentRequestIds.delete(id);
-      }
+      if (nowMs - ts > DEDUPE_WINDOW_MS) recentRequestIds.delete(id);
     }
 
     const istTimestamp = new Date().toLocaleString("en-IN", {
       timeZone: "Asia/Kolkata",
     });
-    const alreadyExists = await hasOTPRequestId(effectiveRequestId);
-    if (alreadyExists) {
+
+    // Supabase dedup: if this requestId was already stored, don't create a second OTP
+    const { data: existing } = await adminSupabase
+      .from("otp_requests")
+      .select("request_id")
+      .eq("request_id", effectiveRequestId)
+      .limit(1)
+      .maybeSingle();
+
+    if (existing) {
       return NextResponse.json({
         ok: true,
         message: "OTP already created",
@@ -106,7 +109,22 @@ export async function POST(req: Request) {
     }
 
     const otp = Math.floor(1000 + Math.random() * 9000).toString();
-    await saveOTP(normalized, otp, effectiveRequestId, istTimestamp);
+
+    const { error: insertError } = await adminSupabase.from("otp_requests").insert({
+      phone: normalized,
+      otp,
+      request_id: effectiveRequestId,
+      is_verified: false,
+      expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+    });
+
+    if (insertError) {
+      console.error("[SEND OTP] Supabase insert error", insertError);
+      return NextResponse.json(
+        { ok: false, error: "Database error" },
+        { status: 500 }
+      );
+    }
 
     const phoneNumberId =
       process.env.META_WA_PHONE_NUMBER_ID || process.env.META_WA_PHONE_ID || "";
@@ -134,23 +152,13 @@ export async function POST(req: Request) {
     const components = [
       {
         type: "body",
-        parameters: [
-          {
-            type: "text",
-            text: otp,
-          },
-        ],
+        parameters: [{ type: "text", text: otp }],
       },
       {
         type: "button",
         sub_type: "url",
         index: "0",
-        parameters: [
-          {
-            type: "text",
-            text: otp,
-          },
-        ],
+        parameters: [{ type: "text", text: otp }],
       },
     ];
 
@@ -215,6 +223,7 @@ export async function POST(req: Request) {
       meta: responseBody,
       timestamp: istTimestamp,
       requestId: effectiveRequestId,
+      phone: normalized,
     });
   } catch (err: any) {
     console.error("[SEND WHATSAPP OTP ERROR]", err);

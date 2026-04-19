@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getAuthSession } from "@/lib/auth";
+import { createClient } from "@/lib/supabase/server";
 
 function getTodayDateInKolkata() {
   return new Intl.DateTimeFormat("en-CA", {
@@ -89,98 +90,44 @@ export async function POST(request: Request) {
       );
     }
 
-    const GOOGLE_SCRIPT_URL = process.env.APPS_SCRIPT_URL;
-
-    if (!GOOGLE_SCRIPT_URL) {
-      throw new Error("APPS_SCRIPT_URL is missing in environment variables");
-    }
-
-    // Forward the data to Google Apps Script
-    const response = await fetch(GOOGLE_SCRIPT_URL, {
-      method: "POST",
-      headers: { "Content-Type": "text/plain" },
-      body: JSON.stringify({
-        action: "submit_task", // Tells the script which logic to trigger
-        category: category,
-        area: area,
+    const supabase = await createClient();
+    const taskId = `TK-${Date.now()}`;
+    const insertStartedMs = Date.now();
+    const { data, error } = await supabase
+      .from("tasks")
+      .insert({
+        task_id: taskId,
+        category,
+        area,
         details,
         phone: session.phone,
-        selectedTimeframe,
-        serviceDate: normalizedServiceDate,
-        timeSlot,
-      }),
-    });
-    const scriptResponseMs = Date.now();
+        selected_timeframe: selectedTimeframe,
+        service_date: normalizedServiceDate || null,
+        time_slot: timeSlot || null,
+        status: "submitted",
+      })
+      .select("display_id")
+      .single();
 
-    const scriptStatus = response.status;
-    const scriptBodyText = await response.text();
-    const scriptBodyReadMs = Date.now();
-    console.log("submit-request Apps Script response", {
-      status: scriptStatus,
-      body: scriptBodyText,
-      bodyParseElapsedMs: bodyParsedMs - routeStartMs,
-      appsScriptFetchElapsedMs: scriptResponseMs - bodyParsedMs,
-      appsScriptBodyReadElapsedMs: scriptBodyReadMs - scriptResponseMs,
-      routeElapsedMsSoFar: scriptBodyReadMs - routeStartMs,
-    });
-
-    if (!response.ok) {
-      let scriptError = scriptBodyText;
-      try {
-        const parsed = JSON.parse(scriptBodyText);
-        scriptError = parsed?.error || parsed?.message || scriptBodyText;
-      } catch {}
+    if (error) {
       return NextResponse.json(
-        { error: scriptError || `Apps Script write failed (status ${scriptStatus}).` },
+        { error: error.message || "Failed to insert task." },
         { status: 500 }
       );
     }
 
-    let result: any = null;
-    try {
-      result = JSON.parse(scriptBodyText);
-    } catch {
-      return NextResponse.json(
-        { error: "Apps Script returned non-JSON response." },
-        { status: 500 }
-      );
-    }
-
-    if (result?.ok !== true) {
-      const validationMessage =
-        result?.message === "Please select today or a future date."
-          ? result.message
-          : "";
-      return NextResponse.json(
-        validationMessage
-          ? { ok: false, message: validationMessage }
-          : { error: result?.error || result?.message || "Apps Script returned failure." },
-        { status: validationMessage ? 400 : 500 }
-      );
-    }
-
-    const taskId =
-      typeof result?.taskId === "string" ? result.taskId.trim() : "";
     const displayId =
-      typeof result?.displayId === "string" || typeof result?.displayId === "number"
-        ? String(result.displayId).trim()
+      typeof data?.display_id === "string" || typeof data?.display_id === "number"
+        ? String(data.display_id).trim()
         : "";
-    if (!taskId) {
-      return NextResponse.json(
-        { error: "Apps Script did not return taskId." },
-        { status: 500 }
-      );
-    }
 
     console.log("submit-request route timing", {
       taskId,
       category,
       area,
       bodyParseElapsedMs: bodyParsedMs - routeStartMs,
-      appsScriptFetchElapsedMs: scriptResponseMs - bodyParsedMs,
-      appsScriptBodyReadElapsedMs: scriptBodyReadMs - scriptResponseMs,
+      supabaseInsertElapsedMs: Date.now() - insertStartedMs,
       totalElapsedMsBeforeResponse: Date.now() - routeStartMs,
-      deferredNotificationProcessing: true,
     });
 
     return NextResponse.json({

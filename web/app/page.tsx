@@ -451,7 +451,7 @@ function PageContent() {
   useEffect(() => {
     const fetchCategories = async () => {
       try {
-        const res = await fetch("/api/get-categories");
+        const res = await fetch("/api/categories");
         if (!res.ok) {
           throw new Error("Failed to fetch categories");
         }
