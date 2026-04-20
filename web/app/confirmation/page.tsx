@@ -1,4 +1,3 @@
-import { findProvidersByCategoryAndArea } from '@/lib/googleSheets';
 import SubcategoryBadges from "@/components/SubcategoryBadges";
 
 type ConfirmationPageProps = {
@@ -14,9 +13,18 @@ export default async function ConfirmationPage({
   const status = params.status ?? "";
   const showProviders = (params as { show?: string }).show === "1";
 
-  let providers: string[][] = [];
+  let providers: { name: string; phone: string }[] = [];
   if (showProviders && category && area) {
-    providers = await findProvidersByCategoryAndArea(category, area);
+    try {
+      const res = await fetch(
+        `${process.env.NEXT_PUBLIC_BASE_URL || ""}/api/find-provider?category=${encodeURIComponent(category)}&area=${encodeURIComponent(area)}`,
+        { cache: "no-store" }
+      );
+      const data = await res.json();
+      providers = Array.isArray(data.providers) ? data.providers : [];
+    } catch {
+      providers = [];
+    }
   }
 
   const yesHref = `/confirmation?category=${encodeURIComponent(category)}&area=${encodeURIComponent(area)}&show=1`;
@@ -84,8 +92,8 @@ export default async function ConfirmationPage({
             </h2>
             {providers.length > 0 ? (
               providers.map((p, i) => {
-                const name = p?.[1] || `Provider ${i + 1}`;
-                const phone = p?.[2] || "";
+                const name = p.name || `Provider ${i + 1}`;
+                const phone = p.phone || "";
                 const digits = phone.toString().replace(/\D/g, "");
                 return (
                   <div

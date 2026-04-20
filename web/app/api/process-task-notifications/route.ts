@@ -1,7 +1,16 @@
 import { NextResponse } from "next/server";
 import { getAuthSession } from "@/lib/auth";
+import { canonicalizeProviderAreasToCanonicalNames } from "@/lib/admin/adminAreaMappings";
 import { createClient } from "@/lib/supabase/server";
+import { appendNotificationLog } from "@/lib/notificationLogStore";
 import { sendProviderLeadMessage } from "@/lib/whatsapp-provider";
+
+function extractMessageId(payload: unknown): string {
+  if (!payload || typeof payload !== "object") return "";
+  const messages = (payload as { messages?: Array<{ id?: unknown }> }).messages;
+  const firstId = Array.isArray(messages) ? messages[0]?.id : "";
+  return String(firstId || "").trim();
+}
 
 export async function POST(request: Request) {
   const routeStartMs = Date.now();
@@ -20,6 +29,11 @@ export async function POST(request: Request) {
     });
     if (!session) {
       return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+    }
+
+    const reconcileResult = await canonicalizeProviderAreasToCanonicalNames();
+    if (!reconcileResult.ok) {
+      return NextResponse.json({ ok: false, error: reconcileResult.error }, { status: 500 });
     }
 
     const supabase = await createClient();
@@ -69,34 +83,103 @@ export async function POST(request: Request) {
     // 4. Load provider details
     const { data: providers } = await supabase
       .from("providers")
-      .select("provider_id, full_name, phone")
+      .select("provider_id, full_name, phone, status")
       .in("provider_id", matchedIds);
 
-    const providerList = providers ?? [];
+    const providerList = (providers ?? []).filter(
+      (p) => String(p.status || "").trim().toLowerCase() !== "blocked"
+    );
+
+    if (providerList.length === 0) {
+      await supabase
+        .from("tasks")
+        .update({ status: "no_providers_matched" })
+        .eq("task_id", taskId);
+
+      return NextResponse.json({
+        ok: true,
+        matchedProviders: 0,
+        attemptedSends: 0,
+        failedSends: 0,
+      });
+    }
 
     // 5. Send WhatsApp alert to each provider; continue on individual failure
     const kaamLabel = `Kaam No. ${task.display_id}`;
     const serviceTime = String(task.selected_timeframe || "Flexible").trim();
+    const templateName = process.env.META_WA_PROVIDER_LEAD_TEMPLATE || "provider_job_alert";
+    let failedSends = 0;
 
     for (const provider of providerList) {
+      const providerId = String(provider.provider_id || "").trim();
+      const providerPhone = String(provider.phone || "").trim();
       const rawPhone = String(provider.phone || "").replace(/\D/g, "");
       const e164 = rawPhone.startsWith("91") && rawPhone.length === 12
         ? rawPhone
         : `91${rawPhone}`;
 
       try {
-        await sendProviderLeadMessage(
+        const sendResult = await sendProviderLeadMessage(
           e164,
           kaamLabel,
           serviceTime,
           task.area,
-          `${task.task_id}/${String(provider.provider_id).trim()}`
+          `${task.task_id}/${providerId}`
         );
+        const logResult = await appendNotificationLog({
+          taskId,
+          displayId:
+            typeof task.display_id === "string" || typeof task.display_id === "number"
+              ? String(task.display_id).trim()
+              : "",
+          providerId,
+          providerPhone,
+          category: String(task.category || "").trim(),
+          area: String(task.area || "").trim(),
+          serviceTime,
+          templateName,
+          status: "accepted",
+          statusCode: 200,
+          messageId: extractMessageId(sendResult),
+          errorMessage: "",
+          rawResponse: JSON.stringify(sendResult),
+        });
+        if (!logResult.ok) {
+          console.warn("[process-task-notifications] notification log insert failed", {
+            providerId,
+            error: logResult.error,
+          });
+        }
       } catch (sendErr) {
+        failedSends += 1;
         console.warn("[process-task-notifications] WhatsApp send failed", {
-          providerId: provider.provider_id,
+          providerId,
           error: sendErr instanceof Error ? sendErr.message : sendErr,
         });
+        const logResult = await appendNotificationLog({
+          taskId,
+          displayId:
+            typeof task.display_id === "string" || typeof task.display_id === "number"
+              ? String(task.display_id).trim()
+              : "",
+          providerId,
+          providerPhone,
+          category: String(task.category || "").trim(),
+          area: String(task.area || "").trim(),
+          serviceTime,
+          templateName,
+          status: "error",
+          statusCode: null,
+          messageId: "",
+          errorMessage: sendErr instanceof Error ? sendErr.message : String(sendErr),
+          rawResponse: sendErr instanceof Error ? sendErr.message : String(sendErr),
+        });
+        if (!logResult.ok) {
+          console.warn("[process-task-notifications] notification log insert failed", {
+            providerId,
+            error: logResult.error,
+          });
+        }
       }
     }
 
@@ -123,10 +206,16 @@ export async function POST(request: Request) {
     console.log("process-task-notifications complete", {
       taskId,
       matchedCount: providerList.length,
+      failedSends,
       totalElapsedMs: Date.now() - routeStartMs,
     });
 
-    return NextResponse.json({ ok: true, matchedProviders: providerList.length, attemptedSends: providerList.length, failedSends: 0 });
+    return NextResponse.json({
+      ok: true,
+      matchedProviders: providerList.length,
+      attemptedSends: providerList.length,
+      failedSends,
+    });
 
   } catch (error) {
     console.error("process-task-notifications route failed", {

@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/server";
+import { canonicalizeProviderAreasToCanonicalNames } from "@/lib/admin/adminAreaMappings";
 
 const clean = (s: string) => (s || "").trim().replace(/\s+/g, " ");
 
@@ -47,6 +48,11 @@ async function handle(req: Request) {
   console.log("MATCH_API_IN", body && Object.keys(body).length ? body : inBody);
 
   try {
+    const reconcileResult = await canonicalizeProviderAreasToCanonicalNames();
+    if (!reconcileResult.ok) {
+      throw new Error(reconcileResult.error || "Unable to reconcile provider areas.");
+    }
+
     const supabase = await createClient();
     const safeLimit = Math.min(Number.isFinite(limit) ? limit : 20, 50);
 
@@ -99,7 +105,7 @@ async function handle(req: Request) {
 
     const { data: providers, error: providersError } = await supabase
       .from("providers")
-      .select("provider_id, full_name, phone, verified")
+      .select("provider_id, full_name, phone, verified, status")
       .in("provider_id", matchedProviderIds);
 
     if (providersError) {
@@ -111,6 +117,7 @@ async function handle(req: Request) {
           .map((providerId) => {
             const provider = providers.find((item) => String(item.provider_id || "").trim() === providerId);
             if (!provider) return null;
+            if (String(provider.status || "").trim().toLowerCase() === "blocked") return null;
             return {
               ProviderID: String(provider.provider_id || "").trim(),
               name: String(provider.full_name || "").trim(),
