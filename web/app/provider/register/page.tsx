@@ -664,6 +664,10 @@ function ProviderRegisterPageInner() {
         // exists in providers. The register-entry guard handles this for new signups;
         // in edit mode it can still fire, but this form must not surface that message.
         if (data?.error === "already_registered") {
+          showSuccessToast("You are already registered. Redirecting to dashboard...");
+          setTimeout(() => {
+            router.push("/provider/dashboard");
+          }, 1200);
           return;
         }
         throw new Error(data?.error || data?.message || "Failed to submit registration");
