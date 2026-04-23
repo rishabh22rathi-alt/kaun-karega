@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import InAppToastStack, { type InAppToast } from "@/components/InAppToastStack";
 import { PROVIDER_PROFILE_UPDATED_EVENT } from "@/components/sidebarEvents";
@@ -265,7 +265,7 @@ Kaun Karega पर ${range.labelHindi} में ${categoryName} के लि�
 ${joinLink}`;
 }
 
-export default function ProviderDashboardPage() {
+function ProviderDashboardInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const alreadyRegisteredNotice = searchParams.get("alreadyRegistered") === "true";
@@ -1283,5 +1283,12 @@ export default function ProviderDashboardPage() {
         onDismiss={(id) => setToasts((current) => current.filter((toast) => toast.id !== id))}
       />
     </main>
+  );
+}
+export default function ProviderDashboardPage() {
+  return (
+    <Suspense fallback={null}>
+      <ProviderDashboardInner />
+    </Suspense>
   );
 }
