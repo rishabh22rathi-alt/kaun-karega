@@ -1,8 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdminSession } from "@/lib/adminAuth";
 import { createClient } from "@/lib/supabase/server";
-import { setProviderVerified } from "@/lib/admin/adminProviderMutations";
-import { getProviderByPhoneFromSupabase } from "@/lib/admin/adminProviderReads";
+import {
+  setProviderVerified,
+  approveDuplicateNameReview,
+  markDuplicateNameLegitSeparate,
+  rejectDuplicateNameProvider,
+  keepDuplicateNameUnderReview,
+} from "@/lib/admin/adminProviderMutations";
+import {
+  getProviderByPhoneFromSupabase,
+  listDuplicateNameReviews,
+} from "@/lib/admin/adminProviderReads";
+import { findDuplicateNameProviders } from "@/lib/providerNameNormalize";
 import {
   getAdminNotificationLogsFromSupabase,
   getAdminNotificationSummaryFromSupabase,
@@ -113,6 +123,11 @@ const ADMIN_ONLY_ACTIONS = new Set([
   "admin_close_request",
   "admin_update_provider",
   "admin_set_provider_blocked",
+  "admin_list_duplicate_name_reviews",
+  "admin_duplicate_name_review_approve",
+  "admin_duplicate_name_review_mark_separate",
+  "admin_duplicate_name_review_reject",
+  "admin_duplicate_name_review_keep",
   "admin_add_team_member",
   "admin_update_team_member",
   "admin_delete_team_member",
@@ -943,6 +958,52 @@ export async function POST(request: NextRequest) {
       }
       return withNoCache(NextResponse.json({ ok: true }));
     }
+    if (action === "admin_list_duplicate_name_reviews") {
+      const rows = await listDuplicateNameReviews();
+      return withNoCache(NextResponse.json({ ok: true, rows }));
+    }
+    if (
+      action === "admin_duplicate_name_review_approve" ||
+      action === "admin_duplicate_name_review_mark_separate" ||
+      action === "admin_duplicate_name_review_reject" ||
+      action === "admin_duplicate_name_review_keep"
+    ) {
+      const providerId = typeof body.providerId === "string" ? body.providerId.trim() : "";
+      const adminActorPhone =
+        typeof body.AdminActorPhone === "string" ? body.AdminActorPhone.trim() : "";
+      const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+      if (!providerId) {
+        return withNoCache(
+          NextResponse.json(
+            { ok: false, error: "Missing required field: providerId" },
+            { status: 400 }
+          )
+        );
+      }
+      if (action === "admin_duplicate_name_review_reject" && !reason) {
+        return withNoCache(
+          NextResponse.json(
+            { ok: false, error: "Reason required for rejection" },
+            { status: 400 }
+          )
+        );
+      }
+      const ctx = { adminActorPhone, reason };
+      const result =
+        action === "admin_duplicate_name_review_approve"
+          ? await approveDuplicateNameReview(providerId, ctx)
+          : action === "admin_duplicate_name_review_mark_separate"
+            ? await markDuplicateNameLegitSeparate(providerId, ctx)
+            : action === "admin_duplicate_name_review_reject"
+              ? await rejectDuplicateNameProvider(providerId, ctx)
+              : await keepDuplicateNameUnderReview(providerId, ctx);
+      if (!result.ok) {
+        return withNoCache(
+          NextResponse.json({ ok: false, error: result.error }, { status: 500 })
+        );
+      }
+      return withNoCache(NextResponse.json({ ok: true }));
+    }
     if (action === "approve_category_request") {
       const requestId = typeof body.requestId === "string" ? body.requestId.trim() : "";
       const categoryName = typeof body.categoryName === "string" ? body.categoryName.trim() : "";
@@ -1615,7 +1676,13 @@ export async function POST(request: NextRequest) {
       const providerId = `PR-${Date.now()}`;
       const pendingApproval = requiresAdminApproval === "true" ? "yes" : "no";
 
-      const { error: providerError } = await supabase.from("providers").insert({
+      // Duplicate-name detection: any existing provider whose normalized
+      // full_name matches this registration but whose phone differs.
+      const duplicateMatches = await findDuplicateNameProviders(name, phone);
+      const isDuplicateName = duplicateMatches.length > 0;
+      const nowIso = new Date().toISOString();
+
+      const providerInsertRow: Record<string, unknown> = {
         provider_id: providerId,
         full_name: name,
         phone,
@@ -1623,8 +1690,15 @@ export async function POST(request: NextRequest) {
         experience_years: null,
         notes: null,
         status: "pending",
-        verified: "yes",
-      });
+        verified: isDuplicateName ? "no" : "yes",
+      };
+      if (isDuplicateName) {
+        providerInsertRow.duplicate_name_review_status = "pending";
+        providerInsertRow.duplicate_name_matches = duplicateMatches.map((m) => m.provider_id);
+        providerInsertRow.duplicate_name_flagged_at = nowIso;
+      }
+
+      const { error: providerError } = await supabase.from("providers").insert(providerInsertRow);
 
       if (providerError) {
         const code = (providerError as { code?: string }).code;
@@ -1694,21 +1768,29 @@ export async function POST(request: NextRequest) {
         );
       }
 
+      const effectiveVerified = isDuplicateName ? "no" : "yes";
+      const effectivePendingApproval = isDuplicateName ? "yes" : pendingApproval;
+
       return withNoCache(
         NextResponse.json({
           ok: true,
           providerId,
-          verified: "yes",
-          pendingApproval,
+          verified: effectiveVerified,
+          pendingApproval: effectivePendingApproval,
+          duplicateNameReviewStatus: isDuplicateName ? "pending" : null,
+          duplicateNameMatches: isDuplicateName
+            ? duplicateMatches.map((m) => m.provider_id)
+            : [],
           requestedNewCategories: pendingNewCategories,
           requestedNewAreas: pendingNewAreas,
           provider: {
             ProviderID: providerId,
             Name: name,
             Phone: phone,
-            Verified: "yes",
-            PendingApproval: pendingApproval,
+            Verified: effectiveVerified,
+            PendingApproval: effectivePendingApproval,
             Status: "pending",
+            DuplicateNameReviewStatus: isDuplicateName ? "pending" : null,
           },
         })
       );

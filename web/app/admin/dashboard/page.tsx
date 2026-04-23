@@ -261,7 +261,24 @@ type DashboardSectionKey =
   | "sameDayRequests"
   | "flexibleRequests"
   | "needsAttention"
+  | "duplicateNameReviews"
   | "chatMonitoring";
+
+type DuplicateNameReviewRow = {
+  ProviderID: string;
+  FullName: string;
+  Phone: string;
+  Status: string;
+  Verified: string;
+  CreatedAt: string;
+  DuplicateNameReviewStatus: string;
+  DuplicateNameFlaggedAt: string;
+  MatchedProviders: Array<{
+    ProviderID: string;
+    FullName: string;
+    Phone: string;
+  }>;
+};
 
 type AccordionSectionProps = {
   sectionKey: DashboardSectionKey;
@@ -396,8 +413,12 @@ export default function AdminDashboardPage() {
     sameDayRequests: false,
     flexibleRequests: false,
     needsAttention: true,
+    duplicateNameReviews: true,
     chatMonitoring: false,
   });
+  const [duplicateNameReviews, setDuplicateNameReviews] = useState<DuplicateNameReviewRow[]>([]);
+  const [pendingDuplicateNameActions, setPendingDuplicateNameActions] =
+    useState<Record<string, boolean>>({});
   const needsAttentionRef = useRef<HTMLDivElement | null>(null);
   const aliasSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -744,6 +765,28 @@ export default function AdminDashboardPage() {
       );
     } catch {
       setNotificationLogs([]);
+    }
+
+    // Duplicate-name review queue: fully independent of the primary dashboard
+    // fetch so a 500 on /api/admin/stats or get_admin_requests does not
+    // swallow this panel's request.
+    try {
+      const duplicateRes = await fetch("/api/kk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "admin_list_duplicate_name_reviews" }),
+      });
+      const duplicateData = (await duplicateRes.json().catch(() => ({}))) as {
+        ok?: boolean;
+        rows?: DuplicateNameReviewRow[];
+      };
+      setDuplicateNameReviews(
+        duplicateRes.ok && duplicateData.ok && Array.isArray(duplicateData.rows)
+          ? duplicateData.rows
+          : []
+      );
+    } catch {
+      setDuplicateNameReviews([]);
     }
   };
 
@@ -1113,6 +1156,64 @@ export default function AdminDashboardPage() {
       showFeedback("error", "Failed to update");
     } finally {
       setPendingCategoryActions((current) => {
+        const next = { ...current };
+        delete next[actionKey];
+        return next;
+      });
+    }
+  };
+
+  const handleDuplicateNameAction = async (
+    row: DuplicateNameReviewRow,
+    action:
+      | "admin_duplicate_name_review_approve"
+      | "admin_duplicate_name_review_mark_separate"
+      | "admin_duplicate_name_review_reject"
+      | "admin_duplicate_name_review_keep"
+  ) => {
+    const providerId = String(row.ProviderID || "").trim();
+    if (!providerId) return;
+    const actionKey = `${action}:${providerId}`;
+
+    let reason = "";
+    if (action === "admin_duplicate_name_review_reject") {
+      reason =
+        window
+          .prompt(`Reason to reject duplicate-name provider ${providerId}:`, "")
+          ?.trim() || "";
+      if (!reason) return;
+    }
+
+    clearFeedback();
+    setPendingDuplicateNameActions((current) => ({ ...current, [actionKey]: true }));
+
+    try {
+      const res = await fetch("/api/kk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action,
+          providerId,
+          reason,
+          ...getAdminActor(),
+        }),
+      });
+      const data = (await res.json()) as { ok?: boolean; error?: string };
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || "Failed to update");
+      }
+
+      // Optimistic removal (except for "keep", which stays in the queue)
+      if (action !== "admin_duplicate_name_review_keep") {
+        setDuplicateNameReviews((current) =>
+          current.filter((r) => String(r.ProviderID || "").trim() !== providerId)
+        );
+      }
+      showFeedback("success", "Action completed successfully");
+    } catch {
+      showFeedback("error", "Failed to update");
+    } finally {
+      setPendingDuplicateNameActions((current) => {
         const next = { ...current };
         delete next[actionKey];
         return next;
@@ -2330,6 +2431,141 @@ export default function AdminDashboardPage() {
           </div>
         </AccordionSection>
       </div>
+
+      <AccordionSection
+        sectionKey="duplicateNameReviews"
+        title="Duplicate Name Review"
+        description="Providers whose full name matches an existing provider on a different phone. Resolve before the verified badge can appear."
+        count={duplicateNameReviews.length}
+        isOpen={openSections.duplicateNameReviews}
+        onToggle={toggleSection}
+        className="border-amber-200"
+        buttonClassName="hover:bg-amber-50/40"
+        openBorderClassName="border-amber-100"
+        indicatorClassName="border-amber-200 text-amber-700"
+      >
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-left">
+            <thead className="bg-amber-50 text-xs uppercase text-slate-500">
+              <tr>
+                <th className="px-4 py-3 font-semibold">ProviderID</th>
+                <th className="px-4 py-3 font-semibold">Full Name</th>
+                <th className="px-4 py-3 font-semibold">Phone</th>
+                <th className="px-4 py-3 font-semibold">Matched Providers</th>
+                <th className="px-4 py-3 font-semibold">Created At</th>
+                <th className="px-4 py-3 font-semibold">Status</th>
+                <th className="px-4 py-3 font-semibold text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 text-sm text-slate-800">
+              {!loading && duplicateNameReviews.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="px-4 py-6 text-center text-slate-500">
+                    No duplicate-name reviews pending.
+                  </td>
+                </tr>
+              ) : null}
+              {duplicateNameReviews.map((row) => {
+                const providerId = String(row.ProviderID || "").trim();
+                const isApproving = Boolean(
+                  pendingDuplicateNameActions[`admin_duplicate_name_review_approve:${providerId}`]
+                );
+                const isSeparating = Boolean(
+                  pendingDuplicateNameActions[
+                    `admin_duplicate_name_review_mark_separate:${providerId}`
+                  ]
+                );
+                const isRejecting = Boolean(
+                  pendingDuplicateNameActions[`admin_duplicate_name_review_reject:${providerId}`]
+                );
+                const isKeeping = Boolean(
+                  pendingDuplicateNameActions[`admin_duplicate_name_review_keep:${providerId}`]
+                );
+                const busy = isApproving || isSeparating || isRejecting || isKeeping;
+                return (
+                  <tr key={providerId}>
+                    <td className="px-4 py-3 font-medium text-slate-900">{providerId || "-"}</td>
+                    <td className="px-4 py-3">{row.FullName || "-"}</td>
+                    <td className="px-4 py-3">{row.Phone || "-"}</td>
+                    <td className="px-4 py-3">
+                      {row.MatchedProviders && row.MatchedProviders.length > 0 ? (
+                        <ul className="space-y-1">
+                          {row.MatchedProviders.map((m) => (
+                            <li key={m.ProviderID} className="text-xs text-slate-700">
+                              <span className="font-semibold text-slate-900">{m.FullName || "(no name)"}</span>
+                              {" · "}
+                              <span className="text-slate-500">{m.Phone || "-"}</span>
+                              {" · "}
+                              <span className="text-slate-400">{m.ProviderID}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <span className="text-xs text-slate-400">-</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-xs text-slate-600">
+                      {row.CreatedAt || row.DuplicateNameFlaggedAt || "-"}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className="inline-flex rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">
+                        {row.DuplicateNameReviewStatus || "pending"}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex flex-wrap items-center justify-end gap-2">
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() =>
+                            void handleDuplicateNameAction(row, "admin_duplicate_name_review_approve")
+                          }
+                          className="rounded-lg border border-emerald-200 px-3 py-1.5 text-xs font-medium text-emerald-700 transition hover:bg-emerald-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                        >
+                          {isApproving ? "Updating..." : "Approve"}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() =>
+                            void handleDuplicateNameAction(
+                              row,
+                              "admin_duplicate_name_review_mark_separate"
+                            )
+                          }
+                          className="rounded-lg border border-sky-200 px-3 py-1.5 text-xs font-medium text-sky-700 transition hover:bg-sky-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                        >
+                          {isSeparating ? "Updating..." : "Mark Legit Separate"}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() =>
+                            void handleDuplicateNameAction(row, "admin_duplicate_name_review_reject")
+                          }
+                          className="rounded-lg border border-rose-200 px-3 py-1.5 text-xs font-medium text-rose-700 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                        >
+                          {isRejecting ? "Updating..." : "Reject"}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() =>
+                            void handleDuplicateNameAction(row, "admin_duplicate_name_review_keep")
+                          }
+                          className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                        >
+                          {isKeeping ? "Updating..." : "Keep Under Review"}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </AccordionSection>
 
       <AccordionSection
         sectionKey="providers"

@@ -251,10 +251,15 @@ export default function Sidebar() {
         const response = await fetch("/api/provider/dashboard-profile", { cache: "no-store" });
         const data = (await response.json()) as ProviderProfileResponse;
         if (!ignore && data?.ok && data.provider) {
-          setProviderProfile(data.provider);
+          const raw = data.provider as ProviderProfile & { ProviderName?: string };
+          const normalized: ProviderProfile = {
+            ...raw,
+            Name: raw.Name ?? raw.ProviderName,
+          };
+          setProviderProfile(normalized);
           window.localStorage.setItem(
             PROVIDER_PROFILE_STORAGE_KEY,
-            JSON.stringify(data.provider)
+            JSON.stringify(normalized)
           );
         } else if (!ignore && response.status === 404) {
           setProviderProfile(null);

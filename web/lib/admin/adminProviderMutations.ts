@@ -93,3 +93,117 @@ export async function setProviderBlockStatus(
     return null;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Duplicate-name review admin actions
+// ---------------------------------------------------------------------------
+
+type DuplicateNameAdminContext = {
+  adminActorPhone?: string;
+  reason?: string;
+};
+
+/**
+ * Approve a duplicate-name-flagged provider.
+ * Effect: status=active, verified=yes, duplicate_name_review_status=cleared.
+ */
+export async function approveDuplicateNameReview(
+  providerId: string,
+  ctx: DuplicateNameAdminContext = {}
+): Promise<ProviderMutationResult> {
+  try {
+    const { error } = await adminSupabase
+      .from("providers")
+      .update({
+        status: "active",
+        verified: "yes",
+        duplicate_name_review_status: "cleared",
+        duplicate_name_resolved_at: new Date().toISOString(),
+        duplicate_name_admin_phone: ctx.adminActorPhone || null,
+        duplicate_name_reason: null,
+      })
+      .eq("provider_id", providerId);
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Unknown error" };
+  }
+}
+
+/**
+ * Mark a duplicate-name-flagged provider as a legitimate separate person.
+ * Effect: status=active, verified=yes, duplicate_name_review_status=separate.
+ */
+export async function markDuplicateNameLegitSeparate(
+  providerId: string,
+  ctx: DuplicateNameAdminContext = {}
+): Promise<ProviderMutationResult> {
+  try {
+    const { error } = await adminSupabase
+      .from("providers")
+      .update({
+        status: "active",
+        verified: "yes",
+        duplicate_name_review_status: "separate",
+        duplicate_name_resolved_at: new Date().toISOString(),
+        duplicate_name_admin_phone: ctx.adminActorPhone || null,
+        duplicate_name_reason: null,
+      })
+      .eq("provider_id", providerId);
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Unknown error" };
+  }
+}
+
+/**
+ * Reject a duplicate-name-flagged provider.
+ * Effect: status=Blocked (per existing block helper), verified=no,
+ * duplicate_name_review_status=rejected.
+ */
+export async function rejectDuplicateNameProvider(
+  providerId: string,
+  ctx: DuplicateNameAdminContext = {}
+): Promise<ProviderMutationResult> {
+  try {
+    const { error } = await adminSupabase
+      .from("providers")
+      .update({
+        status: "Blocked",
+        verified: "no",
+        duplicate_name_review_status: "rejected",
+        duplicate_name_resolved_at: new Date().toISOString(),
+        duplicate_name_admin_phone: ctx.adminActorPhone || null,
+        duplicate_name_reason: ctx.reason || null,
+      })
+      .eq("provider_id", providerId);
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Unknown error" };
+  }
+}
+
+/**
+ * "Keep under review" — no change to status / verified / review_status.
+ * Records an admin touch for audit/snooze purposes only.
+ */
+export async function keepDuplicateNameUnderReview(
+  providerId: string,
+  ctx: DuplicateNameAdminContext = {}
+): Promise<ProviderMutationResult> {
+  try {
+    const { error } = await adminSupabase
+      .from("providers")
+      .update({
+        duplicate_name_admin_phone: ctx.adminActorPhone || null,
+      })
+      .eq("provider_id", providerId)
+      .eq("duplicate_name_review_status", "pending");
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Unknown error" };
+  }
+}

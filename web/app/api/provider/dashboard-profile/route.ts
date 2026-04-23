@@ -5,6 +5,137 @@ import { createClient } from "@/lib/supabase/server";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
+type ServerSupabase = Awaited<ReturnType<typeof createClient>>;
+
+type ProviderMetrics = {
+  TotalRequestsInMyCategories: number;
+  TotalRequestsMatchedToMe: number;
+  TotalRequestsRespondedByMe: number;
+  TotalRequestsAcceptedByMe: number;
+  TotalRequestsCompletedByMe: number;
+  ResponseRate: number;
+  AcceptanceRate: number;
+};
+
+const EMPTY_PROVIDER_METRICS: ProviderMetrics = {
+  TotalRequestsInMyCategories: 0,
+  TotalRequestsMatchedToMe: 0,
+  TotalRequestsRespondedByMe: 0,
+  TotalRequestsAcceptedByMe: 0,
+  TotalRequestsCompletedByMe: 0,
+  ResponseRate: 0,
+  AcceptanceRate: 0,
+};
+
+// Aggregated provider metrics straight from Supabase. All five counts run in
+// parallel via head-only count queries (no row payloads transferred). Any
+// individual query failure is logged and its count is coerced to 0, so one
+// missing/denied table never zeroes out the whole panel.
+async function getProviderMetricsFromSupabase(
+  supabase: ServerSupabase,
+  providerId: string,
+  categories: string[]
+): Promise<ProviderMetrics> {
+  if (!providerId) return EMPTY_PROVIDER_METRICS;
+
+  const categoryList = Array.from(
+    new Set(
+      (categories || [])
+        .map((c) => String(c || "").trim())
+        .filter((c) => c.length > 0)
+    )
+  );
+
+  const categoriesCountPromise =
+    categoryList.length > 0
+      ? supabase
+          .from("tasks")
+          .select("task_id", { count: "exact", head: true })
+          .in("category", categoryList)
+      : Promise.resolve({ count: 0, error: null } as {
+          count: number | null;
+          error: unknown;
+        });
+
+  const matchedCountPromise = supabase
+    .from("provider_task_matches")
+    .select("task_id", { count: "exact", head: true })
+    .eq("provider_id", providerId);
+
+  const respondedCountPromise = supabase
+    .from("provider_task_matches")
+    .select("task_id", { count: "exact", head: true })
+    .eq("provider_id", providerId)
+    .in("match_status", ["responded", "accepted"]);
+
+  const acceptedCountPromise = supabase
+    .from("tasks")
+    .select("task_id", { count: "exact", head: true })
+    .eq("assigned_provider_id", providerId);
+
+  const completedCountPromise = supabase
+    .from("tasks")
+    .select("task_id", { count: "exact", head: true })
+    .eq("assigned_provider_id", providerId)
+    .in("status", ["closed", "completed"]);
+
+  const [
+    categoriesCountResult,
+    matchedCountResult,
+    respondedCountResult,
+    acceptedCountResult,
+    completedCountResult,
+  ] = await Promise.all([
+    categoriesCountPromise,
+    matchedCountPromise,
+    respondedCountPromise,
+    acceptedCountPromise,
+    completedCountPromise,
+  ]);
+
+  const readCount = (
+    result: { count?: number | null; error?: unknown },
+    label: string
+  ): number => {
+    if (result?.error) {
+      const msg =
+        result.error instanceof Error
+          ? result.error.message
+          : typeof result.error === "object" && result.error && "message" in result.error
+            ? String((result.error as { message?: unknown }).message || "")
+            : String(result.error);
+      console.warn("[provider/dashboard-profile] metric query failed", { label, error: msg });
+      return 0;
+    }
+    return Number(result?.count || 0);
+  };
+
+  const totalRequestsInMyCategories = readCount(categoriesCountResult, "TotalRequestsInMyCategories");
+  const totalRequestsMatchedToMe = readCount(matchedCountResult, "TotalRequestsMatchedToMe");
+  const totalRequestsRespondedByMe = readCount(respondedCountResult, "TotalRequestsRespondedByMe");
+  const totalRequestsAcceptedByMe = readCount(acceptedCountResult, "TotalRequestsAcceptedByMe");
+  const totalRequestsCompletedByMe = readCount(completedCountResult, "TotalRequestsCompletedByMe");
+
+  const responseRate =
+    totalRequestsMatchedToMe > 0
+      ? Math.round((totalRequestsRespondedByMe / totalRequestsMatchedToMe) * 100)
+      : 0;
+  const acceptanceRate =
+    totalRequestsMatchedToMe > 0
+      ? Math.round((totalRequestsAcceptedByMe / totalRequestsMatchedToMe) * 100)
+      : 0;
+
+  return {
+    TotalRequestsInMyCategories: totalRequestsInMyCategories,
+    TotalRequestsMatchedToMe: totalRequestsMatchedToMe,
+    TotalRequestsRespondedByMe: totalRequestsRespondedByMe,
+    TotalRequestsAcceptedByMe: totalRequestsAcceptedByMe,
+    TotalRequestsCompletedByMe: totalRequestsCompletedByMe,
+    ResponseRate: responseRate,
+    AcceptanceRate: acceptanceRate,
+  };
+}
+
 function normalizePhone10(value: string): string {
   const digits = String(value || "").replace(/\D/g, "");
   if (!digits) return "";
@@ -170,6 +301,26 @@ export async function GET(request: NextRequest) {
       tasks?: JoinedTask | JoinedTask[] | null;
     };
 
+    const providerCategoryList = Array.isArray(providerServices)
+      ? providerServices
+          .map((item) => String(item.category || "").trim())
+          .filter((c) => c.length > 0)
+      : [];
+
+    let metrics: ProviderMetrics = EMPTY_PROVIDER_METRICS;
+    try {
+      metrics = await getProviderMetricsFromSupabase(
+        supabase,
+        String(provider.provider_id || ""),
+        providerCategoryList
+      );
+    } catch (metricsError) {
+      console.warn(
+        "[provider/dashboard-profile] metrics compute failed",
+        metricsError instanceof Error ? metricsError.message : metricsError
+      );
+    }
+
     const safeMatches: MatchRow[] = Array.isArray(matchRows) ? (matchRows as MatchRow[]) : [];
     const recentMatchedRequests = safeMatches
       .map((row) => {
@@ -211,6 +362,7 @@ export async function GET(request: NextRequest) {
         LastLoginAt: String(provider.created_at || ""),
         PendingApproval: String(provider.status || "").trim().toLowerCase() === "pending" ? "yes" : "no",
         Status: String(provider.status || ""),
+        DuplicateNameReviewStatus: String(provider.duplicate_name_review_status || ""),
         Services: Array.isArray(providerServices)
           ? providerServices.map((item) => ({
               Category: String(item.category || ""),
@@ -224,6 +376,7 @@ export async function GET(request: NextRequest) {
         AreaCoverage: null,
         Analytics: {
           RecentMatchedRequests: recentMatchedRequests,
+          Metrics: metrics,
         },
       },
     });

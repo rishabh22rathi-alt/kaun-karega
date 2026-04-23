@@ -209,6 +209,7 @@ function ProviderRegisterPageInner() {
   const [success, setSuccess] = useState<RegisterResponse | null>(null);
   const [submittedRequiresApproval, setSubmittedRequiresApproval] = useState(false);
   const [showSuccessCelebration, setShowSuccessCelebration] = useState(false);
+  const [showEditSuccessModal, setShowEditSuccessModal] = useState(false);
   const [successProviderId, setSuccessProviderId] = useState("");
   const [toasts, setToasts] = useState<InAppToast[]>([]);
 
@@ -499,7 +500,8 @@ function ProviderRegisterPageInner() {
     selectedCategories.length >= 1 &&
     selectedAreas.length >= MIN_AREAS &&
     !isSubmitting &&
-    !showSuccessCelebration;
+    !showSuccessCelebration &&
+    !showEditSuccessModal;
   const canAccessAreas = selectedCategories.length > 0;
 
   function nudgeSelectCategory() {
@@ -629,6 +631,41 @@ function ProviderRegisterPageInner() {
     setSuccess(null);
 
     try {
+      if (isEditMode) {
+        // Provider self-update path. This does NOT use provider_register (insert)
+        // semantics and must send real arrays, not JSON.stringify strings. The
+        // server resolves provider_id from the session phone for ownership.
+        const updateRes = await fetch("/api/provider/update", {
+          method: "POST",
+          cache: "no-store",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: name.trim().toUpperCase(),
+            categories: uniqueCategoryValues(selectedCategories),
+            areas: selectedAreas,
+          }),
+        });
+        const updateData = (await parseJsonSafe(updateRes)) as
+          | { ok?: boolean; error?: string; message?: string }
+          | null;
+        if (!updateRes.ok || updateData?.ok !== true) {
+          throw new Error(
+            updateData?.error || updateData?.message || "Failed to save changes"
+          );
+        }
+
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new Event(PROVIDER_PROFILE_UPDATED_EVENT));
+        }
+
+        setShowEditSuccessModal(true);
+        popConfetti();
+        window.setTimeout(() => {
+          router.push("/provider/dashboard");
+        }, 1800);
+        return;
+      }
+
       const pendingNewCategories = selectedCategories.filter((category) =>
         customCategoryKeys.includes(categoryKey(category))
       );
@@ -719,23 +756,11 @@ function ProviderRegisterPageInner() {
         }
       }
       setSuccessProviderId(data?.providerId || "");
-      if (isEditMode) {
-        const hasNewCategoryRequest = pendingNewCategories.length > 0;
-        showSuccessToast(
-          hasNewCategoryRequest
-            ? "Your changes have been saved. New service requests will be reviewed by admin."
-            : "Your changes have been updated successfully."
-        );
-        window.setTimeout(() => {
-          router.push("/provider/dashboard");
-        }, 1800);
-      } else {
-        setShowSuccessCelebration(true);
-        popConfetti();
-        window.setTimeout(() => {
-          router.push("/provider/dashboard");
-        }, 2000);
-      }
+      setShowSuccessCelebration(true);
+      popConfetti();
+      window.setTimeout(() => {
+        router.push("/provider/dashboard");
+      }, 2000);
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : "Failed to submit registration");
     } finally {
@@ -1143,6 +1168,40 @@ function ProviderRegisterPageInner() {
             <p className="mt-3 text-sm font-semibold text-slate-900">
               ProviderID: {successProviderId || "PR-xxxx"}
             </p>
+          </div>
+        </div>
+      ) : null}
+      {showEditSuccessModal ? (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/60 px-4">
+          <div className="w-full max-w-md rounded-2xl border border-emerald-200 bg-white p-6 text-center shadow-2xl">
+            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-emerald-100 text-emerald-700">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="h-7 w-7"
+                aria-hidden="true"
+              >
+                <path d="M20 6 9 17l-5-5" />
+              </svg>
+            </div>
+            <h2 className="mt-4 text-2xl font-bold tracking-wide text-emerald-700 md:text-3xl">
+              Changes Saved Successfully
+            </h2>
+            <p className="mt-3 text-sm leading-relaxed text-slate-700">
+              Your services and areas have been updated.
+            </p>
+            {selectedCategories.some((category) =>
+              customCategoryKeys.includes(categoryKey(category))
+            ) ? (
+              <p className="mt-3 text-xs text-slate-500">
+                New service requests will be reviewed by admin.
+              </p>
+            ) : null}
           </div>
         </div>
       ) : null}

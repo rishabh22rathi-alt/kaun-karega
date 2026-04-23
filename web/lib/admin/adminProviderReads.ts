@@ -269,3 +269,93 @@ export async function updateProviderInSupabase(
 
   return { success: true };
 }
+
+// ---------------------------------------------------------------------------
+// Duplicate-name review queue
+// ---------------------------------------------------------------------------
+
+export type DuplicateNameReviewRow = {
+  ProviderID: string;
+  FullName: string;
+  Phone: string;
+  Status: string;
+  Verified: string;
+  CreatedAt: string;
+  DuplicateNameReviewStatus: string;
+  DuplicateNameFlaggedAt: string;
+  MatchedProviders: Array<{
+    ProviderID: string;
+    FullName: string;
+    Phone: string;
+  }>;
+};
+
+export async function listDuplicateNameReviews(): Promise<DuplicateNameReviewRow[]> {
+  const { data: flaggedRows, error: flaggedError } = await adminSupabase
+    .from("providers")
+    .select(
+      "provider_id, full_name, phone, status, verified, created_at, duplicate_name_review_status, duplicate_name_matches, duplicate_name_flagged_at"
+    )
+    .eq("duplicate_name_review_status", "pending")
+    .order("duplicate_name_flagged_at", { ascending: false });
+
+  if (flaggedError || !Array.isArray(flaggedRows) || flaggedRows.length === 0) {
+    return [];
+  }
+
+  const matchIdSet = new Set<string>();
+  for (const row of flaggedRows) {
+    const ids = Array.isArray(row.duplicate_name_matches) ? row.duplicate_name_matches : [];
+    for (const id of ids) {
+      const trimmed = String(id || "").trim();
+      if (trimmed) matchIdSet.add(trimmed);
+    }
+  }
+
+  const matchIds = Array.from(matchIdSet);
+  let matchIndex = new Map<string, { full_name: string; phone: string }>();
+  if (matchIds.length > 0) {
+    const { data: matchRows } = await adminSupabase
+      .from("providers")
+      .select("provider_id, full_name, phone")
+      .in("provider_id", matchIds);
+    if (Array.isArray(matchRows)) {
+      matchIndex = new Map(
+        matchRows.map((m) => [
+          String(m.provider_id || ""),
+          {
+            full_name: String(m.full_name || ""),
+            phone: String(m.phone || ""),
+          },
+        ])
+      );
+    }
+  }
+
+  return flaggedRows.map((row) => {
+    const ids = Array.isArray(row.duplicate_name_matches) ? row.duplicate_name_matches : [];
+    const matched = ids
+      .map((id: unknown) => String(id || "").trim())
+      .filter(Boolean)
+      .map((id: string) => {
+        const info = matchIndex.get(id);
+        return {
+          ProviderID: id,
+          FullName: info ? info.full_name : "",
+          Phone: info ? info.phone : "",
+        };
+      });
+
+    return {
+      ProviderID: String(row.provider_id || ""),
+      FullName: String(row.full_name || ""),
+      Phone: String(row.phone || ""),
+      Status: String(row.status || ""),
+      Verified: String(row.verified || ""),
+      CreatedAt: String(row.created_at || ""),
+      DuplicateNameReviewStatus: String(row.duplicate_name_review_status || ""),
+      DuplicateNameFlaggedAt: String(row.duplicate_name_flagged_at || ""),
+      MatchedProviders: matched,
+    };
+  });
+}

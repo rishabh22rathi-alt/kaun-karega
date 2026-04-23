@@ -67,25 +67,31 @@ type ProviderVerificationShape = {
   OtpVerified?: unknown;
   OtpVerifiedAt?: unknown;
   PendingApproval?: unknown;
+  DuplicateNameReviewStatus?: unknown;
   verified?: unknown;
   otpVerified?: unknown;
   otpVerifiedAt?: unknown;
   pendingApproval?: unknown;
+  duplicateNameReviewStatus?: unknown;
 };
 
 // Full verified badge rule:
-//   registered_with_us = Verified === "yes"
-//   otp_still_valid    = OtpVerified === "yes" AND (OtpVerifiedAt blank OR within 30 days)
-//   not_pending        = PendingApproval !== "yes"
+//   registered_with_us   = Verified === "yes"
+//   otp_still_valid      = OtpVerified === "yes" AND (OtpVerifiedAt blank OR within 30 days)
+//   not_pending          = PendingApproval !== "yes"
+//   not_duplicate_review = DuplicateNameReviewStatus !== "pending"
 export function isProviderVerified(provider: ProviderVerificationShape): boolean {
   const verified = provider.Verified ?? provider.verified;
   const otpVerified = provider.OtpVerified ?? provider.otpVerified;
   const otpVerifiedAt = provider.OtpVerifiedAt ?? provider.otpVerifiedAt;
   const pendingApproval = provider.PendingApproval ?? provider.pendingApproval;
+  const duplicateReviewStatus =
+    provider.DuplicateNameReviewStatus ?? provider.duplicateNameReviewStatus;
 
   if (normalizeVerifiedValue(verified) !== "yes") return false;
   if (!isOtpStillValid(otpVerified, otpVerifiedAt)) return false;
   if (String(pendingApproval ?? "").trim().toLowerCase() === "yes") return false;
+  if (String(duplicateReviewStatus ?? "").trim().toLowerCase() === "pending") return false;
   return true;
 }
 
