@@ -4,6 +4,7 @@ import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { getAuthSession } from "@/lib/auth";
 import confetti from "canvas-confetti";
+import InAppToastStack, { type InAppToast } from "@/components/InAppToastStack";
 import { PROVIDER_PROFILE_UPDATED_EVENT } from "@/components/sidebarEvents";
 
 // Change limits here if business rules change.
@@ -209,6 +210,19 @@ function ProviderRegisterPageInner() {
   const [submittedRequiresApproval, setSubmittedRequiresApproval] = useState(false);
   const [showSuccessCelebration, setShowSuccessCelebration] = useState(false);
   const [successProviderId, setSuccessProviderId] = useState("");
+  const [toasts, setToasts] = useState<InAppToast[]>([]);
+
+  const showSuccessToast = (message: string) => {
+    const id = `save-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    setToasts((current) => [...current, { id, title: "Saved", message }]);
+    window.setTimeout(() => {
+      setToasts((current) => current.filter((t) => t.id !== id));
+    }, 2500);
+  };
+
+  const dismissToast = (id: string) => {
+    setToasts((current) => current.filter((t) => t.id !== id));
+  };
   const [hasLoadedEditProfile, setHasLoadedEditProfile] = useState(false);
 
   const editTarget = searchParams.get("edit");
@@ -220,9 +234,40 @@ function ProviderRegisterPageInner() {
       router.replace("/login");
       return;
     }
-    setPhone(userPhone);
-    setIsAuthChecking(false);
-  }, [router]);
+
+    // In edit mode the user explicitly came to update their profile — skip guard.
+    if (isEditMode) {
+      setPhone(userPhone);
+      setIsAuthChecking(false);
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(
+          `/api/kk?action=get_provider_by_phone&phone=${encodeURIComponent(userPhone)}`,
+          { cache: "no-store" }
+        );
+        const data = (await parseJsonSafe(res)) as ProviderByPhoneResponse | null;
+        if (cancelled) return;
+        if (res.ok && data?.ok === true && data.provider?.ProviderID) {
+          router.replace("/provider/dashboard?alreadyRegistered=true");
+          return;
+        }
+      } catch {
+        // If check fails, fall through to showing the form.
+        // The submit path still catches duplicate registrations via the 409 response.
+      }
+      if (cancelled) return;
+      setPhone(userPhone);
+      setIsAuthChecking(false);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [router, isEditMode]);
 
   useEffect(() => {
     const loadCategories = async () => {
@@ -615,6 +660,12 @@ function ProviderRegisterPageInner() {
 
       const data = (await parseJsonSafe(response)) as RegisterResponse | null;
       if (!response.ok || data?.ok !== true) {
+        // Backend returns 409 { error: "already_registered" } when the phone already
+        // exists in providers. The register-entry guard handles this for new signups;
+        // in edit mode it can still fire, but this form must not surface that message.
+        if (data?.error === "already_registered") {
+          return;
+        }
         throw new Error(data?.error || data?.message || "Failed to submit registration");
       }
 
@@ -661,11 +712,23 @@ function ProviderRegisterPageInner() {
         }
       }
       setSuccessProviderId(data?.providerId || "");
-      setShowSuccessCelebration(true);
-      popConfetti();
-      window.setTimeout(() => {
-        router.push("/provider/dashboard");
-      }, 2000);
+      if (isEditMode) {
+        const hasNewCategoryRequest = pendingNewCategories.length > 0;
+        showSuccessToast(
+          hasNewCategoryRequest
+            ? "Your changes have been saved. New service requests will be reviewed by admin."
+            : "Your changes have been updated successfully."
+        );
+        window.setTimeout(() => {
+          router.push("/provider/dashboard");
+        }, 1800);
+      } else {
+        setShowSuccessCelebration(true);
+        popConfetti();
+        window.setTimeout(() => {
+          router.push("/provider/dashboard");
+        }, 2000);
+      }
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : "Failed to submit registration");
     } finally {
@@ -1058,6 +1121,7 @@ function ProviderRegisterPageInner() {
           </div>
         </div>
       ) : null}
+      <InAppToastStack toasts={toasts} onDismiss={dismissToast} />
       {showSuccessCelebration ? (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/60 px-4">
           <div className="w-full max-w-md rounded-2xl border border-emerald-200 bg-white p-6 text-center shadow-2xl">

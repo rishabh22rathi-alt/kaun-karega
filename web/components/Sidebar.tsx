@@ -428,7 +428,10 @@ export default function Sidebar() {
         { label: "My Needs", href: "/i-need/my-needs" },
         { label: "Report an Issue", href: "/report-issue" },
         ...(providerExists === true
-          ? [{ label: "Provider Dashboard", href: "/provider/dashboard" }]
+          ? [
+              { label: "Provider Dashboard", href: "/provider/dashboard" },
+              { label: "Job Requests", href: "/provider/job-requests" },
+            ]
           : []),
         ...(isAdmin
           ? [{ label: "Admin Dashboard", href: "/admin/dashboard" }]
@@ -480,6 +483,7 @@ export default function Sidebar() {
       "Report an Issue": MessageSquareWarning,
       Profile: User,
       "Provider Dashboard": LayoutDashboard,
+      "Job Requests": ListTodo,
       "Admin Dashboard": ShieldCheck,
       Login: LogIn,
       "Register as Service Provider": UserPlus,
@@ -505,7 +509,7 @@ export default function Sidebar() {
       >
         <div className="flex items-center gap-2 border-b border-white/10 px-3 py-3">
           {!isCollapsed && (
-            <div className="flex flex-col leading-tight">
+            <div className="flex flex-col leading-tight select-none">
               <p className="text-base font-semibold text-white">Kaun Karega</p>
               {isAdmin ? (
                 <>
@@ -523,7 +527,7 @@ export default function Sidebar() {
                   <span
                     className={`mt-1 inline-flex w-fit rounded-full border px-2 py-0.5 text-[10px] font-semibold ${
                       isProviderVerified(providerProfile)
-                        ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                        ? "border-green-200 bg-green-100 text-green-800"
                         : "border-amber-200 bg-amber-50 text-amber-700"
                     }`}
                   >
@@ -573,126 +577,136 @@ export default function Sidebar() {
           </div>
         </div>
 
-        <nav className="flex-1 px-3 py-4 space-y-2 overflow-hidden">
-          {navItems.map((item) => {
-            const active = pathname === item.href;
-            const Icon = iconByLabel[item.label];
-            const showMyNeedsBadge = item.label === "My Needs" && myNeedsUnreadCount > 0;
-            return (
-              <div key={item.href}>
-                {item.label === "Home" && (
-                  <div>
-                    <button
-                      type="button"
-                      onClick={() => setINeedOpen((v) => !v)}
-                      className="flex w-full items-center gap-3 rounded-lg border-l-4 border-orange-400 bg-orange-100 px-3 py-2 font-semibold text-orange-700 transition hover:bg-orange-200"
+        <nav className="flex-1 overflow-hidden px-3 py-4 select-none">
+          <div className="space-y-2">
+              {navItems.map((item) => {
+                const active = pathname === item.href;
+                const isHome = item.label === "Home";
+                const Icon = iconByLabel[item.label];
+                const showMyNeedsBadge = item.label === "My Needs" && myNeedsUnreadCount > 0;
+                return (
+                  <div key={item.href} className={isHome ? "space-y-2" : undefined}>
+                    <Link
+                      href={item.href}
+                      draggable={false}
+                      onClick={() => setIsOpen(false)}
+                      className={`flex items-center gap-3 rounded-lg px-3 py-2 font-semibold text-white transition ${
+                        active
+                          ? isHome
+                            ? "bg-transparent text-white ring-1 ring-inset ring-white/[0.12] hover:bg-white/[0.06]"
+                            : "bg-white/[0.18] text-white ring-1 ring-inset ring-white/10"
+                          : "hover:bg-white/[0.08] hover:text-white"
+                      }`}
                     >
-                      <ListTodo className="h-4 w-4 shrink-0 text-orange-600" />
+                      {Icon && (
+                        <span className="relative inline-flex shrink-0">
+                          <Icon className="h-4 w-4 text-white/90" />
+                          {isCollapsed && showMyNeedsBadge ? (
+                            <span className="absolute -right-2 -top-2 inline-flex min-w-[18px] items-center justify-center rounded-full bg-violet-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
+                              {myNeedsBadgeLabel}
+                            </span>
+                          ) : null}
+                        </span>
+                      )}
                       {isCollapsed ? (
-                        <span className="sr-only">I NEED</span>
+                        <span className="sr-only">{item.label}</span>
                       ) : (
                         <>
-                          <span className="text-sm whitespace-nowrap">I NEED</span>
-                          <ChevronRight
-                            className={`ml-auto h-3.5 w-3.5 text-orange-500 transition-transform duration-200 ${iNeedOpen ? "rotate-90" : ""}`}
-                          />
+                          <span className="text-sm whitespace-nowrap">
+                            {item.label}
+                          </span>
+                          {showMyNeedsBadge ? (
+                            <span className="ml-auto inline-flex min-w-[18px] items-center justify-center rounded-full bg-violet-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
+                              {myNeedsBadgeLabel}
+                            </span>
+                          ) : null}
                         </>
                       )}
-                    </button>
+                    </Link>
 
-                    {iNeedOpen && !isCollapsed && (
-                      <div className="ml-7 mt-0.5 space-y-0.5">
-                        {[
-                          { label: "Naukri", emoji: "💼", category: "Employer" },
-                          { label: "Property", emoji: "🏗️", category: "Property Buyer" },
-                          { label: "Rent", emoji: "🏠", category: "Tenant" },
-                          { label: "Buy / Sell", emoji: "🤝", category: "Vehicle Buyer" },
-                        ].map((needItem) => (
-                          <button
-                            key={needItem.label}
-                            type="button"
-                            onClick={() => {
-                              setIsOpen(false);
-                              router.push(`/i-need?category=${encodeURIComponent(needItem.category)}`);
-                            }}
-                            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-orange-700 transition hover:bg-orange-100"
-                          >
-                            <span>{needItem.emoji}</span>
-                            {needItem.label}
-                          </button>
-                        ))}
+                    {isHome ? (
+                      <div>
+                        <button
+                          type="button"
+                          onClick={() => setINeedOpen((v) => !v)}
+                          className="flex w-full items-center gap-3 rounded-lg bg-transparent px-3 py-2 font-semibold text-white transition hover:bg-white/[0.06]"
+                        >
+                          <ListTodo className="h-4 w-4 shrink-0 text-white/90" />
+                          {isCollapsed ? (
+                            <span className="sr-only">I NEED</span>
+                          ) : (
+                            <>
+                              <span className="text-sm whitespace-nowrap">I NEED</span>
+                              <ChevronRight
+                                className={`ml-auto h-3.5 w-3.5 transition-transform duration-200 ${
+                                  iNeedOpen ? "rotate-90 text-white" : "text-white/70"
+                                }`}
+                              />
+                            </>
+                          )}
+                        </button>
+
+                        {iNeedOpen && !isCollapsed && (
+                          <div className="pt-1">
+                            <div className="ml-5 space-y-0.5">
+                              {[
+                                { label: "Naukri", emoji: "💼", category: "Employer" },
+                                { label: "Property", emoji: "🏗️", category: "Property Buyer" },
+                                { label: "Rent", emoji: "🏠", category: "Tenant" },
+                                { label: "Buy / Sell", emoji: "🤝", category: "Vehicle Buyer" },
+                              ].map((needItem) => (
+                                <button
+                                  key={needItem.label}
+                                  type="button"
+                                  onClick={() => {
+                                    setIsOpen(false);
+                                    router.push(`/i-need?category=${encodeURIComponent(needItem.category)}`);
+                                  }}
+                                  className="flex w-full items-center gap-2 rounded-lg bg-white/[0.12] px-3 py-2 text-sm text-white/85 ring-1 ring-inset ring-white/10 transition hover:bg-white/[0.18] hover:text-white"
+                                >
+                                  <span>{needItem.emoji}</span>
+                                  {needItem.label}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
-                    )}
+                    ) : null}
                   </div>
-                )}
-
-                <Link
-                  href={item.href}
-                  onClick={() => setIsOpen(false)}
-                  className={`flex items-center gap-3 rounded-lg px-3 py-2 font-semibold text-white transition ${
-                    active
-                      ? "bg-white/20 text-white shadow-sm"
-                      : "hover:bg-white/10 hover:text-white"
-                  }`}
+                );
+              })}
+              {providerExists === false ? (
+                <button
+                  type="button"
+                  onClick={() => setShowProviderConfirm(true)}
+                  className="flex w-full items-center gap-3 rounded-lg px-3 py-2 font-semibold text-white transition hover:bg-white/[0.08] hover:text-white"
                 >
-                  {Icon && (
-                    <span className="relative inline-flex shrink-0">
-                      <Icon className="h-4 w-4 text-white/90" />
-                      {isCollapsed && showMyNeedsBadge ? (
-                        <span className="absolute -right-2 -top-2 inline-flex min-w-[18px] items-center justify-center rounded-full bg-violet-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
-                          {myNeedsBadgeLabel}
-                        </span>
-                      ) : null}
+                  <UserPlus className="h-4 w-4 text-white/90" />
+                  {isCollapsed ? (
+                    <span className="sr-only">Register as Service Provider</span>
+                  ) : (
+                    <span className="text-sm whitespace-nowrap">
+                      Register as Service Provider
                     </span>
                   )}
+                </button>
+              ) : null}
+              {session?.phone && (
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  className="flex w-full items-center gap-3 rounded-lg px-3 py-2 font-semibold text-white transition hover:bg-white/[0.08] hover:text-white"
+                >
+                  <LogOut className="h-4 w-4 text-white/90" />
                   {isCollapsed ? (
-                    <span className="sr-only">{item.label}</span>
+                    <span className="sr-only">Logout</span>
                   ) : (
-                    <>
-                      <span className="text-sm whitespace-nowrap">
-                        {item.label}
-                      </span>
-                      {showMyNeedsBadge ? (
-                        <span className="ml-auto inline-flex min-w-[18px] items-center justify-center rounded-full bg-violet-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
-                          {myNeedsBadgeLabel}
-                        </span>
-                      ) : null}
-                    </>
+                    <span className="text-sm whitespace-nowrap">Logout</span>
                   )}
-                </Link>
-              </div>
-            );
-          })}
-          {providerExists === false ? (
-            <button
-              type="button"
-              onClick={() => setShowProviderConfirm(true)}
-              className="flex w-full items-center gap-3 rounded-lg px-3 py-2 font-semibold text-white transition hover:bg-white/10 hover:text-white"
-            >
-              <UserPlus className="h-4 w-4 text-white/90" />
-              {isCollapsed ? (
-                <span className="sr-only">Register as Service Provider</span>
-              ) : (
-                <span className="text-sm whitespace-nowrap">
-                  Register as Service Provider
-                </span>
+                </button>
               )}
-            </button>
-          ) : null}
-          {session?.phone && (
-            <button
-              type="button"
-              onClick={handleLogout}
-              className="flex w-full items-center gap-3 rounded-lg px-3 py-2 font-semibold text-white transition hover:bg-white/10 hover:text-white"
-            >
-              <LogOut className="h-4 w-4 text-white/90" />
-              {isCollapsed ? (
-                <span className="sr-only">Logout</span>
-              ) : (
-                <span className="text-sm whitespace-nowrap">Logout</span>
-              )}
-            </button>
-          )}
+          </div>
         </nav>
       </aside>
       {showProviderConfirm && providerExists === false && (

@@ -1,5 +1,3 @@
-import { ADMIN_KEY, appsScriptGet, appsScriptPost } from "./client";
-
 export type ProviderStatus = "Active" | "Pending" | "Blocked" | string;
 
 export type Provider = {
@@ -16,15 +14,11 @@ export type Provider = {
 type BlockResponse = { status: ProviderStatus };
 
 export async function getAllProviders(): Promise<Provider[]> {
-  if (!ADMIN_KEY) {
-    console.warn("NEXT_PUBLIC_ADMIN_KEY is not set");
-  }
   try {
-    return await appsScriptGet<Provider[]>(
-      "providers/getAll",
-      {},
-      { admin: true }
-    );
+    const res = await fetch("/api/admin/providers", { cache: "no-store" });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data) ? (data as Provider[]) : [];
   } catch (err) {
     console.error("getAllProviders error", err);
     return [];
@@ -32,15 +26,14 @@ export async function getAllProviders(): Promise<Provider[]> {
 }
 
 export async function getProviderById(id: string): Promise<Provider | null> {
-  if (!ADMIN_KEY) {
-    console.warn("NEXT_PUBLIC_ADMIN_KEY is not set");
-  }
   try {
-    return await appsScriptGet<Provider>(
-      "providers/getById",
-      { id },
-      { admin: true }
-    );
+    const res = await fetch(`/api/admin/providers/${encodeURIComponent(id)}`, {
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data || data.ok === false) return null;
+    return data as Provider;
   } catch (err) {
     console.error("getProviderById error", err);
     return null;
@@ -56,15 +49,14 @@ export type UpdateProviderInput = {
 };
 
 export async function updateProvider(input: UpdateProviderInput): Promise<{ success: boolean }> {
-  if (!ADMIN_KEY) {
-    console.warn("NEXT_PUBLIC_ADMIN_KEY is not set");
-  }
   try {
-    return await appsScriptPost<{ success: boolean }>(
-      "providers/update",
-      { ...input },
-      { admin: true }
-    );
+    const res = await fetch("/api/admin/providers/update", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    if (!res.ok) return { success: false };
+    return (await res.json()) as { success: boolean };
   } catch (err) {
     console.error("updateProvider error", err);
     return { success: false };
@@ -72,15 +64,14 @@ export async function updateProvider(input: UpdateProviderInput): Promise<{ succ
 }
 
 export async function blockProvider(id: string): Promise<BlockResponse | null> {
-  if (!ADMIN_KEY) {
-    console.warn("NEXT_PUBLIC_ADMIN_KEY is not set");
-  }
   try {
-    return await appsScriptPost<BlockResponse>(
-      "providers/block",
-      { id },
-      { admin: true }
-    );
+    const res = await fetch("/api/admin/providers/block", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as BlockResponse;
   } catch (err) {
     console.error("blockProvider error", err);
     return null;
@@ -88,15 +79,14 @@ export async function blockProvider(id: string): Promise<BlockResponse | null> {
 }
 
 export async function unblockProvider(id: string): Promise<BlockResponse | null> {
-  if (!ADMIN_KEY) {
-    console.warn("NEXT_PUBLIC_ADMIN_KEY is not set");
-  }
   try {
-    return await appsScriptPost<BlockResponse>(
-      "providers/unblock",
-      { id },
-      { admin: true }
-    );
+    const res = await fetch("/api/admin/providers/unblock", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as BlockResponse;
   } catch (err) {
     console.error("unblockProvider error", err);
     return null;

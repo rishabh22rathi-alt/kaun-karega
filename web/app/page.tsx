@@ -2,14 +2,12 @@
 
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import Image from "next/image";
 
 import AreaSelection, {
   normalizeAreaValue,
 } from "@/app/(public)/components/AreaSelection";
 import WhenNeedIt from "@/app/(public)/components/WhenNeedIt";
 import { getAuthSession, setAuthSession } from "@/lib/auth";
-import logo from "@/public/kaun-karega-logo.svg";
 
 const MASTER_AREAS = [
   "Sardarpura",
@@ -1056,55 +1054,42 @@ const hasArea = area.trim() !== "";
     <div className="min-h-screen bg-slate-50">
 
       {/* ── HERO ─────────────────────────────────────────────────────── */}
-      {/*
-          Brand-colored hero: orange-500 background with white text.
-          Logo is wrapped in a white pill so it reads on any bg color.
-          ALL input/typewriter/suggestions logic is untouched.
-      */}
-      <section className="relative overflow-hidden bg-orange-500 px-4 pb-16 pt-10 text-center">
-        {/* Subtle dot-grid texture for depth */}
+      <section className="relative overflow-hidden bg-white px-4 pb-10 pt-5 text-center">
+        {/* Very subtle dot-grid texture */}
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute inset-0 opacity-[0.06]"
+          className="pointer-events-none absolute inset-0 opacity-[0.035]"
           style={{
-            backgroundImage: "radial-gradient(circle, white 1px, transparent 1px)",
-            backgroundSize: "22px 22px",
+            backgroundImage: "radial-gradient(circle, #334155 1px, transparent 1px)",
+            backgroundSize: "24px 24px",
           }}
         />
 
         <div className="relative mx-auto max-w-2xl">
 
-          {/* Logo in white container so it reads on any bg */}
-          <div className="mb-5 inline-flex items-center rounded-2xl bg-white px-5 py-2 shadow-md">
-            <Image
-              src={logo}
-              alt="Kaun Karega logo"
-              priority
-              className="h-9 w-auto md:h-11"
-            />
+          {/* Text wordmark */}
+          <div className="mb-3 flex justify-center select-none">
+            <div className="inline-flex items-start justify-center gap-2 leading-none sm:gap-3">
+              <span className="relative inline-block translate-y-[18px] text-[2.75rem] font-extrabold tracking-tight text-orange-500 sm:text-6xl md:text-[4.8rem]">
+                कौन
+              </span>
+              <div className="flex flex-col items-start">
+                <span className="relative inline-block text-[2.4rem] font-extrabold tracking-[0.06em] text-[#003d20] sm:text-5xl md:text-[4.35rem]">
+                  <span className="relative inline-block pb-1 after:absolute after:bottom-[-10px] after:left-0 after:h-[5px] after:w-full after:bg-orange-500 after:content-['']">KAREGA</span><span>?</span>
+                </span>
+                <p className="mt-2 text-[11px] font-semibold uppercase tracking-[0.24em] text-gray-600 sm:text-xs">
+                  Jodhpur Local Services
+                </p>
+              </div>
+            </div>
           </div>
 
-          {/* Eyebrow — establishes location & category */}
-          <p className="mb-2 text-sm font-semibold uppercase tracking-widest text-orange-100">
-            Local Services &#183; Jodhpur
-          </p>
+          {/* Search bar */}
+          <div className="mx-auto mt-3 max-w-xl">
 
-          {/* Headline */}
-          <h1 className="text-4xl font-extrabold leading-tight tracking-tight text-white md:text-5xl">
-            Kaam hai?{" "}
-            <span className="text-orange-100">Kaun Karega!</span>
-          </h1>
-          <p className="mx-auto mt-3 max-w-md text-base text-orange-100 md:text-lg">
-            Book trusted local services — Electrician, Plumber, Tutor and more.
-          </p>
-
-          {/* Search card */}
-          <div className="mx-auto mt-8 max-w-xl">
-
-            {/* Category input — all logic unchanged */}
             <div className="relative">
-              <div className="relative flex items-center rounded-2xl border border-transparent bg-white px-5 py-4 shadow-xl transition-all duration-200 focus-within:ring-2 focus-within:ring-white/60">
-                <span className="mr-3 shrink-0 text-xl text-orange-500">&#128269;</span>
+              <div className="relative flex items-center rounded-2xl border border-slate-300 bg-white px-4 py-3 shadow-lg transition-all duration-200 focus-within:ring-2 focus-within:ring-[#003d20]/40">
+                <span className="mr-3 shrink-0 text-xl text-[#003d20]">&#128269;</span>
                 <input
                   ref={categoryInputRef}
                   type="text"
@@ -1118,14 +1103,17 @@ const hasArea = area.trim() !== "";
                   onFocus={() => setIsCategoryFocused(true)}
                   onBlur={() => { if (!category) setIsCategoryFocused(false); }}
                   onKeyDown={handleCategoryKeyDown}
+                  onDrop={(e) => e.preventDefault()}
+                  onDragOver={(e) => e.preventDefault()}
                   placeholder={isHydrated && !isCategoryFocused && twText ? "" : "What service do you need? (e.g. Electrician)"}
-                  className="min-w-0 flex-1 bg-transparent text-base text-slate-900 outline-none placeholder:text-slate-400 md:text-lg"
+                  className="min-w-0 flex-1 bg-transparent pr-3 text-base text-slate-900 outline-none placeholder:text-slate-400 md:text-lg"
                 />
-                {/* Typewriter overlay — must cover placeholder when active */}
+                {/* Typewriter overlay — right-padded to clear the Search button */}
                 {isHydrated && !isCategoryFocused && category === "" && twText !== "" && (
                   <div
                     aria-hidden="true"
-                    className="pointer-events-none absolute inset-y-0 left-0 right-0 flex items-center rounded-2xl bg-white pl-[52px] pr-5"
+                    className="pointer-events-none select-none absolute inset-y-0 left-0 right-[96px] flex items-center rounded-l-2xl bg-white pl-[52px] pr-4"
+                    onDragStart={(e) => e.preventDefault()}
                   >
                     <span className="text-base font-medium text-slate-500 md:text-lg">
                       {twText}
@@ -1136,6 +1124,22 @@ const hasArea = area.trim() !== "";
                     </span>
                   </div>
                 )}
+                {/* Search button */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (filteredCategories.length > 0) {
+                      selectCategory(filteredCategories[0].name);
+                    } else if (category.trim()) {
+                      selectCategory(category.trim());
+                    } else {
+                      categoryInputRef.current?.focus();
+                    }
+                  }}
+                  className="ml-2 shrink-0 rounded-xl bg-[#003d20] px-5 py-2.5 text-sm font-bold text-white transition hover:bg-[#002a15] active:scale-[0.97]"
+                >
+                  Search
+                </button>
               </div>
 
               {/* Suggestions dropdown */}
@@ -1152,8 +1156,8 @@ const hasArea = area.trim() !== "";
                         type="button"
                         className={`w-full px-4 py-2.5 text-left text-sm text-slate-800 transition-colors ${
                           isHighlighted
-                            ? "bg-orange-50 text-orange-800"
-                            : "hover:bg-orange-50 hover:text-orange-800"
+                            ? "bg-[#003d20]/10 text-[#003d20]"
+                            : "hover:bg-[#003d20]/10 hover:text-[#003d20]"
                         }`}
                         onMouseEnter={() => setHighlightIndex(index)}
                         onClick={() => selectCategory(item.name)}
@@ -1167,48 +1171,30 @@ const hasArea = area.trim() !== "";
 
               {/* Fuzzy match hint */}
               {categoryResolution.isConfident && categoryResolution.reason !== "exact" && (
-                <p className="mt-2 text-left text-xs text-orange-100">
+                <p className="mt-2 text-left text-xs text-slate-500">
                   Using category:{" "}
-                  <span className="font-semibold text-white">
+                  <span className="font-semibold text-[#003d20]">
                     {categoryResolution.resolvedName}
                   </span>
                 </p>
               )}
             </div>
 
-            {/* Section label above chips */}
-            <p className="mt-5 text-left text-xs font-bold uppercase tracking-wider text-orange-100">
-              Popular services:
-            </p>
-
-            {/* Quick service chips — icon + label grid */}
-            <div className="mt-2 grid grid-cols-3 gap-2 sm:grid-cols-6">
-              {(
-                [
-                  ["Electrician", "⚡"],
-                  ["Plumber",     "🔧"],
-                  ["Carpenter",   "🔨"],
-                  ["AC Repair",   "❄️"],
-                  ["Home Tutor",  "📚"],
-                  ["Painter",     "🖌️"],
-                ] as [string, string][]
-              ).map(([label, icon]) => (
-                <button
+            {/* Trust strip */}
+            <div className="mt-5 grid grid-cols-3 gap-3 select-none">
+              {[
+                { icon: "✓", label: "Trusted", desc: "Verified providers" },
+                { icon: "⚡", label: "Quick", desc: "Matched in minutes" },
+                { icon: "★", label: "Reliable", desc: "Real reviews" },
+              ].map(({ icon, label, desc }) => (
+                <div
                   key={label}
-                  type="button"
-                  onClick={() => {
-                    selectCategory(label);
-                    categoryInputRef.current?.focus();
-                  }}
-                  className={`flex flex-col items-center gap-1.5 rounded-xl border px-2 py-3 text-center text-xs font-semibold transition ${
-                    category === label
-                      ? "border-white bg-white text-orange-600 shadow-sm"
-                      : "border-orange-400/60 bg-white/10 text-white hover:bg-white/20"
-                  }`}
+                  className="flex flex-col items-center rounded-xl border border-slate-100 bg-slate-50 px-3 py-3 text-center"
                 >
-                  <span className="text-base leading-none">{icon}</span>
-                  {label}
-                </button>
+                  <span className="text-base text-[#003d20]/60">{icon}</span>
+                  <p className="mt-1 text-sm font-medium text-slate-600">{label}</p>
+                  <p className="mt-0.5 text-xs text-slate-400">{desc}</p>
+                </div>
               ))}
             </div>
           </div>
@@ -1217,19 +1203,22 @@ const hasArea = area.trim() !== "";
 
       {/* ── STATS BAR ────────────────────────────────────────────────── */}
       {!hasCategory && (
-        <div className="border-b border-slate-100 bg-white">
+        <div
+          className="border-b border-slate-100 bg-white select-none"
+          onDragStart={(e) => e.preventDefault()}
+        >
           <div className="mx-auto grid max-w-2xl grid-cols-3 divide-x divide-slate-100">
-            <div className="py-4 text-center">
-              <p className="text-xl font-extrabold text-orange-500">50+</p>
-              <p className="mt-0.5 text-xs text-slate-500">Service Types</p>
+            <div className="py-3 text-center">
+              <p className="text-lg font-semibold text-[#003d20]/60">50+</p>
+              <p className="mt-0.5 text-xs text-slate-400">Service Types</p>
             </div>
-            <div className="py-4 text-center">
-              <p className="text-xl font-extrabold text-orange-500">40+</p>
-              <p className="mt-0.5 text-xs text-slate-500">Areas in Jodhpur</p>
+            <div className="py-3 text-center">
+              <p className="text-lg font-semibold text-[#003d20]/60">40+</p>
+              <p className="mt-0.5 text-xs text-slate-400">Areas in Jodhpur</p>
             </div>
-            <div className="py-4 text-center">
-              <p className="text-xl font-extrabold text-orange-500">Free</p>
-              <p className="mt-0.5 text-xs text-slate-500">To Post a Request</p>
+            <div className="py-3 text-center">
+              <p className="text-lg font-semibold text-[#003d20]/60">Free</p>
+              <p className="mt-0.5 text-xs text-slate-400">To Post a Request</p>
             </div>
           </div>
         </div>
@@ -1240,11 +1229,11 @@ const hasArea = area.trim() !== "";
         <div className="mx-auto max-w-xl space-y-4 px-4 py-8">
 
           {/* Selected service breadcrumb */}
-          <div className="flex items-center gap-2 rounded-xl bg-orange-50 px-4 py-2.5">
-            <span className="text-sm font-semibold text-orange-700">
+          <div className="flex items-center gap-2 rounded-xl bg-[#003d20]/10 px-4 py-2.5">
+            <span className="text-sm font-semibold text-[#003d20]">
               Service:
             </span>
-            <span className="rounded-full bg-orange-500 px-3 py-0.5 text-xs font-bold text-white">
+            <span className="rounded-full bg-[#003d20] px-3 py-0.5 text-xs font-bold text-white">
               {category}
             </span>
             <button
@@ -1256,7 +1245,7 @@ const hasArea = area.trim() !== "";
                 setArea("");
                 setDetails("");
               }}
-              className="ml-auto text-xs text-orange-400 hover:text-orange-600"
+              className="ml-auto text-xs text-[#003d20]/50 hover:text-[#003d20]"
             >
               Change
             </button>
@@ -1265,7 +1254,7 @@ const hasArea = area.trim() !== "";
           {/* Step 2: When */}
           <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
             <p className="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-400">
-              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-orange-500 text-[10px] font-bold text-white">
+              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#003d20] text-[10px] font-bold text-white">
                 2
               </span>
               When do you need it?
@@ -1295,7 +1284,7 @@ const hasArea = area.trim() !== "";
           {hasTime && (
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <p className="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-400">
-                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-orange-500 text-[10px] font-bold text-white">
+                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#003d20] text-[10px] font-bold text-white">
                   3
                 </span>
                 Where do you need it?
@@ -1318,7 +1307,7 @@ const hasArea = area.trim() !== "";
             <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <div>
                 <p className="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-400">
-                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-orange-500 text-[10px] font-bold text-white">
+                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#003d20] text-[10px] font-bold text-white">
                     4
                   </span>
                   Task details (optional)
@@ -1328,7 +1317,9 @@ const hasArea = area.trim() !== "";
                   onChange={(e) => setDetails(e.target.value)}
                   placeholder="Describe your work in 1&#8211;2 sentences (e.g. &quot;Kitchen tap is leaking, need plumber today evening&quot;)..."
                   rows={3}
-                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-800 focus:border-orange-400 focus:outline-none focus:ring-2 focus:ring-orange-400/20"
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-800 focus:border-[#003d20] focus:outline-none focus:ring-2 focus:ring-[#003d20]/20"
+                  onDrop={(e) => e.preventDefault()}
+                  onDragOver={(e) => e.preventDefault()}
                 />
               </div>
 
@@ -1346,7 +1337,7 @@ const hasArea = area.trim() !== "";
                   </p>
                   <div className="mt-2 flex gap-3">
                     <button
-                      className="rounded-lg bg-green-600 px-4 py-2 text-sm text-white"
+                      className="rounded-lg bg-[#003d20] px-4 py-2 text-sm text-white"
                       onClick={handleShowProviders}
                     >
                       Yes, show numbers
@@ -1370,6 +1361,7 @@ const hasArea = area.trim() !== "";
                       <p className="text-sm text-slate-500">&#128222; {p.phone}</p>
                       <a
                         href={`tel:${p.phone}`}
+                        draggable={false}
                         className="mt-2 inline-block rounded-lg bg-blue-500 px-3 py-1 text-sm text-white"
                       >
                         Call
@@ -1383,7 +1375,7 @@ const hasArea = area.trim() !== "";
                 type="button"
                 onClick={handleSubmit}
                 disabled={loading || isRedirecting || !canSubmit || Boolean(serviceDateError)}
-                className="w-full rounded-xl bg-orange-500 px-4 py-4 text-base font-bold text-white shadow-md transition hover:bg-orange-600 hover:shadow-lg active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
+                className="w-full rounded-xl bg-[#003d20] px-4 py-4 text-base font-bold text-white shadow-md transition hover:bg-[#002a15] hover:shadow-lg active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {loading || isRedirecting ? "Submitting..." : "Find Providers"}
               </button>
@@ -1400,7 +1392,10 @@ const hasArea = area.trim() !== "";
 
       {/* ── HOW IT WORKS ─────────────────────────────────────────────── */}
       {!hasCategory && (
-        <section className="bg-white px-4 py-14">
+        <section
+          className="bg-white px-4 py-14 select-none"
+          onDragStart={(e) => e.preventDefault()}
+        >
           <div className="mx-auto max-w-2xl">
             <h2 className="text-center text-2xl font-bold text-slate-900">How it works</h2>
             <p className="mt-1 text-center text-sm text-slate-500">Simple. Fast. Reliable.</p>
@@ -1409,7 +1404,7 @@ const hasArea = area.trim() !== "";
               {/* Horizontal connector line — desktop only */}
               <div
                 aria-hidden="true"
-                className="absolute left-[16.7%] right-[16.7%] top-10 hidden h-0.5 bg-orange-100 sm:block"
+                className="absolute left-[16.7%] right-[16.7%] top-10 hidden h-0.5 bg-[#003d20]/20 sm:block"
               />
 
               <div className="grid grid-cols-1 gap-6 sm:grid-cols-3">
@@ -1422,7 +1417,7 @@ const hasArea = area.trim() !== "";
                     key={step}
                     className="relative flex flex-col items-center rounded-2xl border border-slate-100 bg-slate-50 px-5 py-8 text-center shadow-sm"
                   >
-                    <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-full bg-orange-500 text-sm font-bold text-white shadow">
+                    <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-full bg-[#003d20] text-sm font-bold text-white shadow">
                       {step}
                     </div>
                     <span className="mb-2 text-3xl leading-none">{icon}</span>
@@ -1438,12 +1433,15 @@ const hasArea = area.trim() !== "";
 
       {/* ── PROVIDER CTA ─────────────────────────────────────────────── */}
       {!hasCategory && (
-        <section className="bg-gradient-to-br from-slate-800 to-slate-900 px-4 py-14">
+        <section
+          className="bg-gradient-to-br from-slate-800 to-slate-900 px-4 py-14 select-none"
+          onDragStart={(e) => e.preventDefault()}
+        >
           <div className="mx-auto max-w-2xl sm:flex sm:items-center sm:gap-12">
 
             {/* Left: copy */}
             <div className="flex-1 text-center sm:text-left">
-              <p className="text-xs font-bold uppercase tracking-widest text-orange-400">
+              <p className="text-xs font-bold uppercase tracking-widest text-white/70">
                 For Service Providers
               </p>
               <h2 className="mt-2 text-2xl font-bold text-white">
@@ -1461,7 +1459,7 @@ const hasArea = area.trim() !== "";
                   "Manage leads from your dashboard",
                 ].map((b) => (
                   <li key={b} className="flex items-start gap-2 sm:justify-start">
-                    <span className="mt-0.5 shrink-0 text-orange-400">&#10003;</span>
+                    <span className="mt-0.5 shrink-0 text-white/70">&#10003;</span>
                     {b}
                   </li>
                 ))}
@@ -1473,7 +1471,7 @@ const hasArea = area.trim() !== "";
               <button
                 type="button"
                 onClick={() => router.push("/provider/register")}
-                className="inline-flex items-center gap-2 rounded-xl bg-orange-500 px-7 py-3.5 text-sm font-bold text-white shadow-lg transition hover:bg-orange-600 hover:shadow-xl"
+                className="inline-flex items-center gap-2 rounded-xl bg-[#003d20] px-7 py-3.5 text-sm font-bold text-white shadow-lg transition hover:bg-[#002a15] hover:shadow-xl"
               >
                 Register as Provider &#8594;
               </button>
@@ -1487,7 +1485,7 @@ const hasArea = area.trim() !== "";
       {showOtpModal && !isLoggedIn && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
           <div className="w-full max-w-md space-y-4 rounded-2xl bg-white p-6 shadow-2xl">
-            <div className="space-y-2 text-center">
+            <div className="space-y-2 text-center select-none">
               <h3 className="text-xl font-semibold text-slate-900">
                 Verify your phone number
               </h3>
@@ -1516,6 +1514,8 @@ const hasArea = area.trim() !== "";
                 className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-400/30"
                 placeholder="10-digit mobile number"
                 inputMode="numeric"
+                onDrop={(e) => e.preventDefault()}
+                onDragOver={(e) => e.preventDefault()}
               />
               <button
                 type="button"
@@ -1551,6 +1551,8 @@ const hasArea = area.trim() !== "";
                     shakeOtp ? "shake" : ""
                   }`}
                   placeholder="____"
+                  onDrop={(e) => e.preventDefault()}
+                  onDragOver={(e) => e.preventDefault()}
                 />
                 <button
                   type="button"

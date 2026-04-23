@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState, KeyboardEvent } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useEffect, useRef, useState, KeyboardEvent } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { setAuthSession } from "@/lib/auth";
 import { SIDEBAR_TOGGLE_EVENT } from "@/components/sidebarEvents";
 
@@ -16,35 +16,48 @@ const getSafeNext = (value: string | null): string => {
 };
 
 export default function VerifyPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="min-h-screen bg-amber-50 flex items-center justify-center px-4 py-10">
+          <div className="w-full max-w-sm rounded-2xl bg-white shadow-lg p-8 text-center text-sm text-slate-600">
+            Loading…
+          </div>
+        </main>
+      }
+    >
+      <VerifyPageContent />
+    </Suspense>
+  );
+}
+
+function VerifyPageContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+
   const [otp, setOtp] = useState("");
   const [sendingOtp, setSendingOtp] = useState(false);
   const [verifyingOtp, setVerifyingOtp] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
-  const [phone, setPhone] = useState("");
-  const [requestId, setRequestId] = useState("");
-  const [nextPath, setNextPath] = useState(DEFAULT_NEXT);
+  const [phone, setPhone] = useState(searchParams.get("phone") ?? "");
+  const [requestId, setRequestId] = useState(searchParams.get("requestId") ?? "");
+  const nextPath = getSafeNext(searchParams.get("next"));
   const [cooldown, setCooldown] = useState(0);
 
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
   // ---------------------------------------------------
-  // LOAD PHONE FROM URL + AUTO SEND OTP WHEN PAGE OPENS
+  // AUTO SEND OTP ON MOUNT IF PHONE IS IN URL
   // ---------------------------------------------------
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const p = params.get("phone");
-    const r = params.get("requestId");
-    const next = params.get("next");
-
+    const p = searchParams.get("phone");
+    const r = searchParams.get("requestId");
     if (p) {
-      setPhone(p);
       if (r) setRequestId(r);
-      setNextPath(getSafeNext(next));
       sendOtpImmediately(p, r ?? undefined);
     }
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const sendOtpImmediately = async (
     phoneOverride?: string,
@@ -134,9 +147,63 @@ export default function VerifyPage() {
   };
 
   // ---------------------------------------------------
-  // VERIFY OTP FUNCTION
+  // VERIFY OTP API HELPER — returns { success } only
   // ---------------------------------------------------
-  const verifyOtp = async () => {
+  const verifyOtp = async (
+    phoneValue: string,
+    otpValue: string,
+    requestIdValue: string
+  ): Promise<{ success: boolean; error?: string }> => {
+    const normalizedPhone = phoneValue.replace(/\D/g, "");
+    const normalized =
+      normalizedPhone.length === 10
+        ? `91${normalizedPhone}`
+        : normalizedPhone;
+
+    const res = await fetch("/api/verify-otp", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        phoneNumber: normalized,
+        otp: otpValue,
+        requestId: requestIdValue,
+      }),
+    });
+
+    const data = await res.json();
+
+    if (data.ok === true) {
+      const displayPhone = normalized.slice(-10);
+      setAuthSession(displayPhone);
+      // Mirror admin status from server response — sidebar reads this
+      if (data.isAdmin === true) {
+        window.localStorage.setItem(
+          "kk_admin_session",
+          JSON.stringify({
+            isAdmin: true,
+            name: data.adminName ?? null,
+            role: data.adminRole ?? null,
+            permissions: data.permissions ?? [],
+          })
+        );
+      } else {
+        window.localStorage.removeItem("kk_admin_session");
+      }
+      window.dispatchEvent(
+        new CustomEvent(SIDEBAR_TOGGLE_EVENT, {
+          detail: { type: "auth-updated" },
+        })
+      );
+      return { success: true };
+    }
+
+    return { success: false, error: data?.error || "Verification failed" };
+  };
+
+  // ---------------------------------------------------
+  // VERIFY BUTTON HANDLER — validates, calls API, redirects
+  // ---------------------------------------------------
+  const handleVerify = async () => {
     if (!/^\d{4}$/.test(otp)) {
       setError("Enter 4-digit OTP");
       return;
@@ -151,58 +218,23 @@ export default function VerifyPage() {
       return;
     }
 
-    const normalized =
-      normalizedPhone.length === 10
-        ? `91${normalizedPhone}`
-        : normalizedPhone;
-
-    setVerifyingOtp(true);
     setError("");
 
     try {
-      const res = await fetch("/api/verify-otp", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          phoneNumber: normalized,
-          otp,
-          requestId,
-        }),
-      });
+      setVerifyingOtp(true);
 
-      const data = await res.json();
+      const result = await verifyOtp(phone, otp, requestId);
 
-      if (data.ok) {
-        const displayPhone = normalized.slice(-10);
-        setAuthSession(displayPhone);
-        // Mirror admin status from server response — sidebar reads this
-        if (data.isAdmin === true) {
-          window.localStorage.setItem(
-            "kk_admin_session",
-            JSON.stringify({
-              isAdmin: true,
-              name: data.adminName ?? null,
-              role: data.adminRole ?? null,
-              permissions: data.permissions ?? [],
-            })
-          );
-        } else {
-          window.localStorage.removeItem("kk_admin_session");
-        }
-        window.dispatchEvent(
-          new CustomEvent(SIDEBAR_TOGGLE_EVENT, {
-            detail: { type: "auth-updated" },
-          })
-        );
-        router.replace(nextPath);
+      if (result?.success) {
+        router.push(nextPath);
       } else {
-        setError(data?.error || "Verification failed");
+        setError(result?.error || "Invalid OTP");
       }
     } catch (err) {
-      setError("Network Error");
+      setError("Verification failed");
+    } finally {
+      setVerifyingOtp(false);
     }
-
-    setVerifyingOtp(false);
   };
 
   // ---------------------------------------------------
@@ -210,10 +242,14 @@ export default function VerifyPage() {
   // ---------------------------------------------------
   const handleDigitInput = (index: number, value: string) => {
     const digit = value.replace(/\D/g, "").slice(-1);
-    const newOtp = otp.split("");
-    newOtp[index] = digit;
-    const filled = Array.from({ length: 4 }, (_, i) => newOtp[i] ?? "");
-    setOtp(filled.join(""));
+    if (!digit && value !== "") return;
+
+    setOtp((prev) => {
+      const newOtp = prev.split("");
+      while (newOtp.length < 4) newOtp.push("");
+      newOtp[index] = digit;
+      return newOtp.join("");
+    });
 
     if (digit && index < 3) {
       inputRefs.current[index + 1]?.focus();
@@ -286,7 +322,8 @@ export default function VerifyPage() {
 
         {/* Verify Button */}
         <button
-          onClick={verifyOtp}
+          type="button"
+          onClick={handleVerify}
           disabled={verifyingOtp}
           className="w-full rounded-xl bg-green-600 px-4 py-3 text-white font-semibold shadow-md transition hover:bg-green-700 active:scale-95 disabled:opacity-60"
         >

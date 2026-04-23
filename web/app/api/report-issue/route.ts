@@ -1,37 +1,15 @@
 import { NextResponse } from "next/server";
 import { getAuthSession } from "@/lib/auth";
+import { getProviderByPhoneFromSupabase } from "@/lib/admin/adminProviderReads";
+import { submitIssueReportToSupabase } from "@/lib/admin/adminIssueReports";
 
-type ProviderLookupResponse = {
-  ok?: boolean;
-  provider?: {
-    ProviderName?: string;
-    Name?: string;
-  };
-};
-
-async function getReporterRoleAndName(baseUrl: string, phone: string) {
+async function getReporterRoleAndName(phone: string) {
   try {
-    const url = new URL(baseUrl);
-    url.searchParams.set("action", "get_provider_by_phone");
-    url.searchParams.set("phone", phone);
-
-    const res = await fetch(url.toString(), {
-      method: "GET",
-      cache: "no-store",
-      headers: {
-        Accept: "application/json, text/plain, */*",
-      },
-    });
-
-    if (!res.ok) {
-      return { reporterRole: "user", reporterName: "" };
-    }
-
-    const data = (await res.json()) as ProviderLookupResponse;
-    if (data?.ok && data.provider) {
+    const result = await getProviderByPhoneFromSupabase(phone);
+    if (result.ok) {
       return {
         reporterRole: "provider",
-        reporterName: String(data.provider.ProviderName || data.provider.Name || "").trim(),
+        reporterName: String(result.provider.ProviderName || result.provider.Name || "").trim(),
       };
     }
   } catch {
@@ -67,52 +45,22 @@ export async function POST(request: Request) {
       );
     }
 
-    const baseUrl = process.env.APPS_SCRIPT_URL;
-    if (!baseUrl) {
-      throw new Error("APPS_SCRIPT_URL is missing in environment variables");
-    }
+    const { reporterRole, reporterName } = await getReporterRoleAndName(session.phone);
 
-    const { reporterRole, reporterName } = await getReporterRoleAndName(baseUrl, session.phone);
-
-    const upstream = await fetch(baseUrl, {
-      method: "POST",
-      headers: { "Content-Type": "text/plain" },
-      body: JSON.stringify({
-        action: "submit_issue_report",
-        ReporterPhone: session.phone,
-        ReporterRole: reporterRole,
-        ReporterName: reporterName,
-        IssueType: issueType,
-        IssuePage: issuePage,
-        Description: description,
-      }),
+    const result = await submitIssueReportToSupabase({
+      reporterPhone: session.phone,
+      reporterRole,
+      reporterName,
+      issueType,
+      issuePage,
+      description,
     });
 
-    const text = await upstream.text();
-    let data: Record<string, unknown> = {};
-    try {
-      data = text ? (JSON.parse(text) as Record<string, unknown>) : {};
-    } catch {
-      return NextResponse.json(
-        { ok: false, error: "Apps Script returned non-JSON response." },
-        { status: 500 }
-      );
+    if (!result.ok) {
+      return NextResponse.json({ ok: false, error: result.error }, { status: 500 });
     }
 
-    if (!upstream.ok || data?.ok !== true) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: String(data?.error || data?.message || "Failed to submit issue report"),
-        },
-        { status: upstream.ok ? 500 : upstream.status }
-      );
-    }
-
-    return NextResponse.json({
-      ok: true,
-      issueId: String(data.issueId || "").trim(),
-    });
+    return NextResponse.json({ ok: true, issueId: result.issueId });
   } catch (error: any) {
     return NextResponse.json(
       { ok: false, error: error?.message || "Internal Server Error" },

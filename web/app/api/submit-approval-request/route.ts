@@ -1,17 +1,13 @@
 import { NextResponse } from "next/server";
 import { getAuthSession } from "@/lib/auth";
+import { adminSupabase } from "@/lib/supabase/admin";
 
 export async function POST(request: Request) {
   try {
     const body = await request.json();
     const {
       rawCategoryInput,
-      bestMatch,
-      confidence,
-      time,
       area,
-      details,
-      createdAt,
     } = body || {};
 
     const session = getAuthSession({
@@ -28,39 +24,23 @@ export async function POST(request: Request) {
       );
     }
 
-    const GOOGLE_SCRIPT_URL = process.env.APPS_SCRIPT_URL;
-    if (!GOOGLE_SCRIPT_URL) {
-      throw new Error(
-        "APPS_SCRIPT_URL is missing in environment variables"
-      );
+    const { error } = await adminSupabase
+      .from("pending_category_requests")
+      .insert({
+        request_id: `PCR-${crypto.randomUUID()}`,
+        provider_id: null,
+        provider_name: "System",
+        phone: session.phone,
+        requested_category: rawCategoryInput.trim(),
+        status: "pending",
+        created_at: new Date().toISOString(),
+      });
+
+    if (error) {
+      throw new Error(error.message);
     }
 
-    const response = await fetch(GOOGLE_SCRIPT_URL, {
-      method: "POST",
-      headers: { "Content-Type": "text/plain" },
-      body: JSON.stringify({
-        action: "submit_category_approval",
-        rawCategoryInput: rawCategoryInput,
-        bestMatch: bestMatch || "",
-        confidence: typeof confidence === "number" ? confidence : 0,
-        time: time || "",
-        area: area,
-        details: details || "",
-        createdAt: createdAt || new Date().toISOString(),
-      }),
-    });
-
-    const text = await response.text();
-    if (!text.startsWith("{")) {
-      console.error("Script Error Response:", text);
-      return NextResponse.json(
-        { error: "Script returned an error. Check Apps Script logs." },
-        { status: 502 }
-      );
-    }
-
-    const result = JSON.parse(text);
-    return NextResponse.json({ ok: true, result });
+    return NextResponse.json({ ok: true });
   } catch (error: any) {
     console.error("API Route Error:", error);
     return NextResponse.json(

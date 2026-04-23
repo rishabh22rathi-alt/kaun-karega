@@ -3,6 +3,7 @@
 import dynamic from "next/dynamic";
 import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
+import { getAuthSession } from "@/lib/auth";
 
 const AdminSidebar = dynamic(() => import("@/components/AdminSidebar"), {
   ssr: false,
@@ -14,6 +15,24 @@ const AdminTopbar = dynamic(() => import("@/components/AdminTopbar"), {
 type AdminLayoutClientProps = {
   children: React.ReactNode;
 };
+
+type AdminSessionData = {
+  isAdmin?: unknown;
+  name?: unknown;
+  role?: unknown;
+  permissions?: unknown;
+};
+
+function applySessionData(
+  parsed: AdminSessionData,
+  setName: (v: string) => void,
+  setRole: (v: string) => void,
+  setPermissions: (v: string[]) => void
+) {
+  setName(typeof parsed.name === "string" && parsed.name ? parsed.name : "Admin");
+  setRole(typeof parsed.role === "string" && parsed.role ? parsed.role : "admin");
+  setPermissions(Array.isArray(parsed.permissions) ? (parsed.permissions as string[]) : []);
+}
 
 export default function AdminLayoutClient({
   children,
@@ -42,31 +61,49 @@ export default function AdminLayoutClient({
       return;
     }
 
+    // Fast path: valid session in localStorage
     try {
       const raw = localStorage.getItem("kk_admin_session");
-      const parsed = raw
-        ? (JSON.parse(raw) as {
-            isAdmin?: unknown;
-            name?: unknown;
-            role?: unknown;
-            permissions?: unknown;
-          })
-        : null;
-
-      if (parsed?.isAdmin !== true) {
-        redirectToLogin();
+      const parsed = raw ? (JSON.parse(raw) as AdminSessionData) : null;
+      if (parsed?.isAdmin === true) {
+        applySessionData(parsed, setName, setRole, setPermissions);
+        setLoading(false);
         return;
       }
-
-      setName(typeof parsed.name === "string" && parsed.name ? parsed.name : "Admin");
-      setRole(typeof parsed.role === "string" && parsed.role ? parsed.role : "admin");
-      setPermissions(Array.isArray(parsed.permissions) ? (parsed.permissions as string[]) : []);
     } catch {
+      // localStorage corrupt — fall through to API recovery below
+    }
+
+    // Recovery path: localStorage missing or invalid, but cookies may still be valid.
+    // Try to re-verify using the auth session cookie to avoid a full OTP re-login.
+    const cookieSession = getAuthSession();
+    if (!cookieSession?.phone) {
+      setLoading(false);
       redirectToLogin();
       return;
-    } finally {
-      setLoading(false);
     }
+
+    fetch("/api/admin-verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone: cookieSession.phone }),
+    })
+      .then((r) => r.json() as Promise<{ ok?: boolean; admin?: AdminSessionData }>)
+      .then((data) => {
+        if (data?.ok && data.admin) {
+          const sessionData: AdminSessionData = { isAdmin: true, ...data.admin };
+          try {
+            localStorage.setItem("kk_admin_session", JSON.stringify(sessionData));
+          } catch {
+            // ignore storage errors
+          }
+          applySessionData(sessionData, setName, setRole, setPermissions);
+        } else {
+          redirectToLogin();
+        }
+      })
+      .catch(() => redirectToLogin())
+      .finally(() => setLoading(false));
   }, [isLoginRoute, pathname]);
 
   useEffect(() => {
@@ -75,7 +112,8 @@ export default function AdminLayoutClient({
     const mediaQuery = window.matchMedia("(min-width: 1024px)");
     const applyLayoutState = (matches: boolean) => {
       setIsDesktop(matches);
-      setIsSidebarCollapsed(!matches);
+      // Only collapse on desktop; mobile sidebar is always full-width when open
+      setIsSidebarCollapsed(false);
       setIsSidebarOpen(false);
     };
 
@@ -115,7 +153,7 @@ export default function AdminLayoutClient({
           isOpen={isSidebarOpen}
           onClose={() => setIsSidebarOpen(false)}
           permissions={permissions}
-          isCollapsed={isSidebarCollapsed}
+          isCollapsed={isDesktop && isSidebarCollapsed}
           isDesktop={isDesktop}
           onCollapseToggle={() => setIsSidebarCollapsed((current) => !current)}
         />

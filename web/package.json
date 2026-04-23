@@ -6,7 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test:e2e:audit": "playwright test -c pw-e2e-audit.config.ts",
+    "test:e2e:audit:headed": "playwright test -c pw-e2e-audit.config.ts --headed",
+    "test:e2e:audit:list": "playwright test -c pw-e2e-audit.config.ts --list"
   },
   "dependencies": {
     "@supabase/ssr": "^0.10.2",

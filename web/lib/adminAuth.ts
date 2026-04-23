@@ -1,43 +1,23 @@
 import { getAuthSession } from "./auth";
+import { verifyAdminByPhone } from "./admin/adminVerifier";
 
-const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_URL || "";
-
-export type AdminSession = {
-  phone: string;
-  name?: string;
-  role?: string;
-  permissions?: string[];
-};
+// Re-export so existing callers importing AdminSession from here don't break.
+export type { AdminSession } from "./admin/adminVerifier";
 
 /**
- * Checks whether a given phone belongs to an active admin by calling
- * GAS admin_verify. Phone should be in the format already stored in
- * the session (e.g. "91XXXXXXXXXX").
+ * Checks whether a given phone belongs to an active admin.
+ * Phone should be in the format stored in the session (e.g. "91XXXXXXXXXX").
  *
- * Safe to call from any server context where the phone is already known.
+ * Delegates to verifyAdminByPhone() — see lib/admin/adminVerifier.ts for the
+ * current backend and the TODO marking where GAS will be replaced.
+ *
  * Never throws — returns { ok: false } on any error.
  */
 export async function checkAdminByPhone(
   phone: string
-): Promise<{ ok: true; admin: AdminSession } | { ok: false }> {
-  if (!phone || !APPS_SCRIPT_URL) return { ok: false };
-
-  try {
-    const res = await fetch(APPS_SCRIPT_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "admin_verify", phone }),
-      cache: "no-store",
-    });
-    const text = await res.text();
-    const data = text ? (JSON.parse(text) as Record<string, unknown>) : {};
-    if (data?.ok && data?.admin) {
-      return { ok: true, admin: data.admin as AdminSession };
-    }
-    return { ok: false };
-  } catch {
-    return { ok: false };
-  }
+): Promise<{ ok: true; admin: import("./admin/adminVerifier").AdminSession } | { ok: false }> {
+  if (!phone) return { ok: false };
+  return verifyAdminByPhone(phone);
 }
 
 /**
@@ -45,14 +25,14 @@ export async function checkAdminByPhone(
  *
  * 1. Reads the kk_auth_session cookie from the request.
  * 2. Extracts the phone from the session.
- * 3. Delegates to checkAdminByPhone to confirm active admin status via GAS.
+ * 3. Delegates to checkAdminByPhone to confirm active admin status.
  *
  * Returns { ok: true, admin } on success, { ok: false } when unauthenticated
  * or when the phone is not an admin.
  */
 export async function requireAdminSession(
   request: Request
-): Promise<{ ok: true; admin: AdminSession } | { ok: false }> {
+): Promise<{ ok: true; admin: import("./admin/adminVerifier").AdminSession } | { ok: false }> {
   const cookieHeader = request.headers.get("cookie") ?? "";
   const session = getAuthSession({ cookie: cookieHeader });
   if (!session?.phone) return { ok: false };

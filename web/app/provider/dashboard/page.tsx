@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import InAppToastStack, { type InAppToast } from "@/components/InAppToastStack";
 import { PROVIDER_PROFILE_UPDATED_EVENT } from "@/components/sidebarEvents";
 import { getAuthSession } from "@/lib/auth";
@@ -267,6 +267,8 @@ ${joinLink}`;
 
 export default function ProviderDashboardPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const alreadyRegisteredNotice = searchParams.get("alreadyRegistered") === "true";
   const [phone, setPhone] = useState("");
   const [profile, setProfile] = useState<ProviderProfile | null>(null);
   const [loading, setLoading] = useState(true);
@@ -822,6 +824,11 @@ export default function ProviderDashboardPage() {
   return (
     <main className="min-h-screen bg-[linear-gradient(180deg,#f8fafc_0%,#eef6ff_100%)] px-4 py-8">
       <div className="mx-auto w-full max-w-6xl space-y-6">
+        {alreadyRegisteredNotice ? (
+          <div className="rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-800">
+            You are already registered. You can update your details from dashboard.
+          </div>
+        ) : null}
         <section className="overflow-hidden rounded-[30px] border border-slate-200 bg-white shadow-sm">
           <div className="grid gap-6 px-6 py-7 lg:grid-cols-[minmax(0,1fr)_240px] lg:px-8">
             <div className="space-y-4">
@@ -844,7 +851,7 @@ export default function ProviderDashboardPage() {
                 <span
                   className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${
                     verified
-                      ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                      ? "border-green-200 bg-green-100 text-green-800"
                       : pendingApproval
                         ? "border-amber-200 bg-amber-50 text-amber-700"
                         : "border-slate-200 bg-slate-100 text-slate-700"
@@ -869,18 +876,12 @@ export default function ProviderDashboardPage() {
                 </div>
               )}
             </div>
-            <div className="flex flex-col gap-3 lg:items-end">
+            <div className="flex flex-col lg:items-end">
               <Link
                 href="/provider/register?edit=services"
                 className="inline-flex items-center justify-center rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-800"
               >
                 Edit Services & Areas
-              </Link>
-              <Link
-                href="/provider/register?edit=areas"
-                className="inline-flex items-center justify-center rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-              >
-                Update Areas
               </Link>
             </div>
           </div>
@@ -1144,111 +1145,7 @@ export default function ProviderDashboardPage() {
           </section>
         </div>
 
-        <div className="grid gap-6 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
-          <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <h2 className="text-xl font-semibold text-slate-900">Recent Matched Requests</h2>
-                <p className="mt-1 text-sm text-slate-500">
-                  Latest requests where your profile was included in matching.
-                </p>
-              </div>
-            </div>
-            {recentMatchedRequests.length ? (
-              <div className="mt-5 grid gap-3">
-                {recentMatchedRequests.map((request) => {
-                  const taskAlertSummary = providerThreadSummaryByTaskId[String(request.TaskID || "").trim()];
-                  return (
-                  <div
-                    key={request.TaskID}
-                    className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-4"
-                  >
-                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                      <div>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <p className="text-sm font-semibold text-slate-900">
-                            {getTaskDisplayLabel(request, String(request.TaskID || "").trim())}
-                          </p>
-                          {taskAlertSummary?.unreadProviderCount ? (
-                            <span className="inline-flex rounded-full bg-rose-600 px-2.5 py-0.5 text-xs font-semibold text-white">
-                              {taskAlertSummary.unreadProviderCount} unread
-                            </span>
-                          ) : null}
-                        </div>
-                        <p className="mt-1 text-sm text-slate-700">
-                          {request.Category || "-"} in {request.Area || "-"}
-                        </p>
-                        <p className="mt-2 text-xs text-slate-500">{formatDateTime(request.CreatedAt || "")}</p>
-                        {request.Details ? (
-                          <p className="mt-2 text-sm text-slate-600">{request.Details}</p>
-                        ) : null}
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        <span
-                          className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${
-                            request.Responded
-                              ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                              : "border-slate-200 bg-slate-100 text-slate-700"
-                          }`}
-                        >
-                          {request.Responded ? "Responded" : "No response yet"}
-                        </span>
-                        <span
-                          className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${
-                            request.Accepted
-                              ? "border-sky-200 bg-sky-50 text-sky-700"
-                              : "border-slate-200 bg-slate-100 text-slate-700"
-                          }`}
-                        >
-                          {request.Accepted ? "Accepted" : "Not accepted"}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => void handleOpenChat(request)}
-                          disabled={!String(request.TaskID || "").trim() || openingChatTaskId === request.TaskID}
-                          className="inline-flex rounded-full border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          {taskAlertSummary?.unreadProviderCount ? (
-                            <span className="mr-2 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-sky-600 px-1.5 text-[11px] text-white">
-                              {taskAlertSummary.unreadProviderCount}
-                            </span>
-                          ) : null}
-                          {openingChatTaskId === request.TaskID ? "Opening..." : "Open Chat"}
-                        </button>
-                      </div>
-                    </div>
-                    {!String(request.TaskID || "").trim() ? (
-                      <p className="mt-2 text-xs text-amber-700">
-                        Chat unavailable: missing task ID for this request.
-                      </p>
-                    ) : null}
-                    {chatErrorByTaskId[String(request.TaskID || "").trim()] ? (
-                      <p className="mt-2 text-xs text-rose-700">
-                        {chatErrorByTaskId[String(request.TaskID || "").trim()]}
-                      </p>
-                    ) : null}
-                  </div>
-                )})}
-              </div>
-            ) : (
-              <>
-                {Number(metrics.TotalRequestsMatchedToMe || 0) === 0 ? (
-                  <div className="mt-6 rounded-xl border border-orange-200 bg-orange-50 p-4 text-sm text-orange-800">
-                    <p className="font-semibold">No leads yet</p>
-                    <p className="mt-1">
-                      You’re all set. When a customer posts a task in your area, it will appear here and you’ll receive a WhatsApp notification.
-                    </p>
-                  </div>
-                ) : (
-                  <div className="mt-5 rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
-                    No matched requests yet. As demand rises in your services and areas, leads will show up here.
-                  </div>
-                )}
-              </>
-            )}
-          </section>
-
-          <section className="space-y-6">
+        <section className="space-y-6">
             <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
               <div className="flex items-center justify-between gap-3">
                 <div>
@@ -1380,7 +1277,6 @@ export default function ProviderDashboardPage() {
               </div>
             </div>
           </section>
-        </div>
       </div>
       <InAppToastStack
         toasts={toasts}

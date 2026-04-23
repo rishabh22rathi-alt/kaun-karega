@@ -1,4 +1,8 @@
 import { NextResponse } from "next/server";
+import {
+  canonicalizeProviderAreasToCanonicalNames,
+  listActiveCanonicalAreas,
+} from "@/lib/admin/adminAreaMappings";
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
@@ -9,44 +13,18 @@ type AreasCache = {
 
 let areasCache: AreasCache | null = null;
 
-function resolveAppsScriptUrl(): string {
-  return (process.env.APPS_SCRIPT_URL || "").trim();
-}
-
 async function fetchAllAreas(): Promise<string[]> {
   const now = Date.now();
   if (areasCache && areasCache.expiresAt > now) {
     return areasCache.areas;
   }
 
-  const scriptUrl = resolveAppsScriptUrl();
-  if (!scriptUrl) {
-    throw new Error("Missing Apps Script URL");
+  const reconcileResult = await canonicalizeProviderAreasToCanonicalNames();
+  if (!reconcileResult.ok) {
+    throw new Error(reconcileResult.error);
   }
 
-  const url = new URL(scriptUrl);
-  url.searchParams.set("action", "get_areas");
-
-  const response = await fetch(url.toString(), { cache: "no-store" });
-
-  const text = await response.text();
-  if (!response.ok) {
-    throw new Error(`Apps Script error (${response.status}): ${text}`);
-  }
-
-  let parsed: any;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    throw new Error("Apps Script returned non-JSON for get_areas");
-  }
-
-  const fullAreas = Array.isArray(parsed?.areas)
-    ? parsed.areas
-        .filter((value: unknown) => typeof value === "string")
-        .map((value: string) => value.trim())
-        .filter(Boolean)
-    : [];
+  const fullAreas = await listActiveCanonicalAreas();
 
   areasCache = {
     expiresAt: now + CACHE_TTL_MS,

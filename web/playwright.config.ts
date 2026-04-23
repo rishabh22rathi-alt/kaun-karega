@@ -10,7 +10,7 @@ export default defineConfig({
   retries: 0,
   workers: 1,
   use: {
-    baseURL: "https://kaun-karega.vercel.app",
+    baseURL: process.env.PLAYWRIGHT_BASE_URL || "http://127.0.0.1:3000",
     headless: false,
     viewport: { width: 1400, height: 900 },
     screenshot: "only-on-failure",

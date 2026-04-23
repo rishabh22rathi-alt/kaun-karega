@@ -141,6 +141,64 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    const { data: matchRows, error: matchesError } = await supabase
+      .from("provider_task_matches")
+      .select(
+        "task_id, match_status, tasks(task_id, display_id, category, area, selected_timeframe, created_at)"
+      )
+      .eq("provider_id", provider.provider_id)
+      .limit(100);
+
+    if (matchesError) {
+      console.warn(
+        "[provider/dashboard-profile] matches lookup failed",
+        matchesError.message || matchesError
+      );
+    }
+
+    type JoinedTask = {
+      task_id?: string | number | null;
+      display_id?: string | number | null;
+      category?: string | null;
+      area?: string | null;
+      selected_timeframe?: string | null;
+      created_at?: string | null;
+    };
+    type MatchRow = {
+      task_id?: string | null;
+      match_status?: string | null;
+      tasks?: JoinedTask | JoinedTask[] | null;
+    };
+
+    const safeMatches: MatchRow[] = Array.isArray(matchRows) ? (matchRows as MatchRow[]) : [];
+    const recentMatchedRequests = safeMatches
+      .map((row) => {
+        const joined = Array.isArray(row?.tasks) ? row.tasks[0] : row?.tasks;
+        if (!joined) return null;
+        const status = String(row?.match_status || "").trim().toLowerCase();
+        return {
+          TaskID: String(joined.task_id ?? row?.task_id ?? "").trim(),
+          DisplayID:
+            joined.display_id !== null && joined.display_id !== undefined
+              ? String(joined.display_id)
+              : "",
+          Category: String(joined.category || ""),
+          Area: String(joined.area || ""),
+          Details: "",
+          CreatedAt: String(joined.created_at || ""),
+          Accepted: status === "accepted",
+          Responded: status === "responded" || status === "accepted",
+          ThreadID: "",
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => item !== null && Boolean(item.TaskID))
+      .sort((a, b) => {
+        const ta = Date.parse(a.CreatedAt || "") || 0;
+        const tb = Date.parse(b.CreatedAt || "") || 0;
+        return tb - ta;
+      })
+      .slice(0, 20);
+
     return NextResponse.json({
       ok: true,
       provider: {
@@ -149,7 +207,7 @@ export async function GET(request: NextRequest) {
         Phone: String(provider.phone || ""),
         Verified: String(provider.verified || ""),
         OtpVerified: "yes",
-        OtpVerifiedAt: String(provider.created_at || ""),
+        OtpVerifiedAt: new Date(session.createdAt).toISOString(),
         LastLoginAt: String(provider.created_at || ""),
         PendingApproval: String(provider.status || "").trim().toLowerCase() === "pending" ? "yes" : "no",
         Status: String(provider.status || ""),
@@ -164,7 +222,9 @@ export async function GET(request: NextRequest) {
             }))
           : [],
         AreaCoverage: null,
-        Analytics: null,
+        Analytics: {
+          RecentMatchedRequests: recentMatchedRequests,
+        },
       },
     });
   } catch (error: any) {
