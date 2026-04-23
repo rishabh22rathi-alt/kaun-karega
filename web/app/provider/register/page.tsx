@@ -663,7 +663,10 @@ function ProviderRegisterPageInner() {
         // Backend returns 409 { error: "already_registered" } when the phone already
         // exists in providers. The register-entry guard handles this for new signups;
         // in edit mode it can still fire, but this form must not surface that message.
-        if (data?.error === "already_registered") {
+        if (
+          data?.error === "already_registered" ||
+          data?.message === "already_registered"
+        ) {
           showSuccessToast("You are already registered. Redirecting to dashboard...");
           setTimeout(() => {
             router.push("/provider/dashboard");
