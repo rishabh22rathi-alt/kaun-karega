@@ -16,6 +16,7 @@ import {
   LogIn,
   UserPlus,
   ListTodo,
+  Briefcase,
 } from "lucide-react";
 import {
   PROVIDER_PROFILE_UPDATED_EVENT,
@@ -435,6 +436,7 @@ export default function Sidebar() {
         ...(providerExists === true
           ? [
               { label: "Provider Dashboard", href: "/provider/dashboard" },
+              { label: "My Jobs", href: "/provider/my-jobs" },
               { label: "Job Requests", href: "/provider/job-requests" },
             ]
           : []),
@@ -488,6 +490,7 @@ export default function Sidebar() {
       "Report an Issue": MessageSquareWarning,
       Profile: User,
       "Provider Dashboard": LayoutDashboard,
+      "My Jobs": Briefcase,
       "Job Requests": ListTodo,
       "Admin Dashboard": ShieldCheck,
       Login: LogIn,
