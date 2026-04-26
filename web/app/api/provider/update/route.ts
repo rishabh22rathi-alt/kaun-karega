@@ -99,6 +99,26 @@ export async function POST(request: Request) {
     );
   }
 
+  // Detect categories the provider added that are NOT in the active master
+  // list. Comparison is case-insensitive on trimmed names. We do this BEFORE
+  // the provider_services rewrite so we can queue review rows even if some
+  // downstream step fails. If the master fetch errors we skip detection (no
+  // queue inserts) rather than treating every category as new.
+  const { data: masterCategoryRows, error: masterCategoryError } =
+    await adminSupabase.from("categories").select("name").eq("active", true);
+  const newCustomCategories: string[] = masterCategoryError
+    ? []
+    : (() => {
+        const masterCategoryKeys = new Set(
+          (masterCategoryRows || [])
+            .map((row) => String((row as { name?: unknown }).name || "").trim().toLowerCase())
+            .filter(Boolean)
+        );
+        return categories.filter(
+          (category) => !masterCategoryKeys.has(category.toLowerCase())
+        );
+      })();
+
   const result = await updateProviderInSupabase({
     id: String(providerRow.provider_id),
     name,
@@ -111,6 +131,30 @@ export async function POST(request: Request) {
     return NextResponse.json(
       { ok: false, error: "UPDATE_FAILED" },
       { status: 500 }
+    );
+  }
+
+  // Queue new custom categories for admin review — non-fatal. Mirrors the
+  // provider_register flow in /api/kk. A duplicate row per provider+category
+  // is acceptable; admins can close duplicates from the queue UI. We do NOT
+  // flip providers.status to "pending" here: it would have no provider-facing
+  // effect (sidebar/dashboard badges are gated behind !verified) and would
+  // expose the row to setProviderVerified("no")'s pending → rejected
+  // side-effect (adminProviderMutations.ts:52-56).
+  if (newCustomCategories.length > 0) {
+    const nowIso = new Date().toISOString();
+    await Promise.allSettled(
+      newCustomCategories.map((requestedCategory) =>
+        adminSupabase.from("pending_category_requests").insert({
+          request_id: `PCR-${crypto.randomUUID()}`,
+          provider_id: String(providerRow.provider_id),
+          provider_name: name,
+          phone: sessionPhone,
+          requested_category: requestedCategory,
+          status: "pending",
+          created_at: nowIso,
+        })
+      )
     );
   }
 

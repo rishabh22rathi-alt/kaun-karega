@@ -56,6 +56,34 @@ async function handle(req: Request) {
     const supabase = await createClient();
     const safeLimit = Math.min(Number.isFinite(limit) ? limit : 20, 50);
 
+    // Gate: only return matches when the requested category exists in the
+    // master `categories` table with active = true. Mirrors the gate in
+    // process-task-notifications. Fail-open on Supabase error: log and
+    // continue, so a transient DB blip does not silently drop results.
+    const { data: categoryRow, error: categoryError } = await supabase
+      .from("categories")
+      .select("name")
+      .eq("name", category)
+      .eq("active", true)
+      .maybeSingle();
+
+    if (categoryError) {
+      console.warn(
+        "[find-provider] category active-check failed; failing open",
+        categoryError.message || categoryError
+      );
+    } else if (!categoryRow) {
+      return Response.json(
+        {
+          ok: true,
+          count: 0,
+          providers: [],
+          usedFallback: false,
+        },
+        { status: 200 }
+      );
+    }
+
     const { data: serviceRows, error: servicesError } = await supabase
       .from("provider_services")
       .select("provider_id, category")

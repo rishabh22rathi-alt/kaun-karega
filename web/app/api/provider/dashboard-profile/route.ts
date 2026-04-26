@@ -954,6 +954,51 @@ export async function GET(request: NextRequest) {
 
     const recentMatchedRequests = buildRecentMatchedRequests(safeMatches, tasksById);
 
+    // Derive per-service approval status: "approved" if the category is in the
+    // active master list, "pending" if a pending_category_requests row exists
+    // for this provider, otherwise "inactive". Two reads in parallel; if
+    // either errors, every service defaults to "approved" (fail-open — never
+    // downgrade an existing approved chip on a transient DB blip).
+    const [activeCategoriesResult, pendingCategoryRequestsResult] = await Promise.all([
+      adminSupabase.from("categories").select("name").eq("active", true),
+      adminSupabase
+        .from("pending_category_requests")
+        .select("requested_category")
+        .eq("provider_id", String(provider.provider_id || ""))
+        .eq("status", "pending"),
+    ]);
+
+    if (activeCategoriesResult.error) {
+      console.warn(
+        "[provider/dashboard-profile] active categories lookup failed",
+        activeCategoriesResult.error.message || activeCategoriesResult.error
+      );
+    }
+    if (pendingCategoryRequestsResult.error) {
+      console.warn(
+        "[provider/dashboard-profile] pending category requests lookup failed",
+        pendingCategoryRequestsResult.error.message || pendingCategoryRequestsResult.error
+      );
+    }
+
+    const serviceStatusLookupsFailed = Boolean(
+      activeCategoriesResult.error || pendingCategoryRequestsResult.error
+    );
+    const activeCategoryKeys = new Set(
+      (activeCategoriesResult.data || [])
+        .map((row) => String((row as { name?: unknown }).name || "").trim().toLowerCase())
+        .filter(Boolean)
+    );
+    const pendingCategoryKeys = new Set(
+      (pendingCategoryRequestsResult.data || [])
+        .map((row) =>
+          String((row as { requested_category?: unknown }).requested_category || "")
+            .trim()
+            .toLowerCase()
+        )
+        .filter(Boolean)
+    );
+
     perfLog("handler total", handlerStart);
     return NextResponse.json({
       ok: true,
@@ -969,9 +1014,17 @@ export async function GET(request: NextRequest) {
         Status: String(provider.status || ""),
         DuplicateNameReviewStatus: String(provider.duplicate_name_review_status || ""),
         Services: Array.isArray(providerServices)
-          ? providerServices.map((item) => ({
-              Category: String(item.category || ""),
-            }))
+          ? providerServices.map((item) => {
+              const category = String(item.category || "");
+              const key = category.trim().toLowerCase();
+              let Status: "approved" | "pending" | "inactive" = "approved";
+              if (!serviceStatusLookupsFailed) {
+                if (!activeCategoryKeys.has(key)) {
+                  Status = pendingCategoryKeys.has(key) ? "pending" : "inactive";
+                }
+              }
+              return { Category: category, Status };
+            })
           : [],
         Areas: Array.isArray(providerAreas)
           ? providerAreas.map((item) => ({

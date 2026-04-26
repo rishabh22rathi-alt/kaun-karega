@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdminSession } from "@/lib/adminAuth";
 import { createClient } from "@/lib/supabase/server";
+import { adminSupabase } from "@/lib/supabase/admin";
 import {
   setProviderVerified,
   approveDuplicateNameReview,
@@ -1768,8 +1769,36 @@ export async function POST(request: NextRequest) {
         );
       }
 
+      // Queue unmapped (custom) categories for admin review — non-fatal.
+      // Mirrors the area queue. Each new category becomes one pending row;
+      // the provider_services row was already inserted above so the provider
+      // is matchable, and the admin approval handler upserts the canonical
+      // categories row when the request is approved.
+      if (pendingNewCategories.length > 0) {
+        await Promise.allSettled(
+          pendingNewCategories.map((rawCategory: unknown) => {
+            const requestedCategory = String(rawCategory || "").trim();
+            if (!requestedCategory) return Promise.resolve();
+            return adminSupabase.from("pending_category_requests").insert({
+              request_id: `PCR-${crypto.randomUUID()}`,
+              provider_id: providerId,
+              provider_name: name,
+              phone,
+              requested_category: requestedCategory,
+              status: "pending",
+              created_at: nowIso,
+            });
+          })
+        );
+      }
+
       const effectiveVerified = isDuplicateName ? "no" : "yes";
-      const effectivePendingApproval = isDuplicateName ? "yes" : pendingApproval;
+      const hasNewCustomCategories = pendingNewCategories.length > 0;
+      const effectivePendingApproval = isDuplicateName
+        ? "yes"
+        : hasNewCustomCategories
+          ? "yes"
+          : pendingApproval;
 
       return withNoCache(
         NextResponse.json({

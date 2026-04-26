@@ -574,24 +574,6 @@ function ProviderRegisterPageInner() {
     setCustomAreaKeys((prev) => (prev.includes(pendingAreaKey) ? prev : [...prev, pendingAreaKey]));
   };
 
-  const requestNewCategoryInBackground = (requestedCategory: string) => {
-    if (!/^\d{10}$/.test(phone)) return;
-    void fetch("/api/kk?action=request_new_category", {
-      method: "POST",
-      cache: "no-store",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        phone,
-        name: name.trim().toUpperCase(),
-        requestedCategory,
-        source: "provider_register",
-        ts: new Date().toISOString(),
-      }),
-    }).catch(() => undefined);
-  };
-
   const triggerConfettiAndModal = () => {
     setCelebrateText(
       "Woo hoo! Congratulations \uD83C\uDF89 You are the first one to register with us in this new category.\nWe have sent this request for admin approval."
@@ -620,7 +602,6 @@ function ProviderRegisterPageInner() {
     setCustomCategoryKeys((prev) => (prev.includes(key) ? prev : [...prev, key]));
     setCatQuery("");
     triggerConfettiAndModal();
-    requestNewCategoryInBackground(pending);
   };
 
   const handleSubmit = async () => {

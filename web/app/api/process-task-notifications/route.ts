@@ -49,6 +49,38 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: false, error: "Task not found" }, { status: 404 });
     }
 
+    // Gate: only match providers when the task's category exists in the master
+    // `categories` table with active = true. Provider rows for unapproved
+    // custom categories stay in `provider_services` (so approval auto-enables
+    // matching later) but must not generate leads in the meantime.
+    // Fail-open on Supabase error: log and continue, so a transient DB blip
+    // does not silently drop legitimate leads.
+    const { data: categoryRow, error: categoryError } = await supabase
+      .from("categories")
+      .select("name")
+      .eq("name", task.category)
+      .eq("active", true)
+      .maybeSingle();
+
+    if (categoryError) {
+      console.warn(
+        "[process-task-notifications] category active-check failed; failing open",
+        categoryError.message || categoryError
+      );
+    } else if (!categoryRow) {
+      await supabase
+        .from("tasks")
+        .update({ status: "no_providers_matched" })
+        .eq("task_id", taskId);
+
+      return NextResponse.json({
+        ok: true,
+        matchedProviders: 0,
+        attemptedSends: 0,
+        failedSends: 0,
+      });
+    }
+
     // 2. Find providers matching by category
     const { data: serviceRows } = await supabase
       .from("provider_services")

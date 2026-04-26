@@ -686,9 +686,9 @@ function PageContent() {
     return (
       <>
         {before}
-        <mark className="rounded bg-amber-100 px-0.5 text-slate-900">
+        <span className="font-bold text-orange-600 tracking-wide">
           {match}
-        </mark>
+        </span>
         {after}
       </>
     );

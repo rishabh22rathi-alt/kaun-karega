@@ -110,7 +110,10 @@ type ProviderProfile = {
   LastLoginAt?: string;
   PendingApproval?: string;
   Status?: string;
-  Services?: { Category: string }[];
+  Services?: {
+    Category: string;
+    Status?: "approved" | "pending" | "inactive";
+  }[];
   Areas?: { Area: string }[];
   AreaCoverage?: ProviderAreaCoverage;
   Analytics?: ProviderAnalytics;
@@ -1168,9 +1171,17 @@ function ProviderDashboardInner() {
                   services.map((service) => (
                     <span
                       key={service.Category}
-                      className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700"
+                      className={
+                        service.Status === "pending"
+                          ? "rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700"
+                          : service.Status === "inactive"
+                            ? "rounded-full border border-gray-200 bg-gray-50 px-3 py-1 text-xs font-semibold text-gray-600"
+                            : "rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700"
+                      }
                     >
                       {service.Category}
+                      {service.Status === "pending" && " · Under Review"}
+                      {service.Status === "inactive" && " · Inactive"}
                     </span>
                   ))
                 ) : (
