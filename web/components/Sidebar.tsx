@@ -24,6 +24,7 @@ import {
 } from "./sidebarEvents";
 import { clearAuthSession, getAuthSession } from "@/lib/auth";
 import { isProviderVerifiedBadge } from "@/lib/providerPresentation";
+import { fetchProviderDashboardProfile } from "@/lib/providerDashboardProfile";
 
 const PROVIDER_PROFILE_STORAGE_KEY = "kk_provider_profile";
 const ADMIN_SESSION_STORAGE_KEY = "kk_admin_session";
@@ -246,22 +247,22 @@ export default function Sidebar() {
     let ignore = false;
     const loadProviderProfile = async () => {
       try {
-        const response = await fetch("/api/provider/dashboard-profile", { cache: "no-store" });
-        const data = (await response.json()) as ProviderProfileResponse;
-        if (!ignore && data?.ok && data.provider) {
+        // Shared helper: de-dupes the in-flight call with the dashboard
+        // page's own fetch, persists to localStorage, and dispatches
+        // PROVIDER_PROFILE_UPDATED_EVENT (which the listener below picks up).
+        const data = await fetchProviderDashboardProfile();
+        if (ignore) return;
+        if (data?.ok && data.provider) {
           const raw = data.provider as ProviderProfile & { ProviderName?: string };
           const normalized: ProviderProfile = {
             ...raw,
             Name: raw.Name ?? raw.ProviderName,
           };
           setProviderProfile(normalized);
-          window.localStorage.setItem(
-            PROVIDER_PROFILE_STORAGE_KEY,
-            JSON.stringify(normalized)
-          );
-        } else if (!ignore && response.status === 404) {
+        } else if (data && data.ok === false) {
+          // 404 / not-found path is handled inside the helper (clears
+          // localStorage + dispatches event); reflect that locally too.
           setProviderProfile(null);
-          window.localStorage.removeItem(PROVIDER_PROFILE_STORAGE_KEY);
         }
       } catch {
         // Keep cached data/fallback in case of transient fetch issues.

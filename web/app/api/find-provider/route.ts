@@ -88,7 +88,7 @@ async function handle(req: Request) {
       .from("provider_services")
       .select("provider_id, category")
       .eq("category", category)
-      .limit(200);
+      .limit(5000);
 
     if (servicesError) {
       throw new Error(servicesError.message || "Unable to load provider services.");
@@ -98,7 +98,7 @@ async function handle(req: Request) {
       .from("provider_areas")
       .select("provider_id, area")
       .eq("area", area)
-      .limit(200);
+      .limit(5000);
 
     if (areasError) {
       throw new Error(areasError.message || "Unable to load provider areas.");

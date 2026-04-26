@@ -4,10 +4,13 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import InAppToastStack, { type InAppToast } from "@/components/InAppToastStack";
-import { PROVIDER_PROFILE_UPDATED_EVENT } from "@/components/sidebarEvents";
 import { getAuthSession } from "@/lib/auth";
 import { getTaskDisplayLabel } from "@/lib/taskDisplay";
 import { isProviderVerifiedBadge } from "@/lib/providerPresentation";
+import {
+  fetchProviderDashboardProfile,
+  readCachedProviderProfile,
+} from "@/lib/providerDashboardProfile";
 
 const MAX_SERVICES = 3;
 const MAX_AREAS = 5;
@@ -119,14 +122,6 @@ type ProviderProfile = {
   Analytics?: ProviderAnalytics;
 };
 
-type ProviderByPhoneResponse = {
-  ok?: boolean;
-  provider?: ProviderProfile;
-  error?: string;
-  message?: string;
-  debug?: unknown;
-};
-
 type CreateThreadResponse = {
   ok?: boolean;
   error?: string;
@@ -146,15 +141,6 @@ function normalizePhone10(phoneRaw: string): string {
   if (!digits) return "";
   const phone10 = digits.length > 10 ? digits.slice(-10) : digits;
   return phone10.length === 10 ? phone10 : "";
-}
-
-function parseJsonSafe<T>(text: string): T | null {
-  if (!text) return null;
-  try {
-    return JSON.parse(text) as T;
-  } catch {
-    return null;
-  }
 }
 
 function maskPhoneForDebug(phone10: string): string {
@@ -337,8 +323,18 @@ function ProviderDashboardInner() {
     if (!phone) return;
 
     let ignore = false;
+
+    // Warm-cache hydration: if a cached profile exists for THIS phone, render
+    // it instantly so the dashboard does not block on the network round-trip.
+    // The background refresh below will overwrite once fresh data arrives.
+    const cached = readCachedProviderProfile(phone);
+    if (cached) {
+      setProfile(cached as ProviderProfile);
+      setLoading(false);
+    }
+
     const load = async () => {
-      setLoading(true);
+      if (!cached) setLoading(true);
       setError("");
       setApiError("");
       setApiDebug(null);
@@ -347,17 +343,14 @@ function ProviderDashboardInner() {
           endpoint: "/api/provider/dashboard-profile",
           payload: null,
           phoneFromSession: phone,
+          warmCacheUsed: Boolean(cached),
         });
-        const profileRes = await fetch("/api/provider/dashboard-profile", { cache: "no-store" });
-        const profileText = await profileRes.text();
-        const profileData = parseJsonSafe<ProviderByPhoneResponse>(profileText);
-        if (!profileRes.ok) {
-          throw new Error(
-            profileData?.message ||
-              profileData?.error ||
-              `HTTP ${profileRes.status} while loading provider profile.`
-          );
-        }
+        // Shared helper: de-dupes the in-flight call with the Sidebar's own
+        // fetch, persists to localStorage, and dispatches
+        // PROVIDER_PROFILE_UPDATED_EVENT — so we collapse the two
+        // simultaneous round-trips into a single network request on first
+        // mount.
+        const profileData = await fetchProviderDashboardProfile();
         if (!profileData) {
           throw new Error("Invalid JSON from provider profile API.");
         }
@@ -374,33 +367,9 @@ function ProviderDashboardInner() {
         }
 
         if (ignore) return;
-        setProfile(profileData.provider);
-
-        if (typeof window !== "undefined") {
-          window.localStorage.setItem(
-            "kk_provider_profile",
-            JSON.stringify({
-              ProviderID: profileData.provider.ProviderID,
-              Name: profileData.provider.ProviderName,
-              Phone: profileData.provider.Phone,
-              Verified: profileData.provider.Verified,
-              OtpVerified: profileData.provider.OtpVerified,
-              OtpVerifiedAt: profileData.provider.OtpVerifiedAt,
-              LastLoginAt: profileData.provider.LastLoginAt,
-              PendingApproval: profileData.provider.PendingApproval,
-              Status:
-                profileData.provider.Status ||
-                (String(profileData.provider.PendingApproval || "").toLowerCase() === "yes"
-                  ? "Pending Admin Approval"
-                  : String(profileData.provider.OtpVerified || "").toLowerCase() === "yes"
-                    ? "Active"
-                    : "Not Verified"),
-            })
-          );
-          window.dispatchEvent(new Event(PROVIDER_PROFILE_UPDATED_EVENT));
-        }
+        setProfile(profileData.provider as ProviderProfile);
       } catch (err) {
-        if (!ignore) {
+        if (!ignore && !cached) {
           setError(err instanceof Error ? err.message : "Unable to load provider dashboard.");
         }
       } finally {

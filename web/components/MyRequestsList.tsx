@@ -518,7 +518,7 @@ export default function MyRequestsList() {
               const threadByProviderId = new Map(
                 taskThreads.map((thread) => [String(thread.ProviderID || "").trim(), thread])
               );
-              const matchedProviderRows =
+              const matchedProviderRowsRaw =
                 row.matchedProviderDetails.length > 0
                   ? row.matchedProviderDetails
                   : row.matchedProviders.map((providerId) => ({
@@ -532,6 +532,24 @@ export default function MyRequestsList() {
                       responseStatus:
                         providerId === row.respondedProvider ? "responded" : "",
                     }));
+              // Phone-Verified providers float to the top; relative order
+              // within each group is preserved (Array.prototype.sort is
+              // stable since ES2019). Indexes are captured up-front so the
+              // comparator is a pure function of (verifiedRank, originalIdx)
+              // — defensive in case any older runtime regresses to an
+              // unstable sort.
+              const matchedProviderRows = matchedProviderRowsRaw
+                .map((provider, originalIndex) => ({
+                  provider,
+                  originalIndex,
+                  verifiedRank: provider.verified === "yes" ? 0 : 1,
+                }))
+                .sort((a, b) =>
+                  a.verifiedRank !== b.verifiedRank
+                    ? a.verifiedRank - b.verifiedRank
+                    : a.originalIndex - b.originalIndex
+                )
+                .map((entry) => entry.provider);
 
               return (
                 <div
@@ -624,7 +642,6 @@ export default function MyRequestsList() {
                                       <div className="font-medium text-slate-900">
                                         {provider.providerName || providerId}
                                       </div>
-                                      <div className="text-xs text-slate-500">{providerId}</div>
                                     </td>
                                     <td className="px-3 py-3 align-top">
                                       {provider.providerPhone ? (

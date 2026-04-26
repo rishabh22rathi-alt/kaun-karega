@@ -15,6 +15,16 @@ export const revalidate = 0;
 // stale risk is bounded by CITY_ANALYTICS_TTL_MS and any code change.
 const CITY_ANALYTICS_TTL_MS = 60_000;
 const AREA_DEMAND_CACHE_MAX_ENTRIES = 64;
+// Provider metrics are derived from 5 head-only count queries per provider
+// (TotalRequestsInMyCategories, TotalRequestsMatchedToMe, …) which dominate
+// the analytics block at ~2.7s wall-clock. They change slowly relative to
+// the dashboard refresh rate, so a short TTL cache amortizes the cost
+// across rapid reloads/refreshes by the same provider. Keyed by
+// providerId + sorted category list because TotalRequestsInMyCategories
+// depends on the category set — caching by providerId alone would serve
+// stale numbers immediately after a provider edits their services.
+const PROVIDER_METRICS_TTL_MS = 60_000;
+const PROVIDER_METRICS_CACHE_MAX_ENTRIES = 128;
 
 type CategoryDemandCacheEntry = {
   data: CategoryDemandByRange;
@@ -26,8 +36,14 @@ type AreaCountsCacheEntry = {
   expiresAt: number;
 };
 
+type ProviderMetricsCacheEntry = {
+  data: ProviderMetrics;
+  expiresAt: number;
+};
+
 let categoryDemandCache: CategoryDemandCacheEntry | null = null;
 const areaDemandCountsCache = new Map<string, AreaCountsCacheEntry>();
+const providerMetricsCache = new Map<string, ProviderMetricsCacheEntry>();
 
 function categoriesCacheKey(categories: string[]): string {
   return Array.from(
@@ -35,6 +51,10 @@ function categoriesCacheKey(categories: string[]): string {
   )
     .sort()
     .join("|");
+}
+
+function providerMetricsCacheKey(providerId: string, categories: string[]): string {
+  return `${providerId}::${categoriesCacheKey(categories)}`;
 }
 
 const PERF_DEBUG = process.env.NODE_ENV !== "production";
@@ -698,6 +718,18 @@ export async function GET(request: NextRequest) {
   }
 
   const handlerStart = perfMark();
+
+  // Per-request debug timing collector. Active only when explicitly opted in
+  // AND we're not in production. Output ships as the `x-debug-timings`
+  // response header so the response body shape stays unchanged.
+  const isDebugTiming =
+    request.nextUrl.searchParams.get("debugTiming") === "1" &&
+    process.env.NODE_ENV !== "production";
+  const debugTimings: Record<string, number> = {};
+  const recordTiming = (phase: string, startedAt: number): void => {
+    if (isDebugTiming) debugTimings[phase] = Date.now() - startedAt;
+  };
+
   try {
     const providerLookupStart = perfMark();
     const providerIdentity = await getProviderByPhoneFromSupabase(rawSessionPhone || normalizedPhone);
@@ -710,6 +742,7 @@ export async function GET(request: NextRequest) {
             .maybeSingle()
         : { data: null, error: null };
     perfLog("provider lookup", providerLookupStart);
+    recordTiming("provider_lookup", providerLookupStart);
 
     console.log("[provider/dashboard-profile] supabase provider response", {
       ok: !providerError,
@@ -785,6 +818,7 @@ export async function GET(request: NextRequest) {
         .eq("provider_id", provider.provider_id),
     ]);
     perfLog("provider-scoped parallel", providerScopedStart);
+    recordTiming("provider_scoped_parallel", providerScopedStart);
 
     const { data: providerServices, error: servicesError } = servicesResult;
     if (servicesError) {
@@ -845,31 +879,124 @@ export async function GET(request: NextRequest) {
     const cacheOptions = { bypassCache: isTestProvider };
 
     const analyticsStart = perfMark();
+    const providerIdString = String(provider.provider_id || "");
+    // Each sub-block is wrapped in a tiny IIFE so we can record per-block
+    // elapsed time when debug mode is on. The wrappers are no-op overhead
+    // (unconditional ~0 ms) when not debugging.
     const [
       metricsResult,
       categoryDemandResult,
       areaDemandResult,
       areaCoverageResult,
+      activeCategoriesResult,
+      pendingCategoryRequestsResult,
     ] = await Promise.allSettled([
-      getProviderMetricsFromSupabase(
-        supabase,
-        String(provider.provider_id || ""),
-        providerCategoryList
-      ),
-      getCategoryDemandByRangeFromSupabase(supabase, cacheOptions),
-      getAreaDemandFromSupabase(
-        supabase,
-        providerCategoryList,
-        providerAreaList,
-        cacheOptions
-      ),
-      getProviderAreaCoverageFromSupabase(
-        supabase,
-        String(provider.provider_id || ""),
-        providerAreaList
-      ),
+      (async () => {
+        const t = perfMark();
+        // TTL cache for the 5 head-only count queries that dominate this
+        // block. Keyed by (providerId, sorted categories) so a category-set
+        // edit invalidates immediately. Honors the same `bypassCache` flag
+        // as the city-wide analytics caches so ZZ-prefixed test providers
+        // always observe their own writes.
+        const cacheKey = providerMetricsCacheKey(providerIdString, providerCategoryList);
+        let value: ProviderMetrics;
+        let cacheHit = false;
+        const cached = cacheOptions.bypassCache
+          ? undefined
+          : providerMetricsCache.get(cacheKey);
+        if (cached && Date.now() < cached.expiresAt) {
+          value = cached.data;
+          cacheHit = true;
+        } else {
+          value = await getProviderMetricsFromSupabase(
+            supabase,
+            providerIdString,
+            providerCategoryList
+          );
+          if (!cacheOptions.bypassCache) {
+            if (providerMetricsCache.size >= PROVIDER_METRICS_CACHE_MAX_ENTRIES) {
+              // FIFO eviction — drop the oldest insertion to bound memory.
+              const firstKey = providerMetricsCache.keys().next().value;
+              if (firstKey) providerMetricsCache.delete(firstKey);
+            }
+            providerMetricsCache.set(cacheKey, {
+              data: value,
+              expiresAt: Date.now() + PROVIDER_METRICS_TTL_MS,
+            });
+          }
+        }
+        recordTiming("provider_metrics", t);
+        if (isDebugTiming) {
+          debugTimings["provider_metrics_cache_hit"] = cacheHit ? 1 : 0;
+        }
+        return value;
+      })(),
+      (async () => {
+        const t = perfMark();
+        const v = await getCategoryDemandByRangeFromSupabase(supabase, cacheOptions);
+        recordTiming("category_demand", t);
+        return v;
+      })(),
+      (async () => {
+        const t = perfMark();
+        const v = await getAreaDemandFromSupabase(
+          supabase,
+          providerCategoryList,
+          providerAreaList,
+          cacheOptions
+        );
+        recordTiming("area_demand", t);
+        return v;
+      })(),
+      (async () => {
+        const t = perfMark();
+        const v = await getProviderAreaCoverageFromSupabase(
+          supabase,
+          providerIdString,
+          providerAreaList
+        );
+        recordTiming("provider_area_coverage", t);
+        return v;
+      })(),
+      (async () => {
+        const t = perfMark();
+        const v = await adminSupabase
+          .from("categories")
+          .select("name")
+          .eq("active", true);
+        recordTiming("active_categories_lookup", t);
+        return v;
+      })(),
+      (async () => {
+        const t = perfMark();
+        // Defensive .limit(50) bounds worst-case payload if a provider ever
+        // accumulates many pending category requests (typical: 0–3). Order
+        // is intentionally omitted — ordering would force a full sort even
+        // when the result is small. Keep this in sync with any future
+        // pending-status filter changes elsewhere.
+        //
+        // PERF NOTE: when the table grows past a few thousand rows, this
+        // filter pair may sequentially scan without a composite index.
+        // Recommended (not applied — DB schema change is gated):
+        //   CREATE INDEX IF NOT EXISTS pending_category_requests_provider_status_idx
+        //     ON pending_category_requests (provider_id, status);
+        const v = await adminSupabase
+          .from("pending_category_requests")
+          .select("requested_category")
+          .eq("provider_id", providerIdString)
+          .eq("status", "pending")
+          .limit(50);
+        recordTiming("pending_category_requests_lookup", t);
+        if (isDebugTiming) {
+          debugTimings["pending_category_requests_count"] = Array.isArray(v?.data)
+            ? v.data.length
+            : 0;
+        }
+        return v;
+      })(),
     ]);
     perfLog("analytics parallel block", analyticsStart, { isTestProvider });
+    recordTiming("analytics_parallel_block_total", analyticsStart);
 
     if (metricsResult.status === "fulfilled") {
       metrics = metricsResult.value;
@@ -937,6 +1064,7 @@ export async function GET(request: NextRequest) {
         )
         .in("task_id", taskIds);
       perfLog("recent-matched tasks lookup", tasksLookupStart, { taskIds: taskIds.length });
+      recordTiming("recent_matched_tasks_lookup", tasksLookupStart);
 
       if (tasksError) {
         console.warn(
@@ -954,43 +1082,58 @@ export async function GET(request: NextRequest) {
 
     const recentMatchedRequests = buildRecentMatchedRequests(safeMatches, tasksById);
 
-    // Derive per-service approval status: "approved" if the category is in the
-    // active master list, "pending" if a pending_category_requests row exists
-    // for this provider, otherwise "inactive". Two reads in parallel; if
-    // either errors, every service defaults to "approved" (fail-open — never
-    // downgrade an existing approved chip on a transient DB blip).
-    const [activeCategoriesResult, pendingCategoryRequestsResult] = await Promise.all([
-      adminSupabase.from("categories").select("name").eq("active", true),
-      adminSupabase
-        .from("pending_category_requests")
-        .select("requested_category")
-        .eq("provider_id", String(provider.provider_id || ""))
-        .eq("status", "pending"),
-    ]);
+    // Derive per-service approval status from the two extra reads bundled
+    // into the analytics Promise.allSettled above. Same fail-open semantics
+    // as before: if either query errored, every service defaults to
+    // "approved" so we never downgrade an existing approved chip on a
+    // transient DB blip.
+    let activeCategoriesError: unknown = null;
+    let activeCategoriesData: unknown[] | null = null;
+    if (activeCategoriesResult.status === "fulfilled") {
+      const v = activeCategoriesResult.value as { data?: unknown[] | null; error?: unknown };
+      activeCategoriesData = (v.data ?? null) as unknown[] | null;
+      activeCategoriesError = v.error ?? null;
+    } else {
+      activeCategoriesError = activeCategoriesResult.reason;
+    }
 
-    if (activeCategoriesResult.error) {
+    let pendingCategoryRequestsError: unknown = null;
+    let pendingCategoryRequestsData: unknown[] | null = null;
+    if (pendingCategoryRequestsResult.status === "fulfilled") {
+      const v = pendingCategoryRequestsResult.value as {
+        data?: unknown[] | null;
+        error?: unknown;
+      };
+      pendingCategoryRequestsData = (v.data ?? null) as unknown[] | null;
+      pendingCategoryRequestsError = v.error ?? null;
+    } else {
+      pendingCategoryRequestsError = pendingCategoryRequestsResult.reason;
+    }
+
+    if (activeCategoriesError) {
       console.warn(
         "[provider/dashboard-profile] active categories lookup failed",
-        activeCategoriesResult.error.message || activeCategoriesResult.error
+        (activeCategoriesError as { message?: string })?.message || activeCategoriesError
       );
     }
-    if (pendingCategoryRequestsResult.error) {
+    if (pendingCategoryRequestsError) {
       console.warn(
         "[provider/dashboard-profile] pending category requests lookup failed",
-        pendingCategoryRequestsResult.error.message || pendingCategoryRequestsResult.error
+        (pendingCategoryRequestsError as { message?: string })?.message ||
+          pendingCategoryRequestsError
       );
     }
 
     const serviceStatusLookupsFailed = Boolean(
-      activeCategoriesResult.error || pendingCategoryRequestsResult.error
+      activeCategoriesError || pendingCategoryRequestsError
     );
     const activeCategoryKeys = new Set(
-      (activeCategoriesResult.data || [])
+      (activeCategoriesData || [])
         .map((row) => String((row as { name?: unknown }).name || "").trim().toLowerCase())
         .filter(Boolean)
     );
     const pendingCategoryKeys = new Set(
-      (pendingCategoryRequestsResult.data || [])
+      (pendingCategoryRequestsData || [])
         .map((row) =>
           String((row as { requested_category?: unknown }).requested_category || "")
             .trim()
@@ -1000,7 +1143,10 @@ export async function GET(request: NextRequest) {
     );
 
     perfLog("handler total", handlerStart);
-    return NextResponse.json({
+    recordTiming("handler_total", handlerStart);
+
+    const responseAssemblyStart = perfMark();
+    const responseBody = {
       ok: true,
       provider: {
         ProviderID: String(provider.provider_id || ""),
@@ -1045,7 +1191,17 @@ export async function GET(request: NextRequest) {
           Metrics: metrics,
         },
       },
-    });
+    };
+    recordTiming("response_assembly", responseAssemblyStart);
+
+    const responseInit: { headers?: Record<string, string> } = {};
+    if (isDebugTiming) {
+      responseInit.headers = {
+        "x-debug-timings": JSON.stringify(debugTimings),
+        "Cache-Control": "no-store",
+      };
+    }
+    return NextResponse.json(responseBody, responseInit);
   } catch (error: any) {
     return NextResponse.json(
       {

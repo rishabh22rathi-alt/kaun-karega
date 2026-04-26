@@ -86,14 +86,14 @@ export async function POST(request: Request) {
       .from("provider_services")
       .select("provider_id")
       .eq("category", task.category)
-      .limit(200);
+      .limit(5000);
 
     // 3. Find providers matching by area
     const { data: areaRows } = await supabase
       .from("provider_areas")
       .select("provider_id")
       .eq("area", task.area)
-      .limit(200);
+      .limit(5000);
 
     const serviceIds = new Set(
       (serviceRows ?? []).map((r) => String(r.provider_id).trim()).filter(Boolean)
