@@ -238,7 +238,7 @@ export default function SuccessClient({
             href="/dashboard/my-requests"
             className="inline-flex w-full items-center justify-center rounded-full border border-slate-300 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
           >
-            Go to My Requests
+            Go to Responses
           </Link>
         </div>
       </div>
@@ -316,7 +316,7 @@ export default function SuccessClient({
             href="/dashboard/my-requests"
             className="inline-flex w-full items-center justify-center rounded-full border border-slate-300 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
           >
-            Go to My Requests
+            Go to Responses
           </Link>
         </div>
       </div>

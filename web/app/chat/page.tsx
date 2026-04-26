@@ -102,7 +102,7 @@ function PageContent() {
           <div>
             <p className="mb-3">{error}</p>
             <a href="/dashboard/my-requests" className="text-sky-700 underline">
-              Back to My Requests
+              Back to Responses
             </a>
           </div>
         ) : (

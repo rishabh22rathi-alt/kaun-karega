@@ -162,7 +162,7 @@ function EmptyState() {
         href="/i-need/my-needs"
         className="mt-5 inline-flex rounded-xl border border-slate-200 bg-white px-5 py-2.5 text-sm font-medium text-slate-600 transition hover:bg-slate-50"
       >
-        Back to My Needs
+        Back to My Requests
       </Link>
     </div>
   );
@@ -318,7 +318,7 @@ export default function NeedResponsesPage() {
 
           <div className="min-w-0">
             <p className="text-xs font-semibold uppercase tracking-widest text-violet-500">
-              My Needs
+              My Requests
             </p>
             <h1 className="mt-0.5 text-xl font-bold tracking-tight text-slate-900">
               Responses

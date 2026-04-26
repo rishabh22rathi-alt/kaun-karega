@@ -31,7 +31,7 @@ test.describe("User: requests and request status UX", () => {
     // Purpose: verify the core post-login request history remains readable and actionable.
     await gotoPath(page, "/dashboard/my-requests");
 
-    await expect(page.getByRole("heading", { name: "My Requests" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Responses" })).toBeVisible();
     await expect(page.getByText(QA_CATEGORY)).toBeVisible();
     await expect(page.getByText(QA_AREA)).toBeVisible();
     await expect(page.getByText(QA_REQUEST_DETAILS)).toBeVisible();

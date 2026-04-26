@@ -9,7 +9,6 @@ import {
   Home,
   ClipboardList,
   MessageSquareWarning,
-  User,
   LayoutDashboard,
   ShieldCheck,
   LogOut,
@@ -39,11 +38,6 @@ function readAdminSession(): boolean {
     return false;
   }
 }
-
-type NavItem = {
-  label: string;
-  href: string;
-};
 
 type ProviderProfile = {
   ProviderID?: string;
@@ -430,28 +424,6 @@ export default function Sidebar() {
     };
   }, [isCollapsed, shouldHide, isOpen, isLoggedIn, isMobile]);
 
-  const navItems: NavItem[] = isLoggedIn
-      ? [
-        { label: "Home", href: "/" },
-        { label: "My Requests", href: "/dashboard/my-requests" },
-        { label: "My Needs", href: "/i-need/my-needs" },
-        { label: "Report an Issue", href: "/report-issue" },
-        ...(providerExists === true
-          ? [
-              { label: "Provider Dashboard", href: "/provider/dashboard" },
-              { label: "My Jobs", href: "/provider/my-jobs" },
-              { label: "Job Requests", href: "/provider/job-requests" },
-            ]
-          : []),
-        ...(isAdmin
-          ? [{ label: "Admin Dashboard", href: "/admin/dashboard" }]
-          : []),
-      ]
-    : [
-        { label: "Home", href: "/" },
-        { label: "Login", href: "/login" },
-      ];
-
   const handleLogout = () => {
     clearAuthSession();
     setSession(null);
@@ -485,23 +457,153 @@ export default function Sidebar() {
   }
 
 
-  const iconByLabel: Record<string, React.ComponentType<{ className?: string }>> =
-    {
-      Home: Home,
-      "My Requests": ClipboardList,
-      "My Needs": ClipboardList,
-      "Report an Issue": MessageSquareWarning,
-      Profile: User,
-      "Provider Dashboard": LayoutDashboard,
-      "My Jobs": Briefcase,
-      "Job Requests": ListTodo,
-      "Admin Dashboard": ShieldCheck,
-      Login: LogIn,
-      "Register as Service Provider": UserPlus,
-      Logout: LogOut,
-    };
-
   const myNeedsBadgeLabel = myNeedsUnreadCount > 9 ? "9+" : String(myNeedsUnreadCount);
+
+  type NavLinkConfig = {
+    label: string;
+    href: string;
+    icon: React.ComponentType<{ className?: string }>;
+    showBadge?: boolean;
+  };
+
+  const renderNavLink = ({ label, href, icon: Icon, showBadge }: NavLinkConfig) => {
+    const active = pathname === href;
+    const isHome = label === "Home";
+    const badgeVisible = Boolean(showBadge) && myNeedsUnreadCount > 0;
+    return (
+      <Link
+        key={href}
+        href={href}
+        draggable={false}
+        onClick={() => setIsOpen(false)}
+        className={`flex items-center gap-3 rounded-lg px-3 py-2 font-semibold text-white transition ${
+          active
+            ? isHome
+              ? "bg-transparent text-white ring-1 ring-inset ring-white/[0.12] hover:bg-white/[0.06]"
+              : "bg-white/[0.18] text-white ring-1 ring-inset ring-white/10"
+            : "hover:bg-white/[0.08] hover:text-white"
+        }`}
+      >
+        <span className="relative inline-flex shrink-0">
+          <Icon className="h-4 w-4 text-white/90" />
+          {isCollapsed && badgeVisible ? (
+            <span className="absolute -right-2 -top-2 inline-flex min-w-[18px] items-center justify-center rounded-full bg-violet-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
+              {myNeedsBadgeLabel}
+            </span>
+          ) : null}
+        </span>
+        {isCollapsed ? (
+          <span className="sr-only">{label}</span>
+        ) : (
+          <>
+            <span className="text-sm whitespace-nowrap">{label}</span>
+            {badgeVisible ? (
+              <span className="ml-auto inline-flex min-w-[18px] items-center justify-center rounded-full bg-violet-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
+                {myNeedsBadgeLabel}
+              </span>
+            ) : null}
+          </>
+        )}
+      </Link>
+    );
+  };
+
+  const renderSectionHeader = (label: string) =>
+    isCollapsed ? (
+      <div key={`section-${label}`} className="mx-2 my-2 border-t border-white/10" />
+    ) : (
+      <p
+        key={`section-${label}`}
+        className="px-3 pb-1 pt-3 text-[10px] font-bold uppercase tracking-widest text-white/50"
+      >
+        {label}
+      </p>
+    );
+
+  const postARequestButton = (
+    <div key="post-a-request">
+      <button
+        type="button"
+        onClick={() => setINeedOpen((v) => !v)}
+        className="flex w-full items-center gap-3 rounded-lg bg-transparent px-3 py-2 font-semibold text-white transition hover:bg-white/[0.06]"
+      >
+        <ListTodo className="h-4 w-4 shrink-0 text-white/90" />
+        {isCollapsed ? (
+          <span className="sr-only">Post a Request</span>
+        ) : (
+          <>
+            <span className="text-sm whitespace-nowrap">Post a Request</span>
+            <ChevronRight
+              className={`ml-auto h-3.5 w-3.5 transition-transform duration-200 ${
+                iNeedOpen ? "rotate-90 text-white" : "text-white/70"
+              }`}
+            />
+          </>
+        )}
+      </button>
+
+      {iNeedOpen && !isCollapsed && (
+        <div className="pt-1">
+          <div className="ml-5 space-y-0.5">
+            {[
+              { label: "Naukri", emoji: "💼", category: "Employer" },
+              { label: "Property", emoji: "🏗️", category: "Property Buyer" },
+              { label: "Rent", emoji: "🏠", category: "Tenant" },
+              { label: "Buy / Sell", emoji: "🤝", category: "Vehicle Buyer" },
+            ].map((needItem) => (
+              <button
+                key={needItem.label}
+                type="button"
+                onClick={() => {
+                  setIsOpen(false);
+                  router.push(`/i-need?category=${encodeURIComponent(needItem.category)}`);
+                }}
+                className="flex w-full items-center gap-2 rounded-lg bg-white/[0.12] px-3 py-2 text-sm text-white/85 ring-1 ring-inset ring-white/10 transition hover:bg-white/[0.18] hover:text-white"
+              >
+                <span>{needItem.emoji}</span>
+                {needItem.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
+  const registerProviderButton = (
+    <button
+      key="register-provider"
+      type="button"
+      onClick={() => setShowProviderConfirm(true)}
+      className="flex w-full items-center gap-3 rounded-lg px-3 py-2 font-semibold text-white transition hover:bg-white/[0.08] hover:text-white"
+    >
+      <UserPlus className="h-4 w-4 text-white/90" />
+      {isCollapsed ? (
+        <span className="sr-only">Register as Service Provider</span>
+      ) : (
+        <span className="text-sm whitespace-nowrap">Register as Service Provider</span>
+      )}
+    </button>
+  );
+
+  const logoutButton = (
+    <button
+      key="logout"
+      type="button"
+      onClick={handleLogout}
+      className="flex w-full items-center gap-3 rounded-lg px-3 py-2 font-semibold text-white transition hover:bg-white/[0.08] hover:text-white"
+    >
+      <LogOut className="h-4 w-4 text-white/90" />
+      {isCollapsed ? (
+        <span className="sr-only">Logout</span>
+      ) : (
+        <span className="text-sm whitespace-nowrap">Logout</span>
+      )}
+    </button>
+  );
+
+  const showProviderSection =
+    providerExists === true || providerExists === false || isAdmin;
 
   return (
     <>
@@ -595,146 +697,77 @@ export default function Sidebar() {
 
         <nav className="flex-1 overflow-hidden px-3 py-4 select-none">
           <div className="space-y-2">
-              {!authHydrated ? (
-                <div className="space-y-2" aria-label="Loading sidebar navigation">
-                  {[0, 1, 2, 3].map((item) => (
-                    <div
-                      key={item}
-                      className="h-9 rounded-lg bg-white/[0.10]"
-                    />
-                  ))}
-                </div>
-              ) : (
+            {!authHydrated ? (
+              <div className="space-y-2" aria-label="Loading sidebar navigation">
+                {[0, 1, 2, 3].map((item) => (
+                  <div key={item} className="h-9 rounded-lg bg-white/[0.10]" />
+                ))}
+              </div>
+            ) : !isLoggedIn ? (
               <>
-              {navItems.map((item) => {
-                const active = pathname === item.href;
-                const isHome = item.label === "Home";
-                const Icon = iconByLabel[item.label];
-                const showMyNeedsBadge = item.label === "My Needs" && myNeedsUnreadCount > 0;
-                return (
-                  <div key={item.href} className={isHome ? "space-y-2" : undefined}>
-                    <Link
-                      href={item.href}
-                      draggable={false}
-                      onClick={() => setIsOpen(false)}
-                      className={`flex items-center gap-3 rounded-lg px-3 py-2 font-semibold text-white transition ${
-                        active
-                          ? isHome
-                            ? "bg-transparent text-white ring-1 ring-inset ring-white/[0.12] hover:bg-white/[0.06]"
-                            : "bg-white/[0.18] text-white ring-1 ring-inset ring-white/10"
-                          : "hover:bg-white/[0.08] hover:text-white"
-                      }`}
-                    >
-                      {Icon && (
-                        <span className="relative inline-flex shrink-0">
-                          <Icon className="h-4 w-4 text-white/90" />
-                          {isCollapsed && showMyNeedsBadge ? (
-                            <span className="absolute -right-2 -top-2 inline-flex min-w-[18px] items-center justify-center rounded-full bg-violet-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
-                              {myNeedsBadgeLabel}
-                            </span>
-                          ) : null}
-                        </span>
-                      )}
-                      {isCollapsed ? (
-                        <span className="sr-only">{item.label}</span>
-                      ) : (
-                        <>
-                          <span className="text-sm whitespace-nowrap">
-                            {item.label}
-                          </span>
-                          {showMyNeedsBadge ? (
-                            <span className="ml-auto inline-flex min-w-[18px] items-center justify-center rounded-full bg-violet-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
-                              {myNeedsBadgeLabel}
-                            </span>
-                          ) : null}
-                        </>
-                      )}
-                    </Link>
-
-                    {isHome ? (
-                      <div>
-                        <button
-                          type="button"
-                          onClick={() => setINeedOpen((v) => !v)}
-                          className="flex w-full items-center gap-3 rounded-lg bg-transparent px-3 py-2 font-semibold text-white transition hover:bg-white/[0.06]"
-                        >
-                          <ListTodo className="h-4 w-4 shrink-0 text-white/90" />
-                          {isCollapsed ? (
-                            <span className="sr-only">I NEED</span>
-                          ) : (
-                            <>
-                              <span className="text-sm whitespace-nowrap">I NEED</span>
-                              <ChevronRight
-                                className={`ml-auto h-3.5 w-3.5 transition-transform duration-200 ${
-                                  iNeedOpen ? "rotate-90 text-white" : "text-white/70"
-                                }`}
-                              />
-                            </>
-                          )}
-                        </button>
-
-                        {iNeedOpen && !isCollapsed && (
-                          <div className="pt-1">
-                            <div className="ml-5 space-y-0.5">
-                              {[
-                                { label: "Naukri", emoji: "💼", category: "Employer" },
-                                { label: "Property", emoji: "🏗️", category: "Property Buyer" },
-                                { label: "Rent", emoji: "🏠", category: "Tenant" },
-                                { label: "Buy / Sell", emoji: "🤝", category: "Vehicle Buyer" },
-                              ].map((needItem) => (
-                                <button
-                                  key={needItem.label}
-                                  type="button"
-                                  onClick={() => {
-                                    setIsOpen(false);
-                                    router.push(`/i-need?category=${encodeURIComponent(needItem.category)}`);
-                                  }}
-                                  className="flex w-full items-center gap-2 rounded-lg bg-white/[0.12] px-3 py-2 text-sm text-white/85 ring-1 ring-inset ring-white/10 transition hover:bg-white/[0.18] hover:text-white"
-                                >
-                                  <span>{needItem.emoji}</span>
-                                  {needItem.label}
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    ) : null}
-                  </div>
-                );
-              })}
-              {providerExists === false ? (
-                <button
-                  type="button"
-                  onClick={() => setShowProviderConfirm(true)}
-                  className="flex w-full items-center gap-3 rounded-lg px-3 py-2 font-semibold text-white transition hover:bg-white/[0.08] hover:text-white"
-                >
-                  <UserPlus className="h-4 w-4 text-white/90" />
-                  {isCollapsed ? (
-                    <span className="sr-only">Register as Service Provider</span>
-                  ) : (
-                    <span className="text-sm whitespace-nowrap">
-                      Register as Service Provider
-                    </span>
-                  )}
-                </button>
-              ) : null}
-              {session?.phone && (
-                <button
-                  type="button"
-                  onClick={handleLogout}
-                  className="flex w-full items-center gap-3 rounded-lg px-3 py-2 font-semibold text-white transition hover:bg-white/[0.08] hover:text-white"
-                >
-                  <LogOut className="h-4 w-4 text-white/90" />
-                  {isCollapsed ? (
-                    <span className="sr-only">Logout</span>
-                  ) : (
-                    <span className="text-sm whitespace-nowrap">Logout</span>
-                  )}
-                </button>
-              )}
+                {renderNavLink({ label: "Home", href: "/", icon: Home })}
+                {renderNavLink({ label: "Login", href: "/login", icon: LogIn })}
               </>
-              )}
+            ) : (
+              <>
+                {renderNavLink({ label: "Home", href: "/", icon: Home })}
+
+                {renderSectionHeader("FOR YOUR NEEDS")}
+                {postARequestButton}
+                {renderNavLink({
+                  label: "My Requests",
+                  href: "/i-need/my-needs",
+                  icon: ClipboardList,
+                  showBadge: true,
+                })}
+                {renderNavLink({
+                  label: "Responses",
+                  href: "/dashboard/my-requests",
+                  icon: ClipboardList,
+                })}
+
+                {showProviderSection ? (
+                  <>
+                    {renderSectionHeader("FOR PROVIDERS")}
+                    {providerExists === true ? (
+                      <>
+                        {renderNavLink({
+                          label: "Dashboard",
+                          href: "/provider/dashboard",
+                          icon: LayoutDashboard,
+                        })}
+                        {renderNavLink({
+                          label: "Find Work",
+                          href: "/provider/job-requests",
+                          icon: ListTodo,
+                        })}
+                        {renderNavLink({
+                          label: "My Work",
+                          href: "/provider/my-jobs",
+                          icon: Briefcase,
+                        })}
+                      </>
+                    ) : null}
+                    {providerExists === false ? registerProviderButton : null}
+                    {isAdmin
+                      ? renderNavLink({
+                          label: "Admin Dashboard",
+                          href: "/admin/dashboard",
+                          icon: ShieldCheck,
+                        })
+                      : null}
+                  </>
+                ) : null}
+
+                {renderSectionHeader("HELP")}
+                {renderNavLink({
+                  label: "Report an Issue",
+                  href: "/report-issue",
+                  icon: MessageSquareWarning,
+                })}
+                {logoutButton}
+              </>
+            )}
           </div>
         </nav>
       </aside>

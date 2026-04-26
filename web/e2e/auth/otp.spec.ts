@@ -53,7 +53,7 @@ test.describe("Auth: OTP flows", () => {
 
     await gotoPath(page, "/dashboard/my-requests");
 
-    await expect(page.getByRole("heading", { name: "My Requests" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Responses" })).toBeVisible();
 
     diag.assertClean();
   });

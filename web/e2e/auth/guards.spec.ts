@@ -33,7 +33,7 @@ test.describe("Auth: route guards and logout", () => {
     await mockUserRequestsApis(page, { requests: [], globalThreads: [], taskThreads: [] });
 
     await gotoPath(page, "/dashboard/my-requests");
-    await expect(page.getByRole("heading", { name: "My Requests" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Responses" })).toBeVisible();
 
     await page.setViewportSize({ width: 1280, height: 900 });
     await gotoPath(page, "/");
@@ -59,12 +59,12 @@ test.describe("Auth: route guards and logout", () => {
     await mockUserRequestsApis(page, { requests: [], globalThreads: [], taskThreads: [] });
 
     await gotoPath(page, "/dashboard/my-requests");
-    await expect(page.getByRole("heading", { name: "My Requests" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Responses" })).toBeVisible();
 
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForLoadState("networkidle");
     await expect(page).toHaveURL(/\/dashboard\/my-requests/);
-    await expect(page.getByRole("heading", { name: "My Requests" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Responses" })).toBeVisible();
 
     diag.assertClean();
   });

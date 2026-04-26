@@ -6,7 +6,7 @@ import type { Page, Request } from "@playwright/test";
 
 import { bootstrapProviderSession } from "./_support/auth";
 import { QA_AREA, QA_CATEGORY } from "./_support/data";
-import { test } from "./_support/test";
+import { expect, test } from "./_support/test";
 
 const DEBUG_DIR = "test-results/sidebar-debug";
 const USER_WITHOUT_PROVIDER_PHONE = "9888800001";
@@ -51,6 +51,31 @@ function compactText(value: string): string {
 
 function normalizePhoneToTen(value: string): string {
   return String(value || "").replace(/\D/g, "").slice(-10);
+}
+
+function timelineText(timeline: Array<{ label: string; text: string }>, label: string): string {
+  return timeline.find((entry) => entry.label === label)?.text || "";
+}
+
+function anyTimelineTextIncludes(
+  timeline: Array<{ label: string; text: string }>,
+  value: string
+): boolean {
+  return timeline.some((entry) => entry.text.includes(value));
+}
+
+function expectCoreLoggedInNav(text: string): void {
+  expect(text).toContain("Post a Request");
+  expect(text).toContain("My Requests");
+  expect(text).toContain("Responses");
+  expect(text).toContain("Report an Issue");
+  expect(text).toContain("Logout");
+}
+
+function expectProviderNav(text: string): void {
+  expect(text).toMatch(/Dashboard|Overview/);
+  expect(text).toContain("Find Work");
+  expect(text).toContain("My Work");
 }
 
 async function expandSidebar(page: Page): Promise<void> {
@@ -328,6 +353,33 @@ test.describe("Sidebar progressive-loading debug", () => {
         entry.text.includes("Phone Verified")
       )}`
     );
+
+    const userFinalText = timelineText(userTimeline, "network-idle");
+    const providerInitialText = timelineText(providerTimeline, "initial");
+    const providerFinalText = timelineText(providerTimeline, "network-idle");
+
+    expectCoreLoggedInNav(userFinalText);
+    expect(userFinalText).toContain("Register as Service Provider");
+
+    expect(providerTimeline.every((entry) => !entry.text.includes("Login"))).toBe(true);
+    expect(providerInitialText).not.toContain("Login");
+    expect(anyTimelineTextIncludes(providerTimeline, "Find Work")).toBe(true);
+    expect(anyTimelineTextIncludes(providerTimeline, "My Work")).toBe(true);
+    expectCoreLoggedInNav(providerFinalText);
+    expectProviderNav(providerFinalText);
+    expect(providerFinalText).toContain("Phone Verified");
+    expect(providerFinalText).toContain(SEEDED_PROVIDER_NAME);
+    expect(providerFinalText.trim().length).toBeGreaterThan(0);
+
+    const sectionHeadersVisible = ["FOR YOUR NEEDS", "FOR PROVIDERS", "HELP"].some((header) =>
+      anyTimelineTextIncludes(providerTimeline, header)
+    );
+    if (sectionHeadersVisible) {
+      expect(providerFinalText).toContain("FOR YOUR NEEDS");
+      expect(providerFinalText).toContain("FOR PROVIDERS");
+      expect(providerFinalText).toContain("HELP");
+    }
+
     console.log(
       [
         "[sidebar-debug] likely conditional inputs from Sidebar.tsx:",

@@ -279,7 +279,7 @@ export default function ProviderMyJobsPage() {
     <main className="min-h-screen bg-[linear-gradient(180deg,#f8fafc_0%,#eef6ff_100%)] px-4 py-8">
       <div className="mx-auto w-full max-w-4xl space-y-6">
         <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
-          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">My Jobs</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">My Work</h1>
           <p className="mt-1 text-sm text-slate-600">
             All customer requests matched to your services and areas — see who&rsquo;s still looking and respond.
           </p>
@@ -420,7 +420,7 @@ export default function ProviderMyJobsPage() {
 
         <div className="pt-2 text-center text-xs text-slate-500">
           <Link href="/provider/dashboard" className="font-semibold text-sky-600 hover:text-sky-700">
-            &larr; Back to Provider Dashboard
+            &larr; Back to Dashboard
           </Link>
         </div>
       </div>

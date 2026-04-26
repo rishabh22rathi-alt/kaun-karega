@@ -382,7 +382,7 @@ function buildRouteCases(providerPhone: string): RouteCase[] {
       path: "/dashboard/my-requests",
       session: "user",
       readySignals: [
-        { kind: "role-heading", name: "My Requests", exact: true },
+        { kind: "role-heading", name: "Responses", exact: true },
         { kind: "text", text: "Loading", exact: false },
       ],
     },
@@ -392,7 +392,7 @@ function buildRouteCases(providerPhone: string): RouteCase[] {
       path: "/i-need/my-needs",
       session: "user",
       readySignals: [
-        { kind: "role-heading", name: "My Needs", exact: true },
+        { kind: "role-heading", name: "My Requests", exact: true },
         { kind: "text", text: "Loading your needs...", exact: true },
       ],
     },
@@ -416,7 +416,7 @@ function buildRouteCases(providerPhone: string): RouteCase[] {
       apiUrlMatcher: dashboardProfileMatcher,
       apiLabel: "GET /api/provider/dashboard-profile",
       readySignals: [
-        { kind: "role-heading", name: "My Jobs", exact: true },
+        { kind: "role-heading", name: "My Work", exact: true },
         {
           kind: "text",
           text:
@@ -433,7 +433,7 @@ function buildRouteCases(providerPhone: string): RouteCase[] {
       apiUrlMatcher: dashboardProfileMatcher,
       apiLabel: "GET /api/provider/dashboard-profile",
       readySignals: [
-        { kind: "role-heading", name: "Job Requests", exact: true },
+        { kind: "role-heading", name: "Find Work", exact: true },
         {
           kind: "text",
           text:

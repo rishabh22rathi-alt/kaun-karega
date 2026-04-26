@@ -190,7 +190,7 @@ export default function ProviderChatEntryPage({ params }: PageProps) {
             href="/provider/dashboard"
             className="mt-4 inline-flex rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
           >
-            Back to Provider Dashboard
+            Back to Dashboard
           </Link>
         </div>
       </main>

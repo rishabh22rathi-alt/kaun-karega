@@ -499,7 +499,7 @@ export default function MyRequestsList() {
     <main className="min-h-screen bg-slate-50 px-4 py-10">
       <div className="mx-auto w-full max-w-5xl rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <div className="mb-6">
-          <h1 className="text-2xl font-semibold text-slate-900">My Requests</h1>
+          <h1 className="text-2xl font-semibold text-slate-900">Responses</h1>
           <p className="text-sm text-slate-600">Total requests: {total}</p>
         </div>
 

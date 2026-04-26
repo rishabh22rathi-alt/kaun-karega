@@ -189,8 +189,8 @@ test.describe("Phase 5: My Requests — Full QA Audit", () => {
     await gotoMyRequests(page);
 
     // Heading present
-    await expect(page.getByRole("heading", { name: "My Requests" })).toBeVisible({ timeout: 10_000 });
-    console.log(`${el()} [T1] "My Requests" heading visible`);
+    await expect(page.getByRole("heading", { name: "Responses" })).toBeVisible({ timeout: 10_000 });
+    console.log(`${el()} [T1] "Responses" heading visible`);
 
     // No auth loop — URL stays on /dashboard/my-requests
     await expect(page).toHaveURL(/\/dashboard\/my-requests/);
@@ -676,7 +676,7 @@ test.describe("Phase 5: My Requests — Full QA Audit", () => {
     await gotoMyRequests(page);
 
     // Heading still visible
-    await expect(page.getByRole("heading", { name: "My Requests" })).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByRole("heading", { name: "Responses" })).toBeVisible({ timeout: 10_000 });
 
     // Empty state text
     await expect(page.getByText("No requests yet. Create your first task from home."))
@@ -717,7 +717,7 @@ test.describe("Phase 5: My Requests — Full QA Audit", () => {
     await gotoMyRequests(page);
 
     // Heading visible
-    await expect(page.getByRole("heading", { name: "My Requests" })).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByRole("heading", { name: "Responses" })).toBeVisible({ timeout: 10_000 });
     console.log(`${el()} [T11] Heading visible at 375px`);
 
     // Task card visible

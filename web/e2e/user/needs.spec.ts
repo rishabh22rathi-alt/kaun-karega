@@ -15,7 +15,7 @@ test.describe("User: needs flows", () => {
     // Purpose: keep the I NEED management surface responsive after backend migrations.
     await gotoPath(page, "/i-need/my-needs");
 
-    await expect(page.getByRole("heading", { name: "My Needs" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "My Requests" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Need an office assistant" })).toBeVisible();
 
     await page.getByRole("button", { name: /mark complete/i }).click();
@@ -46,7 +46,7 @@ test.describe("User: needs flows", () => {
     await page.getByRole("button", { name: /post need/i }).click();
 
     await expect(page).toHaveURL(/\/i-need\/my-needs/);
-    await expect(page.getByRole("heading", { name: "My Needs" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "My Requests" })).toBeVisible();
 
     diag.assertClean();
   });

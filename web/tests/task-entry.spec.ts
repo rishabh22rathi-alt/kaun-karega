@@ -5,6 +5,6 @@ test.describe('Task Entry Page', () => {
     await page.goto('http://localhost:3000/');
     
     // Check main CTA exists
-    await expect(page.locator('text=I NEED')).toBeVisible();
+    await expect(page.locator('text=Post a Request')).toBeVisible();
   });
 });

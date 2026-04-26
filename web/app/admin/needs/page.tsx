@@ -565,7 +565,7 @@ export default function AdminNeedsPage() {
   return (
     <div className="space-y-6">
       <div>
-        <p className="text-xs uppercase tracking-wide text-slate-500">I NEED</p>
+        <p className="text-xs uppercase tracking-wide text-slate-500">Post a Request</p>
         <h1 className="text-2xl font-semibold text-slate-900">Manage Needs</h1>
         <p className="text-sm text-slate-600">Monitor and control all user-posted needs.</p>
       </div>

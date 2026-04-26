@@ -313,7 +313,7 @@ function INeedPageInner() {
           <div className="flex flex-col gap-5 md:flex-row md:items-end md:justify-between">
             <div className="max-w-2xl">
               <h1 className="text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl">
-                I NEED
+                Post a Request
               </h1>
               <p className="mt-3 text-sm leading-6 text-slate-600 sm:text-base">
                 Post your need or browse what people nearby are looking for

@@ -12,6 +12,8 @@
 
 # testing
 /coverage
+test-results/
+**/test-results/
 
 # next.js
 /.next/
@@ -25,6 +27,7 @@
 *.pem
 
 # debug
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -39,3 +42,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+.vercel
+.env*.local

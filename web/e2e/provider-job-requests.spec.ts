@@ -424,7 +424,7 @@ async function runScenarioWithCleanup(
 }
 
 function jobRequestsHeading(page: Page): Locator {
-  return page.getByRole("heading", { name: "Job Requests", exact: true });
+  return page.getByRole("heading", { name: "Find Work", exact: true });
 }
 
 function taskCards(page: Page): Locator {

@@ -290,7 +290,7 @@ test.describe("My Requests — Full Audit", () => {
     await page.waitForLoadState("networkidle");
 
     // Use role=heading to avoid matching sidebar nav link (strict mode)
-    await expect(page.getByRole("heading", { name: "My Requests" })).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByRole("heading", { name: "Responses" })).toBeVisible({ timeout: 10_000 });
     // Raw TaskID not rendered; assert by displayLabel
     await expect(page.getByText(ZZ_DISPLAY_LABEL)).toBeVisible({ timeout: 10_000 });
   });

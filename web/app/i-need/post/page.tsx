@@ -528,7 +528,7 @@ export default function PostNeedPage() {
         {/* Header */}
         <div className="mb-6">
           <p className="text-xs font-semibold uppercase tracking-widest text-violet-500">
-            I NEED
+            Post a Request
           </p>
           <h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-900">
             Post Your Need

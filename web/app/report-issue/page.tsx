@@ -19,8 +19,8 @@ const ISSUE_TYPE_OPTIONS = [
 
 const ISSUE_PAGE_OPTIONS = [
   "Homepage",
-  "My Requests",
-  "Provider Dashboard",
+  "Responses",
+  "Dashboard",
   "Chat",
   "Login / OTP",
   "Sidebar / Navigation",

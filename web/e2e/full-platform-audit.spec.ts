@@ -774,7 +774,7 @@ test.describe("Kaun Karega - Full Platform Audit", () => {
 
     // 7. open My Requests
     await openUserRequests(page);
-    await expect(page.getByRole("heading", { name: "My Requests" })).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByRole("heading", { name: "Responses" })).toBeVisible({ timeout: 10_000 });
 
     // 8. verify the new task is visible there
     await expect(page.getByText(ZZ_DISPLAY_LABEL)).toBeVisible({ timeout: 10_000 });
@@ -869,7 +869,7 @@ test.describe("Kaun Karega - Full Platform Audit", () => {
 
     // user opens chat thread
     await openUserRequests(page);
-    await expect(page.getByRole("heading", { name: "My Requests" })).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByRole("heading", { name: "Responses" })).toBeVisible({ timeout: 10_000 });
     await expect(page.getByText(ZZ_DISPLAY_LABEL)).toBeVisible({ timeout: 10_000 });
 
     // open the same task created in Phase 1
@@ -955,7 +955,7 @@ test.describe("Kaun Karega - Full Platform Audit", () => {
 
     // 1. Re-open user dashboard
     await openUserRequests(page);
-    await expect(page.getByRole("heading", { name: "My Requests" })).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByRole("heading", { name: "Responses" })).toBeVisible({ timeout: 10_000 });
 
     // 2. Verify the original task is still visible
     await expect(page.getByText(ZZ_DISPLAY_LABEL)).toBeVisible({ timeout: 10_000 });
