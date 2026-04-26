@@ -116,6 +116,7 @@ export default function Sidebar() {
   const [myNeedsUnreadCount, setMyNeedsUnreadCount] = useState(0);
   const [isAdmin, setIsAdmin] = useState(false);
   const [iNeedOpen, setINeedOpen] = useState(false);
+  const [authHydrated, setAuthHydrated] = useState(false);
   const isLoggedIn = Boolean(session?.phone);
   const shouldHide = pathname?.startsWith("/admin");
 
@@ -125,6 +126,7 @@ export default function Sidebar() {
       if (detail?.type === "auth-updated") {
         setSession(getAuthSession());
         setIsAdmin(readAdminSession());
+        setAuthHydrated(true);
         return;
       }
       if (detail?.open === true) {
@@ -176,6 +178,7 @@ export default function Sidebar() {
   useEffect(() => {
     setSession(getAuthSession());
     setIsAdmin(readAdminSession());
+    setAuthHydrated(true);
   }, []);
 
   useEffect(() => {
@@ -546,8 +549,13 @@ export default function Sidebar() {
                         : "Not Verified"}
                   </span>
                 </>
+              ) : !authHydrated ? (
+                <div className="space-y-2 py-1" aria-label="Loading sidebar">
+                  <div className="h-3 w-28 rounded bg-white/20" />
+                  <div className="h-2.5 w-20 rounded bg-white/15" />
+                </div>
               ) : (
-                <p className="text-xs text-white/70">
+                <p className="min-h-[52px] text-xs text-white/70">
                   Hi!{" "}
                   <span className="font-semibold">
                     {formatPhone(session?.phone)}
@@ -587,6 +595,17 @@ export default function Sidebar() {
 
         <nav className="flex-1 overflow-hidden px-3 py-4 select-none">
           <div className="space-y-2">
+              {!authHydrated ? (
+                <div className="space-y-2" aria-label="Loading sidebar navigation">
+                  {[0, 1, 2, 3].map((item) => (
+                    <div
+                      key={item}
+                      className="h-9 rounded-lg bg-white/[0.10]"
+                    />
+                  ))}
+                </div>
+              ) : (
+              <>
               {navItems.map((item) => {
                 const active = pathname === item.href;
                 const isHome = item.label === "Home";
@@ -713,6 +732,8 @@ export default function Sidebar() {
                     <span className="text-sm whitespace-nowrap">Logout</span>
                   )}
                 </button>
+              )}
+              </>
               )}
           </div>
         </nav>

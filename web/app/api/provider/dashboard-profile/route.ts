@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthSession } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
+import { adminSupabase } from "@/lib/supabase/admin";
+import { getProviderByPhoneFromSupabase } from "@/lib/admin/adminProviderReads";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -697,13 +699,16 @@ export async function GET(request: NextRequest) {
 
   const handlerStart = perfMark();
   try {
-    const supabase = await createClient();
     const providerLookupStart = perfMark();
-    const { data: provider, error: providerError } = await supabase
-      .from("providers")
-      .select("*")
-      .eq("phone", normalizedPhone)
-      .maybeSingle();
+    const providerIdentity = await getProviderByPhoneFromSupabase(rawSessionPhone || normalizedPhone);
+    const { data: provider, error: providerError } =
+      providerIdentity.ok && providerIdentity.provider.ProviderID
+        ? await adminSupabase
+            .from("providers")
+            .select("*")
+            .eq("provider_id", providerIdentity.provider.ProviderID)
+            .maybeSingle()
+        : { data: null, error: null };
     perfLog("provider lookup", providerLookupStart);
 
     console.log("[provider/dashboard-profile] supabase provider response", {
@@ -741,6 +746,8 @@ export async function GET(request: NextRequest) {
         { status: 404 }
       );
     }
+
+    const supabase = await createClient();
 
     const matchedPhone = normalizePhone10(String(provider.phone || ""));
     if (matchedPhone !== normalizedPhone) {
