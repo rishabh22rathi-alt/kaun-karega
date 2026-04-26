@@ -602,8 +602,7 @@ export default function Sidebar() {
     </button>
   );
 
-  const showProviderSection =
-    providerExists === true || providerExists === false || isAdmin;
+  const showProviderSection = providerExists === true || providerExists === false;
 
   return (
     <>
@@ -749,13 +748,17 @@ export default function Sidebar() {
                       </>
                     ) : null}
                     {providerExists === false ? registerProviderButton : null}
-                    {isAdmin
-                      ? renderNavLink({
-                          label: "Admin Dashboard",
-                          href: "/admin/dashboard",
-                          icon: ShieldCheck,
-                        })
-                      : null}
+                  </>
+                ) : null}
+
+                {isAdmin ? (
+                  <>
+                    {renderSectionHeader("ADMIN")}
+                    {renderNavLink({
+                      label: "Admin Dashboard",
+                      href: "/admin/dashboard",
+                      icon: ShieldCheck,
+                    })}
                   </>
                 ) : null}
 
