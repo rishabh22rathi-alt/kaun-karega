@@ -89,8 +89,8 @@ function SummaryStrip({
         {total} {total === 1 ? "response" : "responses"}
       </span>
       {unread > 0 && (
-        <span className="inline-flex items-center gap-1 rounded-full border border-violet-100 bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700">
-          <span className="h-1.5 w-1.5 rounded-full bg-violet-500" />
+        <span className="inline-flex items-center gap-1 rounded-full border border-[#003d20]/15 bg-[#003d20]/5 px-3 py-1 text-xs font-semibold text-[#003d20]">
+          <span className="h-1.5 w-1.5 rounded-full bg-[#003d20]" />
           {unread} unread
         </span>
       )}
@@ -113,14 +113,14 @@ function ThreadCard({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-violet-100 text-xs font-bold text-violet-600">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#003d20]/10 text-xs font-bold text-[#003d20]">
               {thread.responderLabel.charAt(0)}
             </div>
             <span className="truncate text-sm font-semibold text-slate-800">
               {thread.responderLabel}
             </span>
             {thread.unreadCount > 0 && (
-              <span className="ml-auto shrink-0 rounded-full bg-violet-600 px-1.5 py-0.5 text-[10px] font-bold text-white">
+              <span className="ml-auto shrink-0 rounded-full bg-orange-500 px-1.5 py-0.5 text-[10px] font-bold text-white">
                 {thread.unreadCount}
               </span>
             )}
@@ -141,7 +141,7 @@ function ThreadCard({
       </div>
 
       <div className="mt-3 flex justify-end border-t border-slate-100 pt-3">
-        <span className="text-xs font-semibold text-violet-600 hover:text-violet-700">
+        <span className="text-xs font-semibold text-[#003d20] hover:text-[#003d20]/80">
           Open Conversation →
         </span>
       </div>
@@ -172,7 +172,7 @@ function LoadingState() {
   return (
     <div className="flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-6 py-14 text-center shadow-sm">
       <div>
-        <svg className="mx-auto h-6 w-6 animate-spin text-violet-400" fill="none" viewBox="0 0 24 24">
+        <svg className="mx-auto h-6 w-6 animate-spin text-[#003d20]" fill="none" viewBox="0 0 24 24">
           <circle
             className="opacity-25"
             cx="12"
@@ -317,7 +317,7 @@ export default function NeedResponsesPage() {
           </button>
 
           <div className="min-w-0">
-            <p className="text-xs font-semibold uppercase tracking-widest text-violet-500">
+            <p className="text-xs font-semibold uppercase tracking-widest text-[#003d20]">
               My Requests
             </p>
             <h1 className="mt-0.5 text-xl font-bold tracking-tight text-slate-900">

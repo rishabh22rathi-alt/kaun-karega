@@ -975,6 +975,12 @@ export async function GET(request: NextRequest) {
         // when the result is small. Keep this in sync with any future
         // pending-status filter changes elsewhere.
         //
+        // Includes "rejected" alongside "pending" so the dashboard can
+        // surface the most-recent admin rejection distinctly from the
+        // generic "Inactive" fallback. "approved" rows are intentionally
+        // excluded — those categories already appear in `categories` and
+        // resolve to Status="approved" via the active-categories lookup.
+        //
         // PERF NOTE: when the table grows past a few thousand rows, this
         // filter pair may sequentially scan without a composite index.
         // Recommended (not applied — DB schema change is gated):
@@ -982,9 +988,9 @@ export async function GET(request: NextRequest) {
         //     ON pending_category_requests (provider_id, status);
         const v = await adminSupabase
           .from("pending_category_requests")
-          .select("requested_category")
+          .select("requested_category, status, admin_action_at, admin_action_reason")
           .eq("provider_id", providerIdString)
-          .eq("status", "pending")
+          .in("status", ["pending", "rejected"])
           .limit(50);
         recordTiming("pending_category_requests_lookup", t);
         if (isDebugTiming) {
@@ -1132,15 +1138,39 @@ export async function GET(request: NextRequest) {
         .map((row) => String((row as { name?: unknown }).name || "").trim().toLowerCase())
         .filter(Boolean)
     );
-    const pendingCategoryKeys = new Set(
-      (pendingCategoryRequestsData || [])
-        .map((row) =>
-          String((row as { requested_category?: unknown }).requested_category || "")
-            .trim()
-            .toLowerCase()
-        )
-        .filter(Boolean)
-    );
+    type PendingCategoryRow = {
+      requested_category?: unknown;
+      status?: unknown;
+      admin_action_at?: unknown;
+      admin_action_reason?: unknown;
+    };
+    const pendingCategoryKeys = new Set<string>();
+    const rejectedCategoryKeys = new Set<string>();
+    const rejectedCategoryDetails = new Map<
+      string,
+      { reason: string; actionAt: string }
+    >();
+    for (const row of (pendingCategoryRequestsData || []) as PendingCategoryRow[]) {
+      const key = String(row.requested_category || "").trim().toLowerCase();
+      if (!key) continue;
+      const status = String(row.status || "").trim().toLowerCase();
+      if (status === "pending") {
+        pendingCategoryKeys.add(key);
+      } else if (status === "rejected") {
+        rejectedCategoryKeys.add(key);
+        const existing = rejectedCategoryDetails.get(key);
+        const actionAt = String(row.admin_action_at || "").trim();
+        if (
+          !existing ||
+          (Date.parse(actionAt) || 0) > (Date.parse(existing.actionAt) || 0)
+        ) {
+          rejectedCategoryDetails.set(key, {
+            reason: String(row.admin_action_reason || "").trim(),
+            actionAt,
+          });
+        }
+      }
+    }
 
     perfLog("handler total", handlerStart);
     recordTiming("handler_total", handlerStart);
@@ -1163,15 +1193,42 @@ export async function GET(request: NextRequest) {
           ? providerServices.map((item) => {
               const category = String(item.category || "");
               const key = category.trim().toLowerCase();
-              let Status: "approved" | "pending" | "inactive" = "approved";
+              let Status: "approved" | "pending" | "rejected" | "inactive" =
+                "approved";
               if (!serviceStatusLookupsFailed) {
-                if (!activeCategoryKeys.has(key)) {
-                  Status = pendingCategoryKeys.has(key) ? "pending" : "inactive";
+                if (activeCategoryKeys.has(key)) {
+                  Status = "approved";
+                } else if (pendingCategoryKeys.has(key)) {
+                  Status = "pending";
+                } else if (rejectedCategoryKeys.has(key)) {
+                  Status = "rejected";
+                } else {
+                  Status = "inactive";
                 }
               }
               return { Category: category, Status };
             })
           : [],
+        RejectedCategoryRequests: Array.from(rejectedCategoryDetails.entries())
+          .map(([key, detail]) => ({ Key: key, ...detail }))
+          // Surface only categories the provider hasn't already had
+          // re-approved or re-requested as pending (those will show up in
+          // the approved/pending sections instead). Match by lowercase
+          // key against the same active/pending sets used for Services.
+          .filter(({ Key }) => !activeCategoryKeys.has(Key) && !pendingCategoryKeys.has(Key))
+          .map((row) => {
+            const original = (
+              (pendingCategoryRequestsData || []) as PendingCategoryRow[]
+            ).find(
+              (r) =>
+                String(r.requested_category || "").trim().toLowerCase() === row.Key
+            );
+            return {
+              RequestedCategory: String(original?.requested_category || row.Key),
+              Reason: row.reason,
+              ActionAt: row.actionAt,
+            };
+          }),
         Areas: Array.isArray(providerAreas)
           ? providerAreas.map((item) => ({
               Area: String(item.area || ""),

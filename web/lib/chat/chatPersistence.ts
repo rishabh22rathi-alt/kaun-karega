@@ -371,6 +371,25 @@ async function countMessagesBySenderType(
   return Number(count || 0);
 }
 
+async function isProviderRespondedToTask(
+  taskId: string,
+  providerId: string
+): Promise<boolean> {
+  if (!taskId || !providerId) return false;
+
+  const { data, error } = await adminSupabase
+    .from("provider_task_matches")
+    .select("match_status")
+    .eq("task_id", taskId)
+    .eq("provider_id", providerId)
+    .maybeSingle();
+
+  if (error || !data) return false;
+
+  const status = String(data.match_status || "").toLowerCase();
+  return status === "responded" || status === "accepted";
+}
+
 async function logChatNotificationResult(params: {
   thread: ChatThreadRow;
   recipientPhone: string;
@@ -477,49 +496,26 @@ async function runChatNotificationSideEffects(
     return;
   }
 
-  // Only notify on the first qualifying user reply after provider engagement:
-  //   (1) provider has posted at least one message in this thread, and
-  //   (2) this is the first user message chronologically after the earliest provider message.
+  // Provider engagement is signalled either by an existing chat message OR
+  // by the provider having responded to the task (match_status='responded'
+  // or 'accepted'). The user-side notification fires once per thread on the
+  // first user message after engagement — capped by `userMessageCount !== 1`
+  // since the just-inserted message is included in the count.
   try {
     const providerMessageCount = await countMessagesBySenderType(threadId, "provider");
-    if (providerMessageCount < 1) {
+
+    const providerHasResponded = await isProviderRespondedToTask(
+      trimString(threadRow.task_id),
+      trimString(threadRow.provider_id)
+    );
+
+    if (providerMessageCount < 1 && !providerHasResponded) {
       return;
     }
 
-    const { data: earliestProviderRows, error: earliestError } = await adminSupabase
-      .from("chat_messages")
-      .select("created_at")
-      .eq("thread_id", threadId)
-      .eq("sender_type", "provider")
-      .order("created_at", { ascending: true })
-      .limit(1);
+    const userMessageCount = await countMessagesBySenderType(threadId, "user");
 
-    if (earliestError || !earliestProviderRows || earliestProviderRows.length === 0) {
-      return;
-    }
-
-    const earliestProviderAt = String(earliestProviderRows[0]?.created_at || "");
-    if (!earliestProviderAt) {
-      return;
-    }
-
-    const { count: userRepliesAfterCount, error: repliesCountError } = await adminSupabase
-      .from("chat_messages")
-      .select("message_id", { count: "exact", head: true })
-      .eq("thread_id", threadId)
-      .eq("sender_type", "user")
-      .gt("created_at", earliestProviderAt);
-
-    if (repliesCountError) {
-      console.warn("[chatPersistence] user reply count lookup failed", {
-        threadId,
-        taskId,
-        error: repliesCountError.message,
-      });
-      return;
-    }
-
-    if (Number(userRepliesAfterCount || 0) !== 1) {
+    if (userMessageCount !== 1) {
       return;
     }
   } catch (error) {

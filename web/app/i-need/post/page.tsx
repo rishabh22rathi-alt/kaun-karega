@@ -252,8 +252,8 @@ function Chip({
       onClick={onClick}
       className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition active:scale-95 ${
         selected
-          ? "border-violet-600 bg-violet-600 text-white shadow-sm"
-          : "border-slate-200 bg-white text-slate-600 hover:border-violet-300 hover:text-violet-700"
+          ? "border-[#003d20] bg-[#003d20] text-white shadow-sm"
+          : "border-slate-200 bg-white text-slate-600 hover:border-[#003d20] hover:text-[#003d20]"
       }`}
     >
       {label}
@@ -295,7 +295,7 @@ function ChipGroup({
           value={otherText}
           onChange={(e) => onOtherText(group.key, e.target.value)}
           placeholder={`Describe your ${group.label.toLowerCase()}...`}
-          className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-100"
+          className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 outline-none focus:border-[#003d20] focus:ring-2 focus:ring-[#003d20]/20"
         />
       )}
     </div>
@@ -307,7 +307,7 @@ function ChipGroup({
 function StepLabel({ n, label }: { n: number; label: string }) {
   return (
     <div className="mb-4 flex items-center gap-2">
-      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-violet-600 text-[10px] font-bold text-white">
+      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#003d20] text-[10px] font-bold text-white">
         {n}
       </span>
       <p className="text-sm font-semibold text-slate-800">{label}</p>
@@ -322,7 +322,8 @@ export default function PostNeedPage() {
 
   // ── Base fields (original — fed into existing submit payload) ──
   const [category, setCategory] = useState("");
-  const [area, setArea] = useState("");
+  const [selectedAreas, setSelectedAreas] = useState<string[]>([]);
+  const [areaError, setAreaError] = useState("");
   const [validity, setValidity] = useState("3");
   const [displayName, setDisplayName] = useState("");
   const [identityMode, setIdentityMode] = useState<"show-name" | "anonymous">("show-name");
@@ -342,6 +343,21 @@ export default function PostNeedPage() {
     // Reset dynamic state when category changes
     setDynamicSelections({});
     setDynamicOtherText({});
+  }
+
+  function handleAreaToggle(value: string) {
+    setSelectedAreas((prev) => {
+      if (prev.includes(value)) {
+        setAreaError("");
+        return prev.filter((a) => a !== value);
+      }
+      if (prev.length >= 5) {
+        setAreaError("You can select up to 5 areas only.");
+        return prev;
+      }
+      setAreaError("");
+      return [...prev, value];
+    });
   }
 
   function handleDynamicSelect(key: string, value: string) {
@@ -368,7 +384,7 @@ export default function PostNeedPage() {
   }
 
   function generateTitle(): string {
-    const areaLabel = area.trim();
+    const areaLabel = selectedAreas.join(", ");
 
     if (category === "Employer") {
       const workField = getSelectionLabel("work_field");
@@ -469,11 +485,21 @@ export default function PostNeedPage() {
       return;
     }
 
+    if (selectedAreas.length === 0) {
+      setAreaError("Please select at least 1 area.");
+      return;
+    }
+    if (selectedAreas.length > 5) {
+      setAreaError("You can select up to 5 areas only.");
+      return;
+    }
+
     const payload = {
       action: "create_need",
       UserPhone: userPhone,
       Category: category.trim(),
-      Area: area.trim(),
+      Area: selectedAreas.join(", "),
+      Areas: selectedAreas,
       Title: generateTitle(),
       Description: generateDescription(),
       ValidDays: Number(validity) || 3,
@@ -505,7 +531,8 @@ export default function PostNeedPage() {
       }
 
       setCategory("");
-      setArea("");
+      setSelectedAreas([]);
+      setAreaError("");
       setValidity("3");
       setDisplayName("");
       setIdentityMode("show-name");
@@ -527,11 +554,11 @@ export default function PostNeedPage() {
 
         {/* Header */}
         <div className="mb-6">
-          <p className="text-xs font-semibold uppercase tracking-widest text-violet-500">
-            Post a Request
+          <p className="text-xs font-semibold uppercase tracking-widest text-[#003d20]">
+            Jodhpur ko chahiye
           </p>
           <h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-900">
-            Post Your Need
+            📢 Post a Need
           </h1>
           <p className="mt-1 text-sm text-slate-500">
             Fill in a few quick details — done in under a minute.
@@ -556,27 +583,54 @@ export default function PostNeedPage() {
               ))}
             </div>
 
-            {/* Area */}
+            {/* Area (multi-select, max 5) */}
             <div className="mt-4">
-              <label
-                htmlFor="need-area"
-                className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500"
-              >
-                Area
-              </label>
-              <input
-                id="need-area"
-                list="i-need-post-area-options"
-                value={area}
-                onChange={(e) => setArea(e.target.value)}
-                placeholder="Type or select your area"
-                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-100"
-              />
-              <datalist id="i-need-post-area-options">
+              <div className="mb-1.5 flex items-baseline justify-between">
+                <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Areas
+                </label>
+                <span className="text-[11px] font-medium text-slate-400">
+                  {selectedAreas.length} of 5 selected
+                </span>
+              </div>
+
+              {selectedAreas.length > 0 && (
+                <div className="mb-2 flex flex-wrap gap-1.5">
+                  {selectedAreas.map((a) => (
+                    <span
+                      key={a}
+                      className="inline-flex items-center gap-1 rounded-full border border-[#003d20]/20 bg-[#003d20]/5 px-2.5 py-1 text-xs font-semibold text-[#003d20]"
+                    >
+                      {a}
+                      <button
+                        type="button"
+                        aria-label={`Remove ${a}`}
+                        onClick={() => handleAreaToggle(a)}
+                        className="-mr-0.5 inline-flex h-4 w-4 items-center justify-center rounded-full text-[#003d20] transition hover:bg-[#003d20]/10 hover:text-[#003d20]"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              <div className="flex flex-wrap gap-2">
                 {AREA_OPTIONS.map((opt) => (
-                  <option key={opt} value={opt} />
+                  <Chip
+                    key={opt}
+                    label={opt}
+                    selected={selectedAreas.includes(opt)}
+                    onClick={() => handleAreaToggle(opt)}
+                  />
                 ))}
-              </datalist>
+              </div>
+
+              {areaError && (
+                <p className="mt-2 text-xs font-medium text-rose-600">
+                  {areaError}
+                </p>
+              )}
             </div>
           </div>
 
@@ -600,7 +654,7 @@ export default function PostNeedPage() {
           )}
 
           {category === "Other" && (
-            <div className="rounded-2xl border border-violet-100 bg-violet-50 px-4 py-3 text-sm text-violet-700">
+            <div className="rounded-2xl border border-[#003d20]/15 bg-[#003d20]/5 px-4 py-3 text-sm text-[#003d20]">
               Pick the closest options you can. A short title will be generated automatically.
             </div>
           )}
@@ -654,7 +708,7 @@ export default function PostNeedPage() {
                   onClick={() => setIdentityMode("show-name")}
                   className={`flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition ${
                     !isAnonymous
-                      ? "bg-white text-violet-700 shadow-sm"
+                      ? "bg-white text-[#003d20] shadow-sm"
                       : "text-slate-500 hover:text-slate-700"
                   }`}
                 >
@@ -665,7 +719,7 @@ export default function PostNeedPage() {
                   onClick={() => setIdentityMode("anonymous")}
                   className={`flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition ${
                     isAnonymous
-                      ? "bg-white text-violet-700 shadow-sm"
+                      ? "bg-white text-[#003d20] shadow-sm"
                       : "text-slate-500 hover:text-slate-700"
                   }`}
                 >
@@ -680,7 +734,7 @@ export default function PostNeedPage() {
                   value={displayName}
                   onChange={(e) => setDisplayName(e.target.value)}
                   placeholder="e.g. Ramesh S."
-                  className="mt-3 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-100"
+                  className="mt-3 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 outline-none focus:border-[#003d20] focus:ring-2 focus:ring-[#003d20]/20"
                 />
               ) : (
                 <p className="mt-3 text-xs text-slate-400">
@@ -706,8 +760,8 @@ export default function PostNeedPage() {
           {/* ── Submit ── */}
           <button
             type="submit"
-            disabled={isSubmitting || !category || !area.trim()}
-            className="w-full rounded-xl bg-violet-600 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={isSubmitting || !category || selectedAreas.length === 0}
+            className="w-full rounded-xl bg-orange-500 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {isSubmitting ? "Posting..." : "Post Need"}
           </button>
@@ -716,4 +770,3 @@ export default function PostNeedPage() {
     </div>
   );
 }
-

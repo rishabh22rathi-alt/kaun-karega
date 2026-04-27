@@ -115,9 +115,13 @@ async function handle(req: Request) {
         : []
     );
 
-    const matchedProviderIds = [...serviceProviderIds]
+    const allMatchedProviderIds = [...serviceProviderIds]
       .filter((providerId) => areaProviderIds.has(providerId))
-      .slice(0, safeLimit);
+      .sort();
+
+    const matchedProviderIds = taskId
+      ? allMatchedProviderIds
+      : allMatchedProviderIds.slice(0, safeLimit);
 
     if (matchedProviderIds.length === 0) {
       return Response.json(
@@ -169,20 +173,26 @@ async function handle(req: Request) {
       const matchRows = providersList.map((provider) => ({
         task_id: taskId,
         provider_id: provider.ProviderID,
+        category,
+        area,
+        match_status: "matched",
       }));
-      try {
-        const { error: matchesError } = await supabase
-          .from("provider_task_matches")
-          .upsert(matchRows, { onConflict: "task_id,provider_id", ignoreDuplicates: true });
 
-        if (matchesError) {
-          console.warn(
-            "[find-provider] unable to store provider_task_matches",
-            matchesError.message || matchesError
-          );
-        }
-      } catch (error) {
-        console.warn("[find-provider] provider_task_matches insert failed", error);
+      const { error: matchesError } = await supabase
+        .from("provider_task_matches")
+        .upsert(matchRows, { onConflict: "task_id,provider_id" });
+
+      if (matchesError) {
+        return Response.json(
+          {
+            ok: false,
+            error: matchesError.message,
+            providers: providersList,
+            count: providersList.length,
+            usedFallback: false,
+          },
+          { status: 502 }
+        );
       }
     }
 

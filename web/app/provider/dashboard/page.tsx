@@ -115,10 +115,15 @@ type ProviderProfile = {
   Status?: string;
   Services?: {
     Category: string;
-    Status?: "approved" | "pending" | "inactive";
+    Status?: "approved" | "pending" | "rejected" | "inactive";
   }[];
   Areas?: { Area: string }[];
   AreaCoverage?: ProviderAreaCoverage;
+  RejectedCategoryRequests?: {
+    RequestedCategory: string;
+    Reason?: string;
+    ActionAt?: string;
+  }[];
   Analytics?: ProviderAnalytics;
 };
 
@@ -611,6 +616,21 @@ function ProviderDashboardInner() {
   const resolvedAreaRequests = useMemo(
     () => (Array.isArray(areaCoverage.ResolvedOutcomes) ? areaCoverage.ResolvedOutcomes : []),
     [areaCoverage]
+  );
+  const approvedServices = useMemo(
+    () => services.filter((s) => (s.Status ?? "approved") === "approved"),
+    [services]
+  );
+  const pendingServiceCategoryRequests = useMemo(
+    () => services.filter((s) => s.Status === "pending"),
+    [services]
+  );
+  const rejectedCategoryRequests = useMemo(
+    () =>
+      Array.isArray(profile?.RejectedCategoryRequests)
+        ? profile?.RejectedCategoryRequests ?? []
+        : [],
+    [profile]
   );
   const statusLabel = verified
     ? "Phone Verified"
@@ -1143,13 +1163,16 @@ function ProviderDashboardInner() {
                       className={
                         service.Status === "pending"
                           ? "rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700"
-                          : service.Status === "inactive"
-                            ? "rounded-full border border-gray-200 bg-gray-50 px-3 py-1 text-xs font-semibold text-gray-600"
-                            : "rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700"
+                          : service.Status === "rejected"
+                            ? "rounded-full border border-rose-200 bg-rose-50 px-3 py-1 text-xs font-semibold text-rose-700"
+                            : service.Status === "inactive"
+                              ? "rounded-full border border-gray-200 bg-gray-50 px-3 py-1 text-xs font-semibold text-gray-600"
+                              : "rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700"
                       }
                     >
                       {service.Category}
                       {service.Status === "pending" && " · Under Review"}
+                      {service.Status === "rejected" && " · Rejected"}
                       {service.Status === "inactive" && " · Inactive"}
                     </span>
                   ))
@@ -1163,10 +1186,10 @@ function ProviderDashboardInner() {
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
-                    Area Coverage
+                    Service Coverage
                   </h2>
                   <p className="mt-1 text-xs text-slate-500">
-                    Active areas are used for matching. Pending requests wait for admin review.
+                    Areas are auto-approved. New service categories require admin review.
                   </p>
                 </div>
                 <Link
@@ -1198,12 +1221,88 @@ function ProviderDashboardInner() {
                 </div>
 
                 <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
+                    Active Approved Service Categories ({approvedServices.length}/{MAX_SERVICES})
+                  </p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {approvedServices.length ? (
+                      approvedServices.map((service) => (
+                        <span
+                          key={service.Category}
+                          className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700"
+                        >
+                          {service.Category}
+                        </span>
+                      ))
+                    ) : (
+                      <p className="text-sm text-slate-500">
+                        No approved service categories yet.
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                <div>
                   <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">
-                    Pending Area Requests
+                    Pending Service Category Requests
                   </p>
                   <div className="mt-3 space-y-2">
-                    {pendingAreaRequests.length ? (
-                      pendingAreaRequests.map((item) => (
+                    {pendingServiceCategoryRequests.length ? (
+                      pendingServiceCategoryRequests.map((service) => (
+                        <div
+                          key={service.Category}
+                          className="rounded-2xl border border-amber-200 bg-amber-50/70 px-4 py-3"
+                        >
+                          <p className="text-sm font-semibold text-amber-900">
+                            {service.Category}
+                          </p>
+                          <p className="mt-1 text-xs text-amber-800">
+                            Waiting for admin review
+                          </p>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-sm text-slate-500">
+                        No pending category requests.
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                {rejectedCategoryRequests.length > 0 && (
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-rose-700">
+                      Rejected Service Category Requests
+                    </p>
+                    <div className="mt-3 space-y-2">
+                      {rejectedCategoryRequests.map((item) => (
+                        <div
+                          key={`${item.RequestedCategory}:${item.ActionAt || ""}`}
+                          className="rounded-2xl border border-rose-200 bg-rose-50/70 px-4 py-3"
+                        >
+                          <p className="text-sm font-semibold text-rose-900">
+                            {item.RequestedCategory}
+                          </p>
+                          <p className="mt-1 text-xs text-rose-800">
+                            Rejected by admin
+                            {item.ActionAt
+                              ? ` • ${formatDateTime(item.ActionAt)}`
+                              : ""}
+                            {item.Reason ? ` • Reason: ${item.Reason}` : ""}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {pendingAreaRequests.length > 0 && (
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">
+                      Pending Area Requests
+                    </p>
+                    <div className="mt-3 space-y-2">
+                      {pendingAreaRequests.map((item) => (
                         <div
                           key={`${item.RequestedArea}:${item.LastSeenAt || ""}`}
                           className="rounded-2xl border border-amber-200 bg-amber-50/70 px-4 py-3"
@@ -1214,20 +1313,18 @@ function ProviderDashboardInner() {
                             {item.LastSeenAt ? ` • Requested ${formatDateTime(item.LastSeenAt)}` : ""}
                           </p>
                         </div>
-                      ))
-                    ) : (
-                      <p className="text-sm text-slate-500">No pending area requests.</p>
-                    )}
+                      ))}
+                    </div>
                   </div>
-                </div>
+                )}
 
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-wide text-sky-700">
-                    Resolved Outcomes
-                  </p>
-                  <div className="mt-3 space-y-2">
-                    {resolvedAreaRequests.length ? (
-                      resolvedAreaRequests.map((item) => {
+                {resolvedAreaRequests.length > 0 && (
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-sky-700">
+                      Resolved Area Outcomes
+                    </p>
+                    <div className="mt-3 space-y-2">
+                      {resolvedAreaRequests.map((item) => {
                         const mapped =
                           String(item.Status || "").trim().toLowerCase() === "mapped";
                         return (
@@ -1248,12 +1345,10 @@ function ProviderDashboardInner() {
                             </p>
                           </div>
                         );
-                      })
-                    ) : (
-                      <p className="text-sm text-slate-500">No resolved area requests yet.</p>
-                    )}
+                      })}
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
             </div>
           </section>

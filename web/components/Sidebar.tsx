@@ -488,7 +488,7 @@ export default function Sidebar() {
         <span className="relative inline-flex shrink-0">
           <Icon className="h-4 w-4 text-white/90" />
           {isCollapsed && badgeVisible ? (
-            <span className="absolute -right-2 -top-2 inline-flex min-w-[18px] items-center justify-center rounded-full bg-violet-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
+            <span className="absolute -right-2 -top-2 inline-flex min-w-[18px] items-center justify-center rounded-full bg-orange-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
               {myNeedsBadgeLabel}
             </span>
           ) : null}
@@ -499,7 +499,7 @@ export default function Sidebar() {
           <>
             <span className="text-sm whitespace-nowrap">{label}</span>
             {badgeVisible ? (
-              <span className="ml-auto inline-flex min-w-[18px] items-center justify-center rounded-full bg-violet-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
+              <span className="ml-auto inline-flex min-w-[18px] items-center justify-center rounded-full bg-orange-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
                 {myNeedsBadgeLabel}
               </span>
             ) : null}
@@ -530,10 +530,10 @@ export default function Sidebar() {
       >
         <ListTodo className="h-4 w-4 shrink-0 text-white/90" />
         {isCollapsed ? (
-          <span className="sr-only">Post a Request</span>
+          <span className="sr-only">Jodhpur ko chahiye</span>
         ) : (
           <>
-            <span className="text-sm whitespace-nowrap">Post a Request</span>
+            <span className="text-sm whitespace-nowrap">Jodhpur ko chahiye</span>
             <ChevronRight
               className={`ml-auto h-3.5 w-3.5 transition-transform duration-200 ${
                 iNeedOpen ? "rotate-90 text-white" : "text-white/70"
@@ -714,14 +714,16 @@ export default function Sidebar() {
 
                 {renderSectionHeader("FOR YOUR NEEDS")}
                 {postARequestButton}
+
+                {renderSectionHeader("MY ACTIVITY")}
                 {renderNavLink({
-                  label: "My Requests",
+                  label: "My Posts",
                   href: "/i-need/my-needs",
                   icon: ClipboardList,
                   showBadge: true,
                 })}
                 {renderNavLink({
-                  label: "Responses",
+                  label: "My Responses",
                   href: "/dashboard/my-requests",
                   icon: ClipboardList,
                 })}
@@ -737,12 +739,7 @@ export default function Sidebar() {
                           icon: LayoutDashboard,
                         })}
                         {renderNavLink({
-                          label: "Find Work",
-                          href: "/provider/job-requests",
-                          icon: ListTodo,
-                        })}
-                        {renderNavLink({
-                          label: "My Work",
+                          label: "My Jobs",
                           href: "/provider/my-jobs",
                           icon: Briefcase,
                         })}

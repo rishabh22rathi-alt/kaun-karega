@@ -646,7 +646,10 @@ export async function POST(request: NextRequest) {
               const isHidden = need.is_hidden === true;
               const derivedStatus = getNeedCurrentStatus(need.status, need.expires_at, isHidden);
               const needCategory = String(need.category || "").trim().toLowerCase();
-              const needArea = String(need.area || "").trim().toLowerCase();
+              const needAreas = String(need.area || "")
+                .split(",")
+                .map((a) => a.trim().toLowerCase())
+                .filter(Boolean);
               const searchHaystack = [
                 String(need.need_id || "").trim(),
                 String(need.title || "").trim(),
@@ -671,7 +674,7 @@ export async function POST(request: NextRequest) {
               if (categoryFilter && needCategory !== categoryFilter) {
                 return false;
               }
-              if (areaFilter && needArea !== areaFilter) {
+              if (areaFilter && !needAreas.includes(areaFilter)) {
                 return false;
               }
               if (searchFilter && !searchHaystack.includes(searchFilter)) {
@@ -1251,7 +1254,15 @@ export async function POST(request: NextRequest) {
       );
       let displayName = String(body.DisplayName ?? body.displayName ?? "").trim();
       const category = String(body.Category ?? body.category ?? "").trim();
-      const area = String(body.Area ?? body.area ?? "").trim();
+      const rawAreasInput = body.Areas ?? body.areas ?? body.Area ?? body.area ?? "";
+      const areasList = (Array.isArray(rawAreasInput)
+        ? rawAreasInput.map((v) => String(v ?? ""))
+        : String(rawAreasInput).split(",")
+      )
+        .map((v) => v.trim())
+        .filter((v) => v.length > 0 && v.toLowerCase() !== "all areas")
+        .filter((v, i, arr) => arr.indexOf(v) === i);
+      const area = areasList.join(", ");
       const title = String(body.Title ?? body.title ?? "").trim();
       const description = String(body.Description ?? body.description ?? "").trim();
       const validDays = normalizeNeedValidDays(
@@ -1278,9 +1289,17 @@ export async function POST(request: NextRequest) {
           NextResponse.json({ ok: false, error: "Category required" }, { status: 400 })
         );
       }
-      if (!area) {
+      if (areasList.length === 0) {
         return withNoCache(
-          NextResponse.json({ ok: false, error: "Area required" }, { status: 400 })
+          NextResponse.json({ ok: false, error: "At least 1 area required" }, { status: 400 })
+        );
+      }
+      if (areasList.length > 5) {
+        return withNoCache(
+          NextResponse.json(
+            { ok: false, error: "You can select up to 5 areas only." },
+            { status: 400 }
+          )
         );
       }
       if (!title) {
@@ -1399,7 +1418,10 @@ export async function POST(request: NextRequest) {
               const status = String(need.status || "").trim().toLowerCase() || "open";
               const isHidden = need.is_hidden === true;
               const currentStatus = getNeedCurrentStatus(status, need.expires_at, isHidden);
-              const needArea = String(need.area || "").trim().toLowerCase();
+              const needAreas = String(need.area || "")
+                .split(",")
+                .map((a) => a.trim().toLowerCase())
+                .filter(Boolean);
               if (currentStatus !== "open") return false;
               if (
                 categoryFilter &&
@@ -1407,7 +1429,7 @@ export async function POST(request: NextRequest) {
               ) {
                 return false;
               }
-              if (areaFilter && needArea !== areaFilter) {
+              if (areaFilter && !needAreas.includes(areaFilter)) {
                 return false;
               }
               return true;

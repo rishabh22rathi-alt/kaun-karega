@@ -81,7 +81,7 @@ const CATEGORY_BADGE_STYLES: Record<string, string> = {
   Employee: "border-sky-100 bg-sky-50 text-sky-700",
   "Property Seller": "border-amber-100 bg-amber-50 text-amber-700",
   "Property Buyer": "border-orange-100 bg-orange-50 text-orange-700",
-  Landlord: "border-violet-100 bg-violet-50 text-violet-700",
+  Landlord: "border-[#003d20]/15 bg-[#003d20]/5 text-[#003d20]",
   Tenant: "border-fuchsia-100 bg-fuchsia-50 text-fuchsia-700",
   "Vehicle Seller": "border-rose-100 bg-rose-50 text-rose-700",
   "Vehicle Buyer": "border-cyan-100 bg-cyan-50 text-cyan-700",
@@ -228,7 +228,7 @@ function NeedCard({ need }: { need: NeedCardItem }) {
         </div>
         <Link
           href={`/i-need/respond/${encodeURIComponent(need.id)}`}
-          className="shrink-0 rounded-xl bg-violet-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-violet-700"
+          className="shrink-0 rounded-xl bg-orange-500 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-orange-600"
         >
           Respond
         </Link>
@@ -249,18 +249,28 @@ function NeedCard({ need }: { need: NeedCardItem }) {
 
 function EmptyState({ onClear }: { onClear: () => void }) {
   return (
-    <div className="rounded-3xl border border-dashed border-slate-300 bg-white px-6 py-14 text-center shadow-sm">
-      <h2 className="text-xl font-semibold text-slate-900">No needs found</h2>
+    <div className="rounded-3xl bg-white px-6 py-14 text-center shadow-sm shadow-slate-200/70">
+      <h2 className="text-xl font-semibold text-[#003d20]">
+        No one has posted yet
+      </h2>
       <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-500">
-        Try clearing your filters to browse more needs from nearby areas.
+        Be the first to tell what Jodhpur needs
       </p>
-      <button
-        type="button"
-        onClick={onClear}
-        className="mt-5 inline-flex rounded-xl border border-slate-200 bg-slate-50 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
-      >
-        Clear
-      </button>
+      <div className="mt-5 flex flex-col items-center justify-center gap-3 sm:flex-row">
+        <Link
+          href="/i-need/post"
+          className="inline-flex rounded-xl bg-orange-500 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-orange-600"
+        >
+          📢 Post a Need
+        </Link>
+        <button
+          type="button"
+          onClick={onClear}
+          className="inline-flex rounded-xl border border-[#003d20] bg-white px-5 py-2.5 text-sm font-semibold text-[#003d20] transition hover:bg-[#003d20]/5"
+        >
+          Clear
+        </button>
+      </div>
     </div>
   );
 }
@@ -309,36 +319,36 @@ function INeedPageInner() {
   return (
     <div className="min-h-screen bg-slate-50">
       <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
-        <section className="rounded-3xl border border-slate-200 bg-white px-6 py-8 shadow-sm shadow-slate-200/60 sm:px-8">
+        <section className="rounded-3xl bg-white px-6 py-8 shadow-sm shadow-slate-200/70 sm:px-8">
           <div className="flex flex-col gap-5 md:flex-row md:items-end md:justify-between">
             <div className="max-w-2xl">
-              <h1 className="text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl">
-                Post a Request
+              <h1 className="text-3xl font-bold tracking-tight text-[#003d20] sm:text-4xl">
+                Jodhpur ko chahiye
               </h1>
               <p className="mt-3 text-sm leading-6 text-slate-600 sm:text-base">
-                Post your need or browse what people nearby are looking for
+                Jodhpur ko kya chahiye? Dekhiye aur madad karein.
               </p>
             </div>
 
             <Link
               href="/i-need/post"
-              className="inline-flex w-full items-center justify-center rounded-2xl bg-violet-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-violet-700 md:w-auto"
+              className="inline-flex w-full items-center justify-center rounded-2xl bg-orange-500 px-5 py-3 text-sm font-semibold text-white transition hover:bg-orange-600 md:w-auto"
             >
-              Post Your Need
+              📢 Post a Need
             </Link>
           </div>
         </section>
 
-        <section className="mt-6 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm shadow-slate-200/60 sm:p-5">
+        <section className="mt-6 rounded-3xl bg-slate-50 p-4 shadow-sm shadow-slate-200/70 sm:p-5">
           <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto_auto] md:items-end">
             <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700">
+              <label className="mb-2 block text-xs font-medium uppercase tracking-wide text-slate-500">
                 Category
               </label>
               <select
                 value={selectedCategory}
                 onChange={(event) => setSelectedCategory(event.target.value)}
-                className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-800 outline-none transition focus:border-violet-400 focus:ring-2 focus:ring-violet-100"
+                className="w-full rounded-2xl border border-transparent bg-white px-4 py-3 text-sm text-slate-800 outline-none shadow-sm transition focus:border-[#003d20] focus:ring-2 focus:ring-[#003d20]/20"
               >
                 {CATEGORY_OPTIONS.map((option) => (
                   <option key={option} value={option}>
@@ -349,7 +359,7 @@ function INeedPageInner() {
             </div>
 
             <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700">
+              <label className="mb-2 block text-xs font-medium uppercase tracking-wide text-slate-500">
                 Area
               </label>
               <input
@@ -357,7 +367,7 @@ function INeedPageInner() {
                 value={selectedArea}
                 onChange={(event) => setSelectedArea(event.target.value)}
                 placeholder="Type or choose an area"
-                className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-800 outline-none transition focus:border-violet-400 focus:ring-2 focus:ring-violet-100"
+                className="w-full rounded-2xl border border-transparent bg-white px-4 py-3 text-sm text-slate-800 outline-none shadow-sm transition focus:border-[#003d20] focus:ring-2 focus:ring-[#003d20]/20"
               />
               <datalist id="i-need-listing-area-options">
                 {AREA_OPTIONS.map((option) => (
@@ -369,7 +379,7 @@ function INeedPageInner() {
             <button
               type="button"
               onClick={handleApplyFilters}
-              className="rounded-2xl bg-violet-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-violet-700"
+              className="rounded-2xl bg-orange-500 px-5 py-3 text-sm font-semibold text-white transition hover:bg-orange-600"
             >
               Apply Filters
             </button>
@@ -377,7 +387,7 @@ function INeedPageInner() {
             <button
               type="button"
               onClick={handleClearFilters}
-              className="rounded-2xl border border-slate-200 bg-white px-5 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+              className="rounded-2xl border border-[#003d20] bg-white px-5 py-3 text-sm font-medium text-[#003d20] transition hover:bg-[#003d20]/5"
             >
               Clear
             </button>

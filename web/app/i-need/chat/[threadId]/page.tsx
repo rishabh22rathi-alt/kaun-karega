@@ -84,7 +84,7 @@ function MessageBubble({ message }: { message: Message }) {
         <div
           className={`rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${
             isPoster
-              ? "rounded-br-sm bg-violet-600 text-white"
+              ? "rounded-br-sm bg-[#003d20] text-white"
               : "rounded-bl-sm border border-slate-200 bg-white text-slate-800"
           }`}
         >
@@ -100,7 +100,7 @@ function LoadingState() {
   return (
     <div className="flex flex-1 items-center justify-center">
       <div className="text-center">
-        <svg className="mx-auto h-6 w-6 animate-spin text-violet-400" fill="none" viewBox="0 0 24 24">
+        <svg className="mx-auto h-6 w-6 animate-spin text-[#003d20]" fill="none" viewBox="0 0 24 24">
           <circle
             className="opacity-25"
             cx="12"
@@ -394,7 +394,7 @@ export default function NeedChatPage() {
                 onKeyDown={handleKeyDown}
                 placeholder="Type a message..."
                 disabled={isSending}
-                className="flex-1 resize-none rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 focus:border-violet-400 focus:outline-none focus:ring-2 focus:ring-violet-100 disabled:opacity-50"
+                className="flex-1 resize-none rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 focus:border-[#003d20] focus:outline-none focus:ring-2 focus:ring-[#003d20]/20 disabled:opacity-50"
                 style={{ maxHeight: "7rem" }}
               />
               <button
@@ -402,7 +402,7 @@ export default function NeedChatPage() {
                 onClick={() => void handleSend()}
                 disabled={!draft.trim() || isSending}
                 aria-label="Send message"
-                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-violet-600 text-white transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-40"
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-orange-500 text-white transition hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <svg
                   className="h-4 w-4 translate-x-px"

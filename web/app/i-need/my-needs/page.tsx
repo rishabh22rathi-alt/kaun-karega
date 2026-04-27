@@ -237,7 +237,7 @@ function NeedManagementCard({
           {need.area}
         </span>
         {need.isAnonymous && (
-          <span className="inline-flex items-center rounded-full border border-violet-100 bg-violet-50 px-2.5 py-0.5 text-xs font-medium text-violet-600">
+          <span className="inline-flex items-center rounded-full border border-[#003d20]/15 bg-[#003d20]/5 px-2.5 py-0.5 text-xs font-medium text-[#003d20]">
             Anonymous
           </span>
         )}
@@ -307,7 +307,7 @@ function EmptyState() {
       </p>
       <Link
         href="/i-need/post"
-        className="mt-5 inline-flex rounded-xl bg-violet-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-violet-700"
+        className="mt-5 inline-flex rounded-xl bg-orange-500 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-orange-600"
       >
         Post Your First Need
       </Link>
@@ -460,8 +460,8 @@ export default function MyNeedsPage() {
     <div className="min-h-screen bg-slate-50">
       <div className="mx-auto max-w-3xl px-4 pb-16 pt-8">
         <div className="mb-6">
-          <p className="text-xs font-semibold uppercase tracking-widest text-violet-500">
-            Post a Request
+          <p className="text-xs font-semibold uppercase tracking-widest text-[#003d20]">
+            Jodhpur ko chahiye
           </p>
           <h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-900">
             My Requests
@@ -483,7 +483,7 @@ export default function MyNeedsPage() {
               onClick={() => setActiveTab(tab.value)}
               className={`shrink-0 rounded-xl px-3 py-1.5 text-xs font-semibold transition ${
                 activeTab === tab.value
-                  ? "bg-violet-600 text-white shadow-sm"
+                  ? "bg-[#003d20] text-white shadow-sm"
                   : "text-slate-500 hover:text-slate-800"
               }`}
             >
@@ -534,7 +534,7 @@ export default function MyNeedsPage() {
           <div className="mt-8 flex justify-center">
             <Link
               href="/i-need/post"
-              className="inline-flex items-center gap-2 rounded-xl border border-violet-200 bg-white px-5 py-2.5 text-sm font-semibold text-violet-600 shadow-sm transition hover:bg-violet-50"
+              className="inline-flex items-center gap-2 rounded-xl border border-[#003d20] bg-white px-5 py-2.5 text-sm font-semibold text-[#003d20] shadow-sm transition hover:bg-[#003d20]/5"
             >
               <svg
                 className="h-4 w-4"
