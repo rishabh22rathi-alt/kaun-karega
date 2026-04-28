@@ -17,6 +17,9 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Kaun Karega",
   description: "Find trusted local service providers for any work. Post your task and get connected instantly.",
+  verification: {
+    google: "cby0V9TmJBPIdjWBLuxJhXeOG9QWsKYfMJtddlnuFy0",
+  },
 };
 
 export default function RootLayout({
