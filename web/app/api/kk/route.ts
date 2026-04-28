@@ -1106,14 +1106,15 @@ export async function POST(request: NextRequest) {
       }
       return withNoCache(NextResponse.json({ ok: true }));
     }
-    if (action === "close_request") {
+    if (action === "close_request" || action === "admin_close_request") {
       const taskId = typeof body.taskId === "string" ? body.taskId.trim() : "";
       if (!taskId) {
         return withNoCache(
           NextResponse.json({ ok: false, error: "Missing required field: taskId" }, { status: 400 })
         );
       }
-      const result = await closeTask(taskId);
+      const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+      const result = await closeTask(taskId, "admin", reason || undefined);
       if (!result.ok) {
         return withNoCache(NextResponse.json({ ok: false, error: result.error }, { status: 500 }));
       }

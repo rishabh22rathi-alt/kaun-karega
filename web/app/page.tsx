@@ -450,10 +450,12 @@ function PageContent() {
     const fetchCategories = async () => {
       try {
         const res = await fetch("/api/categories");
+        console.log("CATEGORIES RAW RESPONSE:", res);
         if (!res.ok) {
           throw new Error("Failed to fetch categories");
         }
         const data = await res.json();
+        console.log("CATEGORIES API RESPONSE:", data);
         const categoriesRaw = Array.isArray(data)
           ? data
           : Array.isArray(data?.categories)
@@ -471,6 +473,7 @@ function PageContent() {
               const name =
                 (typeof record.name === "string" && record.name) ||
                 (typeof record.label === "string" && record.label) ||
+                (typeof record.title === "string" && record.title) ||
                 (typeof record.category === "string" && record.category) ||
                 (typeof record.category_name === "string" &&
                   record.category_name) ||
@@ -540,18 +543,21 @@ function PageContent() {
     return "";
   }, [normalizedServiceDate, serviceDate, time, todayDate]);
 
+  const isActiveCategory = (active: unknown): boolean => {
+    if (active === undefined || active === null) return true;
+    if (typeof active === "boolean") return active;
+    const normalized = String(active).toLowerCase().trim();
+    return (
+      normalized === "yes" ||
+      normalized === "true" ||
+      normalized === "active" ||
+      normalized === "1"
+    );
+  };
+
   const activeCategories = useMemo(() => {
     return categoryList
-      .filter((item) => {
-        if (item.active === undefined) return true;
-        if (typeof item.active === "boolean") return item.active;
-        const normalizedActive = item.active.toLowerCase();
-        return (
-          normalizedActive === "yes" ||
-          normalizedActive === "true" ||
-          normalizedActive === "active"
-        );
-      })
+      .filter((item) => isActiveCategory(item.active))
       .map((item) => ({
         originalName: item.name,
         normName: normalizeCategory(item.name),
@@ -563,23 +569,26 @@ function PageContent() {
     [category, activeCategories]
   );
 
+  // Single source of truth for what to *display* and *submit* as the category.
+  // If the input fuzzy-resolves to a known active category, prefer the resolved
+  // name; otherwise fall back to the raw user input. The chip and the submit
+  // payload both read from this — no UI / backend mismatch.
+  const displayCategory = useMemo(() => {
+    if (categoryResolution.isConfident && categoryResolution.resolvedName) {
+      return categoryResolution.resolvedName;
+    }
+    return category;
+  }, [categoryResolution, category]);
+
   const filteredCategories = useMemo(() => {
     const query = category.trim().toLowerCase();
     if (!query) return [];
-    const candidates = categoryList.filter((item) => {
-      if (item.active === undefined) return true;
-      if (typeof item.active === "boolean") return item.active;
-      const normalizedActive = item.active.toLowerCase();
-      return (
-        normalizedActive === "yes" ||
-        normalizedActive === "true" ||
-        normalizedActive === "active"
-      );
-    });
+    const candidates = categoryList.filter((item) => isActiveCategory(item.active));
 
     const results = candidates
       .map((item) => {
         const name = item.name;
+        if (typeof name !== "string" || !name) return null;
         const lower = name.toLowerCase();
         const startsWith = lower.startsWith(query);
         const includes = lower.includes(query);
@@ -604,6 +613,11 @@ function PageContent() {
 
     return results;
   }, [category, categoryList]);
+
+  // TEMP debug: surface what the dropdown will render. Remove once verified.
+  useEffect(() => {
+    console.log("FILTERED RESULTS:", filteredCategories);
+  }, [filteredCategories]);
 
   const showSuggestions =
     isCategoryFocused &&
@@ -633,6 +647,17 @@ function PageContent() {
     event: React.KeyboardEvent<HTMLInputElement>
   ) => {
     if (!showSuggestions) {
+      // No dropdown match → don't trap the user. Pressing Enter commits the
+      // raw input as the chosen category; downstream resolution will route it
+      // to the admin-review path automatically.
+      if (event.key === "Enter") {
+        event.preventDefault();
+        const trimmed = category.trim();
+        if (trimmed) {
+          selectCategory(trimmed);
+        }
+        return;
+      }
       if (event.key === "Escape") {
         setIsCategoryFocused(false);
       }
@@ -770,6 +795,8 @@ const submitResolvedRequest = async (resolution: CategoryResolution) => {
   }
   if (!resolution.isConfident) {
     try {
+      // TEMP debug: confirm the raw input is what gets queued for admin review.
+      console.log("FINAL CATEGORY SENT:", category, "(approval path — rawCategoryInput)");
       const res = await fetch("/api/submit-approval-request", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -778,6 +805,7 @@ const submitResolvedRequest = async (resolution: CategoryResolution) => {
           bestMatch: resolution.bestMatch || "",
           confidence: resolution.confidence,
           area: normalizedArea,
+          time,
           serviceDate: normalizedServiceDate,
           timeSlot,
           details: cleanDetails,
@@ -785,11 +813,24 @@ const submitResolvedRequest = async (resolution: CategoryResolution) => {
         }),
       });
 
-      if (!res.ok) {
-        throw new Error("Failed to submit approval request");
+      const rawApproval = await res.text();
+      let approvalJson: any = null;
+      try {
+        approvalJson = JSON.parse(rawApproval);
+      } catch {}
+
+      if (!res.ok || !approvalJson?.ok) {
+        throw new Error(
+          approvalJson?.message ||
+            approvalJson?.error ||
+            "Failed to submit approval request"
+        );
       }
 
-      const refId = `REQ-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
+      const refId =
+        (typeof approvalJson?.displayId === "string" && approvalJson.displayId.trim()) ||
+        (typeof approvalJson?.taskId === "string" && approvalJson.taskId.trim()) ||
+        `REQ-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
       const params = new URLSearchParams();
       params.set("status", "under_review");
       params.set("ref", refId);
@@ -834,6 +875,8 @@ const submitResolvedRequest = async (resolution: CategoryResolution) => {
         timeSlot: payload.timeSlot,
         detailsLength: payload.details.length,
       });
+      // TEMP debug: prove the resolved category (not the raw input) is on the wire.
+      console.log("FINAL CATEGORY SENT:", payload.category);
     const res = await fetch("/api/submit-request", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1178,6 +1221,17 @@ const hasArea = area.trim() !== "";
                   </span>
                 </p>
               )}
+
+              {/* Unknown-service hint: only when input has no fuzzy match AND
+                  no dropdown matches either. Keeps the user unblocked and
+                  sets expectations about the admin-review path. */}
+              {category.trim().length > 0 &&
+                !categoryResolution.isConfident &&
+                filteredCategories.length === 0 && (
+                  <p className="mt-2 text-left text-xs text-amber-700">
+                    New service — will be reviewed by admin
+                  </p>
+                )}
             </div>
 
             {/* Trust strip */}
@@ -1234,7 +1288,7 @@ const hasArea = area.trim() !== "";
               Service:
             </span>
             <span className="rounded-full bg-[#003d20] px-3 py-0.5 text-xs font-bold text-white">
-              {category}
+              {displayCategory}
             </span>
             <button
               type="button"

@@ -11,6 +11,7 @@ type DashboardStats = {
   verifiedProviders: number;
   pendingAdminApprovals: number;
   pendingCategoryRequests: number;
+  registeredUsers: number;
 };
 
 type CategoryApplication = {
@@ -19,6 +20,7 @@ type CategoryApplication = {
   ProviderName: string;
   Phone: string;
   RequestedCategory: string;
+  Area?: string;
   Status: string;
   CreatedAt: string;
   AdminActionBy?: string;
@@ -248,7 +250,73 @@ type AdminIssueReportsResponse = {
   error?: string;
 };
 
+type MonitorLight = "green" | "yellow" | "red" | "gray";
+
+type MonitorTask = {
+  taskId: string;
+  displayId: string;
+  category: string;
+  area: string;
+  userPhone: string;
+  createdAt: string;
+  currentStatus: string;
+  lights: {
+    taskPosted: MonitorLight;
+    providersMatched: MonitorLight;
+    providersNotified: MonitorLight;
+    providerResponded: MonitorLight;
+    userResponded: MonitorLight;
+    closed: MonitorLight;
+  };
+  auditTrail?: {
+    closedBy?: string | null;
+    closeReason?: string | null;
+    closedAt?: string | null;
+  };
+};
+
+type MonitorResponse = {
+  ok?: boolean;
+  tasks?: MonitorTask[];
+  error?: string;
+};
+
 type ActionState = Record<string, boolean>;
+
+function monitorLightClass(light: MonitorLight): string {
+  switch (light) {
+    case "green":
+      return "bg-emerald-500 ring-emerald-200";
+    case "yellow":
+      return "bg-amber-400 ring-amber-200";
+    case "red":
+      return "bg-red-500 ring-red-200";
+    default:
+      return "bg-slate-300 ring-slate-200";
+  }
+}
+
+function monitorLightLabel(light: MonitorLight): string {
+  switch (light) {
+    case "green":
+      return "OK";
+    case "yellow":
+      return "Pending";
+    case "red":
+      return "Stuck / failed";
+    default:
+      return "Not yet";
+  }
+}
+
+function MonitorDot({ light, title }: { light: MonitorLight; title: string }) {
+  return (
+    <span
+      title={`${title}: ${monitorLightLabel(light)}`}
+      className={`inline-block h-3 w-3 rounded-full ring-2 ${monitorLightClass(light)}`}
+    />
+  );
+}
 
 type DashboardSectionKey =
   | "pendingCategoryRequests"
@@ -354,6 +422,7 @@ export default function AdminDashboardPage() {
     verifiedProviders: 0,
     pendingAdminApprovals: 0,
     pendingCategoryRequests: 0,
+    registeredUsers: 0,
   });
   const [providers, setProviders] = useState<AdminProvider[]>([]);
   const [categoryApplications, setCategoryApplications] = useState<
@@ -368,6 +437,9 @@ export default function AdminDashboardPage() {
   const [selectedChatMessages, setSelectedChatMessages] = useState<AdminChatMessage[]>([]);
   const [notificationLogs, setNotificationLogs] = useState<NotificationLog[]>([]);
   const [issueReports, setIssueReports] = useState<IssueReport[]>([]);
+  const [monitorTasks, setMonitorTasks] = useState<MonitorTask[]>([]);
+  const [monitorError, setMonitorError] = useState("");
+  const [autoCloseRunning, setAutoCloseRunning] = useState(false);
   const [selectedTaskNotificationSummary, setSelectedTaskNotificationSummary] =
     useState<NotificationSummary | null>(null);
   const [loading, setLoading] = useState(true);
@@ -620,22 +692,45 @@ export default function AdminDashboardPage() {
     return request.Deadline ? formatDateTime(request.Deadline) : "-";
   };
 
-  const recalculateStats = (
-    nextProviders: AdminProvider[],
-    nextCategoryApplications: CategoryApplication[]
-  ) => {
-    setStats({
-      totalProviders: nextProviders.length,
-      verifiedProviders: nextProviders.filter(
-        (provider) => String(provider.Verified).trim().toLowerCase() === "yes"
-      ).length,
-      pendingAdminApprovals: nextProviders.filter(
-        (provider) => String(provider.PendingApproval).trim().toLowerCase() === "yes"
-      ).length,
-      pendingCategoryRequests: nextCategoryApplications.filter(
-        (item) => String(item.Status).trim().toLowerCase() === "pending"
-      ).length,
-    });
+  // recalculateStats removed: it derived counts from the local `providers`
+  // array, which is implicitly capped at 1000 rows by Supabase's default
+  // range. After provider mutations we now refetch from the backend via
+  // fetchDashboard(), which uses dedicated head:true count queries.
+
+  const handleAutoCloseTasks = async () => {
+    if (autoCloseRunning) return;
+    setAutoCloseRunning(true);
+    clearFeedback();
+    try {
+      const res = await fetch("/api/admin/auto-close-tasks", {
+        method: "POST",
+        cache: "no-store",
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        closedCount?: number;
+        closedTaskIds?: string[];
+        error?: string;
+      };
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || `Auto-close failed (HTTP ${res.status})`);
+      }
+      const count = Number(data.closedCount || 0);
+      showFeedback(
+        "success",
+        `Closed ${count} expired task${count === 1 ? "" : "s"}.`
+      );
+      // Refresh stats + Kaam Traffic Monitor preview from the backend so
+      // counts and lifecycle lights reflect the new closures.
+      await fetchDashboard();
+    } catch (err) {
+      showFeedback(
+        "error",
+        err instanceof Error ? err.message : "Auto-close failed"
+      );
+    } finally {
+      setAutoCloseRunning(false);
+    }
   };
 
   const fetchNotificationSummary = async (taskId: string) => {
@@ -667,7 +762,7 @@ export default function AdminDashboardPage() {
       // Critical fetches — failure here blocks the entire dashboard (correct behaviour).
       // Non-critical fetches — .catch(() => null) prevents a network-level rejection from
       // propagating into Promise.all and killing the page for a secondary data source.
-      const [dashboardRes, requestsRes, areaMappingsRes, unmappedAreasRes, chatThreadsRes, issueReportsRes] =
+      const [dashboardRes, requestsRes, areaMappingsRes, unmappedAreasRes, chatThreadsRes, issueReportsRes, monitorRes] =
         await Promise.all([
         fetch("/api/admin/stats", { cache: "no-store" }),
         fetch("/api/kk", {
@@ -695,28 +790,42 @@ export default function AdminDashboardPage() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ action: "admin_get_issue_reports" }),
         }).catch(() => null),
+        fetch("/api/admin/task-monitor", { cache: "no-store" }).catch(() => null),
       ]);
       const data = (await dashboardRes.json()) as AdminDashboardResponse;
+      console.log("ADMIN STATS RESPONSE:", data);
+
       const requestsData = (await requestsRes.json()) as AdminRequestsResponse;
-      if (!dashboardRes.ok || !data.ok) {
-        throw new Error(data.error || "Failed to load admin dashboard");
-      }
-      if (!requestsRes.ok || !requestsData.ok) {
-        throw new Error(requestsData.error || "Failed to load admin requests");
+
+      // Apply /api/admin/stats independently of the parallel requests fetch.
+      // A failure on get_admin_requests must NOT block the dashboard cards
+      // from rendering real data returned by /api/admin/stats.
+      if (dashboardRes.ok && data.ok) {
+        setStats({
+          totalProviders: Number(data.stats?.totalProviders || 0),
+          verifiedProviders: Number(data.stats?.verifiedProviders || 0),
+          pendingAdminApprovals: Number(data.stats?.pendingAdminApprovals || 0),
+          pendingCategoryRequests: Number(data.stats?.pendingCategoryRequests || 0),
+          registeredUsers: Number(data.stats?.registeredUsers || 0),
+        });
+        setProviders(Array.isArray(data.providers) ? data.providers : []);
+        setCategoryApplications(
+          Array.isArray(data.categoryApplications) ? data.categoryApplications : []
+        );
+        setCategories(sortCategories(Array.isArray(data.categories) ? data.categories : []));
+      } else {
+        console.error("Admin stats failed", data.error);
+        setError(data.error || "Failed to load admin dashboard");
       }
 
-      setStats({
-        totalProviders: Number(data.stats?.totalProviders || 0),
-        verifiedProviders: Number(data.stats?.verifiedProviders || 0),
-        pendingAdminApprovals: Number(data.stats?.pendingAdminApprovals || 0),
-        pendingCategoryRequests: Number(data.stats?.pendingCategoryRequests || 0),
-      });
-      setProviders(Array.isArray(data.providers) ? data.providers : []);
-      setCategoryApplications(
-        Array.isArray(data.categoryApplications) ? data.categoryApplications : []
-      );
-      setCategories(sortCategories(Array.isArray(data.categories) ? data.categories : []));
-      setRequests(sortRequests(Array.isArray(requestsData.requests) ? requestsData.requests : []));
+      // Apply admin requests independently — log + skip on failure rather
+      // than aborting the whole dashboard fetch (which would prevent the
+      // cards above from being shown).
+      if (requestsRes.ok && requestsData.ok) {
+        setRequests(sortRequests(Array.isArray(requestsData.requests) ? requestsData.requests : []));
+      } else {
+        console.error("Admin requests failed", requestsData.error);
+      }
 
       // Area mappings: non-fatal. Network error resolves to null; bad HTTP response treated as empty.
       const areaMappingsData: AdminAreaMappingsResponse =
@@ -741,12 +850,64 @@ export default function AdminDashboardPage() {
       setIssueReports(
         sortIssueReports(Array.isArray(issueReportsData.reports) ? issueReportsData.reports : [])
       );
+
+      // Kaam Traffic Monitor preview — non-fatal. Failure shows a small
+      // amber notice in its own card; the rest of the dashboard is unaffected.
+      if (monitorRes?.ok) {
+        const monitorData = (await monitorRes
+          .json()
+          .catch(() => ({}))) as MonitorResponse;
+        if (monitorData.ok && Array.isArray(monitorData.tasks)) {
+          setMonitorTasks(monitorData.tasks.slice(0, 10));
+          setMonitorError("");
+        } else {
+          setMonitorTasks([]);
+          setMonitorError(monitorData.error || "Failed to load Kaam traffic");
+        }
+      } else {
+        setMonitorTasks([]);
+        setMonitorError(
+          monitorRes ? `Kaam traffic monitor unavailable (HTTP ${monitorRes.status})` : "Kaam traffic monitor unavailable"
+        );
+      }
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Failed to load admin dashboard"
       );
     } finally {
       setLoading(false);
+    }
+
+    // Pending category requests: fully independent of the primary dashboard
+    // fetch — a 500 on /api/admin/stats must NOT prevent this panel from
+    // loading (it has its own dedicated endpoint that bypasses the stats
+    // roll-up). Runs after the main try so it always overwrites whatever
+    // categoryApplications the stats path produced.
+    try {
+      const pendingRes = await fetch(
+        "/api/admin/pending-category-requests",
+        { cache: "no-store" }
+      );
+      if (pendingRes.ok) {
+        const pendingData = (await pendingRes.json()) as {
+          ok?: boolean;
+          categoryApplications?: CategoryApplication[];
+        };
+        console.log("PENDING CATEGORY API RESPONSE:", pendingData);
+        if (pendingData?.ok) {
+          setCategoryApplications(pendingData.categoryApplications || []);
+        }
+      } else {
+        console.warn(
+          "[admin dashboard] pending-category-requests HTTP error",
+          pendingRes.status
+        );
+      }
+    } catch (pendingErr) {
+      console.warn(
+        "[admin dashboard] pending-category-requests fetch threw",
+        pendingErr
+      );
     }
 
     // Notification logs are non-blocking: a failure here degrades only that panel.
@@ -915,12 +1076,53 @@ export default function AdminDashboardPage() {
     };
   }, []);
 
-  const cards = [
-    { title: "Total Providers", value: stats.totalProviders },
-    { title: "Verified Providers", value: stats.verifiedProviders },
-    { title: "Pending Admin Approvals", value: stats.pendingAdminApprovals },
-    { title: "Pending Category Requests", value: stats.pendingCategoryRequests },
+  type DashboardTileType =
+    | "totalProviders"
+    | "verifiedProviders"
+    | "pendingAdminApprovals"
+    | "pendingCategoryRequests"
+    | "registeredUsers";
+
+  const cards: Array<{ title: string; value: number; type: DashboardTileType }> = [
+    { title: "Total Providers", value: stats.totalProviders, type: "totalProviders" },
+    { title: "Verified Providers", value: stats.verifiedProviders, type: "verifiedProviders" },
+    { title: "Pending Admin Approvals", value: stats.pendingAdminApprovals, type: "pendingAdminApprovals" },
+    { title: "Pending Category Requests", value: stats.pendingCategoryRequests, type: "pendingCategoryRequests" },
+    { title: "Registered Users", value: stats.registeredUsers, type: "registeredUsers" },
   ];
+
+  const handleTileClick = (type: DashboardTileType) => {
+    // Tiles map to either an accordion section that should auto-open, or a
+    // scroll target that already exists in the page (or both).
+    const targets: Record<
+      DashboardTileType,
+      { sectionKey?: DashboardSectionKey; anchorId?: string }
+    > = {
+      totalProviders: { sectionKey: "providers", anchorId: "tile-target-providers" },
+      verifiedProviders: { sectionKey: "providers", anchorId: "tile-target-providers" },
+      pendingAdminApprovals: { sectionKey: "providers", anchorId: "tile-target-providers" },
+      pendingCategoryRequests: {
+        sectionKey: "pendingCategoryRequests",
+        anchorId: "tile-target-pending-category-requests",
+      },
+      // No dedicated users list section yet — scroll to the cards row as a
+      // safe placeholder; future "Registered Users" section will replace this.
+      registeredUsers: { anchorId: "tile-target-registered-users" },
+    };
+
+    const target = targets[type];
+    if (target.sectionKey) {
+      setOpenSections((current) => ({ ...current, [target.sectionKey!]: true }));
+    }
+    if (target.anchorId) {
+      // Defer one frame so the accordion has expanded before the scroll runs.
+      requestAnimationFrame(() => {
+        document
+          .getElementById(target.anchorId!)
+          ?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    }
+  };
 
   const pendingCategoryCount = useMemo(
     () =>
@@ -1104,6 +1306,7 @@ export default function AdminDashboardPage() {
       | "admin_delete_category_request_soft"
   ) => {
     const requestId = String(request.RequestID || "").trim();
+    console.log("[pending-category-action]", action, requestId);
     if (!requestId) return;
     const actionKey = `${action}:${requestId}`;
     const requiresReason = action !== "approve_category_request";
@@ -1152,8 +1355,12 @@ export default function AdminDashboardPage() {
 
       await fetchDashboard();
       showFeedback("success", "Action completed successfully");
-    } catch {
-      showFeedback("error", "Failed to update");
+    } catch (err) {
+      console.error("[pending-category-action] failed", action, requestId, err);
+      showFeedback(
+        "error",
+        err instanceof Error ? err.message : "Failed to update"
+      );
     } finally {
       setPendingCategoryActions((current) => {
         const next = { ...current };
@@ -1247,8 +1454,9 @@ export default function AdminDashboardPage() {
         throw new Error(data.error || "Failed to update");
       }
 
-      setProviders((current) => {
-        const nextProviders = current.map((item) =>
+      // Optimistic row update in the table for instant feedback…
+      setProviders((current) =>
+        current.map((item) =>
           String(item.ProviderID || "").trim() === providerId
             ? {
                 ...item,
@@ -1256,10 +1464,11 @@ export default function AdminDashboardPage() {
                 PendingApproval: nextVerified === "yes" ? "no" : item.PendingApproval,
               }
             : item
-        );
-        recalculateStats(nextProviders, categoryApplications);
-        return nextProviders;
-      });
+        )
+      );
+      // …then refetch so the four cards reflect the true backend counts
+      // (head:true count queries, not the truncated providers array).
+      await fetchDashboard();
       showFeedback("success", "Action completed successfully");
     } catch {
       showFeedback("error", "Failed to update");
@@ -1302,15 +1511,17 @@ export default function AdminDashboardPage() {
         throw new Error(data.error || "Failed to update");
       }
 
-      setProviders((current) => {
-        const nextProviders = current.map((item) =>
+      // Optimistic row update in the table for instant feedback…
+      setProviders((current) =>
+        current.map((item) =>
           String(item.ProviderID || "").trim() === providerId
             ? { ...item, Verified: nextVerified, PendingApproval: "no" }
             : item
-        );
-        recalculateStats(nextProviders, categoryApplications);
-        return nextProviders;
-      });
+        )
+      );
+      // …then refetch so the four cards reflect the true backend counts
+      // (head:true count queries, not the truncated providers array).
+      await fetchDashboard();
       showFeedback("success", "Action completed successfully");
     } catch {
       showFeedback("error", "Failed to update");
@@ -2172,18 +2383,161 @@ export default function AdminDashboardPage() {
         </button>
       ) : null}
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div
+        id="tile-target-registered-users"
+        className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5"
+      >
         {cards.map((card) => (
-          <div
+          <button
             key={card.title}
-            className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
+            type="button"
+            onClick={() => handleTileClick(card.type)}
+            className="cursor-pointer rounded-2xl border border-slate-200 bg-white p-5 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-900"
           >
             <p className="text-sm font-semibold text-slate-500">{card.title}</p>
             <p className="mt-2 text-3xl font-bold text-slate-900">{card.value}</p>
-          </div>
+          </button>
         ))}
       </div>
 
+      {/* Kaam Traffic Monitor — compact preview of the latest 10 tasks
+          using the existing /api/admin/task-monitor 6-stage payload. */}
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-900">Kaam Traffic Monitor</h2>
+            <p className="text-sm text-slate-500">
+              Track each Kaam No from posted to closed. Showing the latest 10 tasks.
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void handleAutoCloseTasks()}
+              disabled={autoCloseRunning}
+              className="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+              title="Close tasks idle 3+ days with no provider response and no chat activity (closes via system / expired_no_progress)"
+            >
+              {autoCloseRunning ? "Running..." : "Run Auto-Close Check"}
+            </button>
+            <Link
+              href="/admin/task-monitor"
+              className="inline-flex items-center justify-center rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+            >
+              View Full Monitor
+            </Link>
+          </div>
+        </div>
+
+        {monitorError ? (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+            {monitorError}
+          </div>
+        ) : monitorTasks.length === 0 ? (
+          <p className="text-sm text-slate-500">No tasks to display yet.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-left text-sm">
+              <thead className="bg-slate-50 text-xs uppercase text-slate-500">
+                <tr>
+                  <th className="px-3 py-2 font-semibold">Kaam No.</th>
+                  <th className="px-3 py-2 font-semibold">Service</th>
+                  <th className="px-3 py-2 font-semibold">Area</th>
+                  <th className="px-3 py-2 font-semibold">Status</th>
+                  <th className="px-2 py-2 text-center font-semibold" title="Stage 1 — Task Posted">
+                    Posted
+                  </th>
+                  <th className="px-2 py-2 text-center font-semibold" title="Stage 2 — Providers Matched">
+                    Matched
+                  </th>
+                  <th className="px-2 py-2 text-center font-semibold" title="Stage 3 — Providers Notified">
+                    Notified
+                  </th>
+                  <th className="px-2 py-2 text-center font-semibold" title="Stage 4 — Provider Responded">
+                    Provider
+                  </th>
+                  <th className="px-2 py-2 text-center font-semibold" title="Stage 5 — User Responded">
+                    User
+                  </th>
+                  <th className="px-2 py-2 text-center font-semibold" title="Stage 6 — Closed / Completed">
+                    Closed
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 text-slate-800">
+                {monitorTasks.map((task) => (
+                  <tr key={task.taskId} className="hover:bg-slate-50">
+                    <td className="px-3 py-2 font-medium text-slate-900">
+                      {task.displayId
+                        ? `Kaam No. ${task.displayId}`
+                        : task.taskId || "-"}
+                    </td>
+                    <td className="px-3 py-2">{task.category || "-"}</td>
+                    <td className="px-3 py-2">{task.area || "-"}</td>
+                    <td className="px-3 py-2 text-xs">
+                      <div className="flex flex-wrap items-center gap-1">
+                        <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 font-medium text-slate-700">
+                          {task.currentStatus || "-"}
+                        </span>
+                        {(() => {
+                          const statusLower = String(task.currentStatus || "")
+                            .trim()
+                            .toLowerCase();
+                          if (statusLower !== "closed" && statusLower !== "completed") return null;
+                          const closedByLower = String(task.auditTrail?.closedBy || "")
+                            .trim()
+                            .toLowerCase();
+                          const closedByLabel =
+                            closedByLower === "user"
+                              ? "User"
+                              : closedByLower === "admin"
+                              ? "Admin"
+                              : closedByLower === "system"
+                              ? "System"
+                              : "";
+                          if (!closedByLabel) return null;
+                          return (
+                            <span
+                              className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 font-medium text-emerald-700"
+                              title={
+                                task.auditTrail?.closeReason
+                                  ? `Reason: ${task.auditTrail.closeReason}`
+                                  : `Closed by ${closedByLabel}`
+                              }
+                            >
+                              Closed by {closedByLabel}
+                            </span>
+                          );
+                        })()}
+                      </div>
+                    </td>
+                    <td className="px-2 py-2 text-center">
+                      <MonitorDot light={task.lights.taskPosted} title="Posted" />
+                    </td>
+                    <td className="px-2 py-2 text-center">
+                      <MonitorDot light={task.lights.providersMatched} title="Matched" />
+                    </td>
+                    <td className="px-2 py-2 text-center">
+                      <MonitorDot light={task.lights.providersNotified} title="Notified" />
+                    </td>
+                    <td className="px-2 py-2 text-center">
+                      <MonitorDot light={task.lights.providerResponded} title="Provider Replied" />
+                    </td>
+                    <td className="px-2 py-2 text-center">
+                      <MonitorDot light={task.lights.userResponded} title="User Replied" />
+                    </td>
+                    <td className="px-2 py-2 text-center">
+                      <MonitorDot light={task.lights.closed} title="Closed" />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <div id="tile-target-pending-category-requests" />
       <AccordionSection
         sectionKey="pendingCategoryRequests"
         title="Pending Category Requests"
@@ -2200,6 +2554,7 @@ export default function AdminDashboardPage() {
                 <th className="px-4 py-3 font-semibold">ProviderName</th>
                 <th className="px-4 py-3 font-semibold">Phone</th>
                 <th className="px-4 py-3 font-semibold">RequestedCategory</th>
+                <th className="px-4 py-3 font-semibold">Area</th>
                 <th className="px-4 py-3 font-semibold">Status</th>
                 <th className="px-4 py-3 font-semibold">CreatedAt</th>
                 <th className="px-4 py-3 font-semibold text-right">Actions</th>
@@ -2208,7 +2563,7 @@ export default function AdminDashboardPage() {
             <tbody className="divide-y divide-slate-100 text-sm text-slate-800">
               {!loading && pendingCategoryApplications.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-4 py-6 text-center text-slate-500">
+                  <td colSpan={8} className="px-4 py-6 text-center text-slate-500">
                     No category requests found.
                   </td>
                 </tr>
@@ -2244,7 +2599,8 @@ export default function AdminDashboardPage() {
                   </td>
                   <td className="px-4 py-3">{item.ProviderName || "-"}</td>
                   <td className="px-4 py-3">{item.Phone || "-"}</td>
-                  <td className="px-4 py-3">{item.RequestedCategory || "-"}</td>
+                  <td className="px-4 py-3" data-testid="pending-category">{item.RequestedCategory || "-"}</td>
+                  <td className="px-4 py-3">{item.Area || "-"}</td>
                   <td className="px-4 py-3">
                     <span className="inline-flex rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">
                       {item.Status || "pending"}
@@ -2567,6 +2923,7 @@ export default function AdminDashboardPage() {
         </div>
       </AccordionSection>
 
+      <div id="tile-target-providers" />
       <AccordionSection
         sectionKey="providers"
         title="Providers Needing Attention"

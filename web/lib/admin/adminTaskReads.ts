@@ -10,9 +10,8 @@
  *   - provider_task_matches
  *   - providers
  *
- * Schema prerequisite carried forward from Slice 11:
- *   ALTER TABLE tasks ADD COLUMN IF NOT EXISTS assigned_provider_id TEXT;
- *   ALTER TABLE tasks ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ;
+ * Schema prerequisite — apply web/docs/migrations/add-task-closure-tracking.sql
+ * once before deploying. It adds tasks.closed_at / closed_by / close_reason.
  */
 
 import { adminSupabase } from "../supabase/admin";
@@ -100,7 +99,6 @@ type TaskRow = {
   selected_timeframe: string | null;
   service_date: string | null;
   time_slot: string | null;
-  assigned_provider_id: string | null;
   closed_at: string | null;
 };
 
@@ -417,7 +415,10 @@ export async function getAdminRequestsFromSupabase(): Promise<AdminRequestsPaylo
     const { data: tasks, error: tasksError } = await adminSupabase
       .from("tasks")
       .select(
-        "task_id, display_id, category, area, details, phone, status, created_at, selected_timeframe, service_date, time_slot, assigned_provider_id, closed_at"
+        // Reads `closed_at` for the CompletedAt timestamp + completed-today
+        // metric. Requires the add-task-closure-tracking.sql migration to
+        // have been applied.
+        "task_id, display_id, category, area, details, phone, status, created_at, selected_timeframe, service_date, time_slot, closed_at"
       )
       .order("created_at", { ascending: false });
 
@@ -443,11 +444,6 @@ export async function getAdminRequestsFromSupabase(): Promise<AdminRequestsPaylo
 
     const matchRows = (matchesData ?? []) as MatchRow[];
     const providerIds = new Set<string>();
-    for (const task of taskRows) {
-      if (task.assigned_provider_id) {
-        providerIds.add(String(task.assigned_provider_id).trim());
-      }
-    }
     for (const match of matchRows) {
       if (match.provider_id) {
         providerIds.add(String(match.provider_id).trim());
@@ -489,6 +485,17 @@ export async function getAdminRequestsFromSupabase(): Promise<AdminRequestsPaylo
           const status = String(match.match_status || "").trim().toLowerCase();
           return status === "responded" || status === "accepted";
         }) ?? null;
+      const assignedMatch =
+        taskMatches.find((match) => {
+          const status = String(match.match_status || "").trim().toLowerCase();
+          return status === "assigned";
+        }) ??
+        respondedMatch ??
+        taskMatches.find((match) => {
+          const status = String(match.match_status || "").trim().toLowerCase();
+          return status === "accepted";
+        }) ??
+        null;
 
       const matchedProviders: string[] = [];
       const matchedProviderDetails: MatchedProviderDetail[] = [];
@@ -517,7 +524,7 @@ export async function getAdminRequestsFromSupabase(): Promise<AdminRequestsPaylo
         });
       }
 
-      const assignedProvider = String(task.assigned_provider_id || "").trim();
+      const assignedProvider = assignedMatch ? String(assignedMatch.provider_id || "").trim() : "";
       const assignedProviderRow = assignedProvider ? providerById.get(assignedProvider) : undefined;
       const respondedProviderId = respondedMatch ? String(respondedMatch.provider_id || "").trim() : "";
       const respondedProviderRow = respondedProviderId ? providerById.get(respondedProviderId) : undefined;

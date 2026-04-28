@@ -234,29 +234,26 @@ async function getProviderMetricsFromSupabase(
     .eq("provider_id", providerId)
     .in("match_status", ["responded", "accepted"]);
 
-  const acceptedCountPromise = supabase
-    .from("tasks")
-    .select("task_id", { count: "exact", head: true })
-    .eq("assigned_provider_id", providerId);
-
-  const completedCountPromise = supabase
-    .from("tasks")
-    .select("task_id", { count: "exact", head: true })
-    .eq("assigned_provider_id", providerId)
-    .in("status", ["closed", "completed"]);
+  // Provider-task linkage now lives in provider_task_matches. The accepted
+  // count is the number of match rows for this provider with match_status in
+  // ("accepted","assigned"); the completed count needs the underlying task_ids
+  // because closure state is on `tasks`, so it runs as a follow-up query.
+  const acceptedMatchesPromise = supabase
+    .from("provider_task_matches")
+    .select("task_id")
+    .eq("provider_id", providerId)
+    .in("match_status", ["accepted", "assigned"]);
 
   const [
     categoriesCountResult,
     matchedCountResult,
     respondedCountResult,
-    acceptedCountResult,
-    completedCountResult,
+    acceptedMatchesResult,
   ] = await Promise.all([
     categoriesCountPromise,
     matchedCountPromise,
     respondedCountPromise,
-    acceptedCountPromise,
-    completedCountPromise,
+    acceptedMatchesPromise,
   ]);
 
   const readCount = (
@@ -279,8 +276,37 @@ async function getProviderMetricsFromSupabase(
   const totalRequestsInMyCategories = readCount(categoriesCountResult, "TotalRequestsInMyCategories");
   const totalRequestsMatchedToMe = readCount(matchedCountResult, "TotalRequestsMatchedToMe");
   const totalRequestsRespondedByMe = readCount(respondedCountResult, "TotalRequestsRespondedByMe");
-  const totalRequestsAcceptedByMe = readCount(acceptedCountResult, "TotalRequestsAcceptedByMe");
-  const totalRequestsCompletedByMe = readCount(completedCountResult, "TotalRequestsCompletedByMe");
+
+  let acceptedTaskIds: string[] = [];
+  let totalRequestsAcceptedByMe = 0;
+  if (acceptedMatchesResult.error) {
+    const err = acceptedMatchesResult.error;
+    const msg =
+      err instanceof Error
+        ? err.message
+        : typeof err === "object" && err && "message" in err
+          ? String((err as { message?: unknown }).message || "")
+          : String(err);
+    console.warn("[provider/dashboard-profile] metric query failed", {
+      label: "TotalRequestsAcceptedByMe",
+      error: msg,
+    });
+  } else {
+    acceptedTaskIds = (acceptedMatchesResult.data ?? [])
+      .map((row) => String((row as { task_id?: unknown }).task_id ?? "").trim())
+      .filter((id) => id.length > 0);
+    totalRequestsAcceptedByMe = acceptedTaskIds.length;
+  }
+
+  let totalRequestsCompletedByMe = 0;
+  if (acceptedTaskIds.length > 0) {
+    const completedResult = await supabase
+      .from("tasks")
+      .select("task_id", { count: "exact", head: true })
+      .in("task_id", acceptedTaskIds)
+      .in("status", ["closed", "completed"]);
+    totalRequestsCompletedByMe = readCount(completedResult, "TotalRequestsCompletedByMe");
+  }
 
   const responseRate =
     totalRequestsMatchedToMe > 0

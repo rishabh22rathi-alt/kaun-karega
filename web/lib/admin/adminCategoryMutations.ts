@@ -24,18 +24,51 @@ async function updateRequestStatus(
   adminActionBy: string,
   adminActionReason: string
 ): Promise<CategoryMutationResult> {
-  const { error } = await adminSupabase
-    .from("pending_category_requests")
-    .update({
-      status,
-      admin_action_by: adminActionBy || null,
-      admin_action_at: new Date().toISOString(),
-      admin_action_reason: adminActionReason || null,
-    })
-    .eq("request_id", requestId);
+  // pending_category_requests has BOTH `id` (Supabase auto-uuid PK) and
+  // `request_id` ("PCR-…" string set at insert time). The frontend derives
+  // RequestID via `row.id ?? row.request_id`, so it usually sends the UUID
+  // — match on `id` first, then fall back to `request_id` for any caller
+  // (current or legacy) that sends the PCR string. Without the fallback
+  // the UPDATE silently matched 0 rows and the buttons appeared to do nothing.
+  const payload = {
+    status,
+    admin_action_by: adminActionBy || null,
+    admin_action_at: new Date().toISOString(),
+    admin_action_reason: adminActionReason || null,
+  };
 
-  if (error) return { ok: false, error: error.message };
-  return { ok: true };
+  const byId = await adminSupabase
+    .from("pending_category_requests")
+    .update(payload)
+    .eq("id", requestId)
+    .select("id");
+
+  if (!byId.error && Array.isArray(byId.data) && byId.data.length > 0) {
+    return { ok: true };
+  }
+
+  // First attempt either errored on type mismatch (id is uuid-typed and
+  // requestId was a "PCR-…" string) or matched zero rows. Try request_id.
+  const byReqId = await adminSupabase
+    .from("pending_category_requests")
+    .update(payload)
+    .eq("request_id", requestId)
+    .select("request_id");
+
+  if (byReqId.error) {
+    return { ok: false, error: byReqId.error.message };
+  }
+  if (Array.isArray(byReqId.data) && byReqId.data.length > 0) {
+    return { ok: true };
+  }
+
+  // Neither column matched — surface this as a hard failure so the
+  // dashboard's catch shows a real banner instead of the previous silent
+  // "ok:true" that left the row unchanged.
+  return {
+    ok: false,
+    error: `Pending category request not found (id/request_id="${requestId}")`,
+  };
 }
 
 // ---------------------------------------------------------------------------

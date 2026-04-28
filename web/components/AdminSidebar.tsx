@@ -83,6 +83,26 @@ const navItems: NavItem[] = [
     ),
   },
   {
+    label: "Task Monitor",
+    href: "/admin/task-monitor",
+    icon: (
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        className="h-5 w-5"
+        fill="none"
+        viewBox="0 0 24 24"
+        stroke="currentColor"
+      >
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth="1.5"
+          d="M3 12a9 9 0 1118 0 9 9 0 01-18 0zm9-5v5l3 2"
+        />
+      </svg>
+    ),
+  },
+  {
     label: "Needs",
     href: "/admin/needs",
     icon: (
