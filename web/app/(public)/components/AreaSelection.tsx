@@ -275,7 +275,7 @@ export default function AreaSelection({
       </div>
 
       {showAreaInput && (
-        <div ref={inputShellRef} className="mt-3 flex flex-wrap items-center gap-2">
+        <div ref={inputShellRef} className="relative mt-3 flex flex-wrap items-center gap-2">
           <input
             ref={inputRef}
             type="text"
@@ -283,6 +283,12 @@ export default function AreaSelection({
             onChange={(e) => {
               setTypedArea(e.target.value);
               if (inputError) setInputError("");
+            }}
+            onBlur={() => {
+              window.setTimeout(() => {
+                if (selectedRef.current) return;
+                setShowDropdown(false);
+              }, 200);
             }}
             onKeyDown={(event) => {
               if (event.key === "Enter") {
@@ -310,12 +316,19 @@ export default function AreaSelection({
           {showDropdown &&
           suggestions.length > 0 &&
           typedArea.trim().length >= 2 ? (
-            <div className="w-full rounded-lg border border-slate-200 bg-white shadow-md">
+            <div className="absolute left-0 right-0 z-50 max-h-48 overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg bottom-full mb-2 md:bottom-auto md:top-full md:mb-0 md:mt-2">
               {suggestions.map((area) => (
                 <button
                   key={area}
                   type="button"
-                  onClick={() => handleSuggestionSelect(area)}
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    handleSuggestionSelect(area);
+                  }}
+                  onPointerDown={(event) => {
+                    event.preventDefault();
+                    handleSuggestionSelect(area);
+                  }}
                   className="block w-full border-b border-slate-100 px-3 py-2 text-left text-sm text-slate-700 transition hover:bg-slate-50 last:border-b-0"
                 >
                   {area}

@@ -39,7 +39,7 @@ export default function RootLayout({
         >
           <SidebarToggle />
           <Sidebar />
-          <div className="min-h-screen min-w-0 flex-1 pt-14 transition-[padding] duration-200 md:pt-0 md:pl-[var(--kk-sidebar-width)]">
+          <div className="min-h-screen min-w-0 flex-1 pt-[68px] transition-[padding] duration-200 md:pt-0 md:pl-[var(--kk-sidebar-width)]">
             {children}
           </div>
         </div>

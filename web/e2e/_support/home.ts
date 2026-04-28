@@ -6,7 +6,10 @@ export function getHomeCategoryInput(page: Page): Locator {
 
 export async function gotoPath(page: Page, path: string): Promise<void> {
   await page.goto(path, { waitUntil: "domcontentloaded" });
-  await page.waitForLoadState("networkidle");
+  // Don't wait for networkidle — the app polls/streams continuously and
+  // would never reach idle. Waiting for <body> guarantees the document is
+  // hydrated enough for subsequent locator queries.
+  await page.waitForSelector("body", { state: "attached", timeout: 10_000 });
 }
 
 export async function openMobileMenu(page: Page): Promise<void> {

@@ -33,7 +33,7 @@ export default function SidebarToggle() {
   if (shouldHide || isSidebarOpen) return null;
 
   return (
-    <div className="fixed inset-x-0 top-0 z-50 border-b border-slate-200 bg-white/95 shadow-sm backdrop-blur md:hidden">
+    <div className="fixed inset-x-0 top-0 z-50 border-b border-slate-200 bg-white/95 pt-3 shadow-sm backdrop-blur md:hidden md:pt-0">
       <div className="flex h-14 items-center px-3">
         <button
           type="button"
