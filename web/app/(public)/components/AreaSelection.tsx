@@ -11,6 +11,17 @@ type AreaSelectionProps = {
 const POPULAR_1 = "Shastri Nagar";
 const POPULAR_2 = "Sardarpura";
 const LAST_AREA_KEY = "kk_last_area";
+const MAX_SUGGESTIONS = 8;
+const FALLBACK_AREAS = [
+  "Shastri Nagar",
+  "Sardarpura",
+  "Pratap Nagar",
+  "Pratap Nagar Jodhpur",
+  "Kamla Nehru Nagar",
+  "Choupasni Housing Board",
+  "Ratanada",
+  "Paota",
+];
 
 function toTitleCase(str: string) {
   return str
@@ -38,23 +49,13 @@ export default function AreaSelection({
   const [showAreaInput, setShowAreaInput] = useState(false);
   const [typedArea, setTypedArea] = useState("");
   const [allowedAreas, setAllowedAreas] = useState<string[]>([]);
-  const [suggestions, setSuggestions] = useState<string[]>([]);
-  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
-  const [showDropdown, setShowDropdown] = useState(false);
+  const [loadingAreas, setLoadingAreas] = useState(false);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [showAllMode, setShowAllMode] = useState(false);
   const [inputError, setInputError] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
   const inputShellRef = useRef<HTMLDivElement | null>(null);
-  const selectedRef = useRef(false);
-
-  const storeSelection = (area: string) => {
-    const normalized = normalizeAreaValue(area);
-    if (!normalized) return;
-    selectedRef.current = true;
-    setShowDropdown(false);
-    setSuggestions([]);
-    setInputError("");
-    onSelect(normalized);
-  };
+  const blurTimerRef = useRef<number | null>(null);
 
   const chipClass = (active: boolean) =>
     `rounded-full px-4 py-2 text-sm font-semibold transition border whitespace-nowrap ${
@@ -71,6 +72,26 @@ export default function AreaSelection({
     return true;
   }, [lastUsedArea, selectedArea]);
 
+  const filteredSuggestions = useMemo(() => {
+    const pool = allowedAreas.length > 0 ? allowedAreas : FALLBACK_AREAS;
+    const trimmed = typedArea.trim();
+    const q = normalizeAreaValue(trimmed).toLowerCase();
+
+    // Show top suggestions in "Show All" mode even if length < 2
+    if (showAllMode && q.length < 2) {
+      return pool.slice(0, MAX_SUGGESTIONS);
+    }
+
+    // Default threshold for normal typing
+    if (q.length < 2) return [];
+
+    return pool
+      .filter((area) =>
+        normalizeAreaValue(area).toLowerCase().includes(q)
+      )
+      .slice(0, MAX_SUGGESTIONS);
+  }, [typedArea, allowedAreas, showAllMode]);
+
   useEffect(() => {
     if (typeof window === "undefined") return;
     const area = window.localStorage.getItem(LAST_AREA_KEY) || "";
@@ -82,72 +103,24 @@ export default function AreaSelection({
     inputRef.current.focus();
   }, [showAreaInput]);
 
-  const fetchSuggestions = async (query: string, signal?: AbortSignal) => {
-    const response = await fetch(`/api/areas?q=${encodeURIComponent(query)}`, {
-      signal,
-    });
-    const data = await response.json();
-    return Array.isArray(data?.areas)
-      ? data.areas.filter((value: unknown) => typeof value === "string")
-      : [];
-  };
-
   useEffect(() => {
     if (!showAreaInput || allowedAreas.length > 0) return;
     const controller = new AbortController();
-    fetchSuggestions("", controller.signal)
-      .then((areas) => setAllowedAreas(areas))
-      .catch(() => setAllowedAreas([]));
+    setLoadingAreas(true);
+    fetch(`/api/areas`, { signal: controller.signal })
+      .then((res) => res.json())
+      .then((data) => {
+        const areas = Array.isArray(data?.areas)
+          ? data.areas.filter(
+              (value: unknown): value is string => typeof value === "string"
+            )
+          : [];
+        setAllowedAreas(areas);
+      })
+      .catch(() => setAllowedAreas([]))
+      .finally(() => setLoadingAreas(false));
     return () => controller.abort();
   }, [showAreaInput, allowedAreas.length]);
-
-  useEffect(() => {
-    if (selectedRef.current) {
-      selectedRef.current = false;
-      return;
-    }
-    if (!showAreaInput) {
-      setSuggestions([]);
-      setShowDropdown(false);
-      return;
-    }
-
-    const query = typedArea.trim();
-    if (!query) {
-      setSuggestions([]);
-      setShowDropdown(false);
-      setLoadingSuggestions(false);
-      return;
-    }
-
-    const controller = new AbortController();
-    const timer = window.setTimeout(async () => {
-      try {
-        setLoadingSuggestions(true);
-        const nextSuggestions = await fetchSuggestions(
-          query,
-          controller.signal
-        );
-        if (selectedRef.current) {
-          return;
-        }
-        setSuggestions(nextSuggestions);
-        setShowDropdown(nextSuggestions.length > 0);
-      } catch (error: any) {
-        if (error?.name !== "AbortError") {
-          setSuggestions([]);
-          setShowDropdown(false);
-        }
-      } finally {
-        setLoadingSuggestions(false);
-      }
-    }, 250);
-
-    return () => {
-      controller.abort();
-      window.clearTimeout(timer);
-    };
-  }, [showAreaInput, typedArea]);
 
   useEffect(() => {
     const handleOutsideClick = (event: MouseEvent) => {
@@ -155,19 +128,74 @@ export default function AreaSelection({
         inputShellRef.current &&
         !inputShellRef.current.contains(event.target as Node)
       ) {
-        setShowDropdown(false);
+        setShowSuggestions(false);
+        setShowAllMode(false);
       }
     };
     document.addEventListener("mousedown", handleOutsideClick);
     return () => document.removeEventListener("mousedown", handleOutsideClick);
   }, []);
 
+  useEffect(() => {
+    return () => {
+      if (blurTimerRef.current !== null) {
+        window.clearTimeout(blurTimerRef.current);
+      }
+    };
+  }, []);
+
+  const storeSelection = (area: string) => {
+    const normalized = normalizeAreaValue(area);
+    if (!normalized) return;
+    setShowSuggestions(false);
+    setShowAllMode(false);
+    setInputError("");
+    onSelect(normalized);
+  };
+
   const handleTypeAreaClick = () => {
     setShowAreaInput(true);
     setInputError("");
+    setShowAllMode(false);
+    setShowSuggestions(true);
     if (typedChipActive && !typedArea.trim()) {
       setTypedArea(selectedArea);
     }
+  };
+
+  const handleInputChange = (value: string) => {
+    if (blurTimerRef.current !== null) {
+      window.clearTimeout(blurTimerRef.current);
+      blurTimerRef.current = null;
+    }
+    setTypedArea(value);
+    // Only turn off showAllMode once we start actually filtering (length >= 2)
+    if (value.trim().length >= 2) {
+      setShowAllMode(false);
+    }
+    if (inputError) setInputError("");
+    // Immediately trigger visibility logic
+    setShowSuggestions(true);
+  };
+
+  const handleInputFocus = () => {
+    if (blurTimerRef.current !== null) {
+      window.clearTimeout(blurTimerRef.current);
+      blurTimerRef.current = null;
+    }
+    setShowSuggestions(true);
+  };
+
+  const handleInputBlur = () => {
+    if (blurTimerRef.current !== null) {
+      window.clearTimeout(blurTimerRef.current);
+    }
+    // Delay close to allow suggestion selection to fire first
+    blurTimerRef.current = window.setTimeout(() => {
+      setShowSuggestions(false);
+      setShowAllMode(false);
+      blurTimerRef.current = null;
+    }, 250);
   };
 
   const handleUseTypedArea = () => {
@@ -176,62 +204,52 @@ export default function AreaSelection({
       setInputError("Area required");
       return;
     }
-    const matchedKnownArea = allowedAreas.find(
+    const pool = allowedAreas.length > 0 ? allowedAreas : FALLBACK_AREAS;
+    const matchedKnownArea = pool.find(
       (area) => area.toLowerCase() === normalized.toLowerCase()
     );
     if (!matchedKnownArea) {
       setInputError(
-        "We don\u2019t serve this exact area yet. Please select the nearest area from the list."
+        "We don’t serve this exact area yet. Please select the nearest area from the list."
       );
-      setShowDropdown(true);
-      if (suggestions.length === 0) {
-        setLoadingSuggestions(true);
-        fetchSuggestions("")
-          .then((nextSuggestions) => {
-            setSuggestions(nextSuggestions.slice(0, 8));
-            setShowDropdown(true);
-          })
-          .catch(() => {
-            setSuggestions([]);
-            setShowDropdown(true);
-          })
-          .finally(() => setLoadingSuggestions(false));
-      }
+      setShowAllMode(true);
+      setShowSuggestions(true);
       return;
     }
-    selectedRef.current = true;
-    setTypedArea(matchedKnownArea);
-    setShowDropdown(false);
-    setSuggestions([]);
+    setTypedArea("");
+    setShowSuggestions(false);
+    setShowAllMode(false);
     setInputError("");
     onSelect(matchedKnownArea);
   };
 
   const handleShowAllAreas = () => {
-    setLoadingSuggestions(true);
-    fetchSuggestions("")
-      .then((nextSuggestions) => {
-        setSuggestions(nextSuggestions.slice(0, 8));
-        setShowDropdown(true);
-      })
-      .catch(() => {
-        setSuggestions([]);
-        setShowDropdown(true);
-      })
-      .finally(() => setLoadingSuggestions(false));
+    setShowAllMode(true);
+    setShowSuggestions(true);
+    inputRef.current?.focus();
   };
 
   const handleSuggestionSelect = (area: string) => {
     const normalized = normalizeAreaValue(area);
     if (!normalized) return;
-    selectedRef.current = true;
-    setTypedArea(normalized);
-    setShowDropdown(false);
-    setSuggestions([]);
-    inputRef.current?.blur();
+    if (blurTimerRef.current !== null) {
+      window.clearTimeout(blurTimerRef.current);
+      blurTimerRef.current = null;
+    }
+    setTypedArea("");
+    setShowSuggestions(false);
+    setShowAllMode(false);
     setInputError("");
+    inputRef.current?.blur();
     onSelect(normalized);
   };
+
+  const renderDropdown = showSuggestions && filteredSuggestions.length > 0;
+  const noMatchesFound =
+    showSuggestions &&
+    typedArea.trim().length >= 2 &&
+    filteredSuggestions.length === 0 &&
+    !loadingAreas;
 
   return (
     <div className="w-full">
@@ -280,23 +298,17 @@ export default function AreaSelection({
             ref={inputRef}
             type="text"
             value={typedArea}
-            onChange={(e) => {
-              setTypedArea(e.target.value);
-              if (inputError) setInputError("");
-            }}
-            onBlur={() => {
-              window.setTimeout(() => {
-                if (selectedRef.current) return;
-                setShowDropdown(false);
-              }, 200);
-            }}
+            onChange={(e) => handleInputChange(e.target.value)}
+            onFocus={handleInputFocus}
+            onBlur={handleInputBlur}
             onKeyDown={(event) => {
               if (event.key === "Enter") {
                 event.preventDefault();
                 handleUseTypedArea();
               }
               if (event.key === "Escape") {
-                setShowDropdown(false);
+                setShowSuggestions(false);
+                setShowAllMode(false);
               }
             }}
             placeholder="Type your area"
@@ -310,14 +322,14 @@ export default function AreaSelection({
           >
             Use this area
           </button>
-          {loadingSuggestions ? (
+
+          {loadingAreas ? (
             <p className="w-full text-xs text-slate-500">Loading suggestions...</p>
           ) : null}
-          {showDropdown &&
-          suggestions.length > 0 &&
-          typedArea.trim().length >= 2 ? (
+
+          {renderDropdown ? (
             <div className="absolute left-0 right-0 z-50 max-h-48 overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg bottom-full mb-2 md:bottom-auto md:top-full md:mb-0 md:mt-2">
-              {suggestions.map((area) => (
+              {filteredSuggestions.map((area) => (
                 <button
                   key={area}
                   type="button"
@@ -336,6 +348,23 @@ export default function AreaSelection({
               ))}
             </div>
           ) : null}
+
+          {noMatchesFound ? (
+            <div className="w-full rounded-lg border border-amber-200 bg-amber-50 p-2">
+              <p className="text-xs text-amber-800">
+                No matching area found. Try nearest area or{" "}
+                <button
+                  type="button"
+                  onClick={handleShowAllAreas}
+                  className="font-bold underline"
+                >
+                  Show all areas
+                </button>
+                .
+              </p>
+            </div>
+          ) : null}
+
           {inputError ? (
             <div className="w-full flex items-center gap-3">
               <p className="text-xs text-red-600">{inputError}</p>
@@ -348,9 +377,9 @@ export default function AreaSelection({
               </button>
             </div>
           ) : null}
-          {!inputError && showDropdown && suggestions.length > 0 ? (
+          {!inputError && renderDropdown ? (
             <p className="w-full text-xs text-slate-500">
-              Try selecting: {suggestions.slice(0, 3).join(", ")}
+              Try selecting: {filteredSuggestions.slice(0, 3).join(", ")}
             </p>
           ) : null}
         </div>
