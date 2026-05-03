@@ -53,8 +53,13 @@ export type DashboardProfileResponse = {
   debug?: unknown;
 };
 
-let inflightPromise: Promise<DashboardProfileResponse | null> | null = null;
-let inflightExpiresAt = 0;
+// In-flight dedupe is keyed by range so concurrent calls for different
+// ranges (e.g. Sidebar's all-time fetch + dashboard's 7d fetch) do not
+// share a Promise and end up returning each other's data.
+const inflightByRange = new Map<
+  string,
+  { promise: Promise<DashboardProfileResponse | null>; expiresAt: number }
+>();
 
 function normalizePhone10(value: unknown): string {
   return String(value || "").replace(/\D/g, "").slice(-10);
@@ -80,14 +85,28 @@ export function readCachedProviderProfile(
   }
 }
 
-export async function fetchProviderDashboardProfile(): Promise<DashboardProfileResponse | null> {
-  if (inflightPromise && Date.now() < inflightExpiresAt) {
-    return inflightPromise;
+export type DashboardMetricsRange = "today" | "7d" | "30d" | "6m" | "1y" | "all";
+
+export async function fetchProviderDashboardProfile(
+  range?: DashboardMetricsRange
+): Promise<DashboardProfileResponse | null> {
+  // Treat undefined as "all" for cache-key and URL purposes. The endpoint
+  // already defaults missing `range` to "all", so the URL stays clean when
+  // the caller doesn't care about the range filter.
+  const rangeKey: DashboardMetricsRange = range ?? "all";
+  const isDefaultRange = rangeKey === "all";
+
+  const existing = inflightByRange.get(rangeKey);
+  if (existing && Date.now() < existing.expiresAt) {
+    return existing.promise;
   }
 
   const promise = (async (): Promise<DashboardProfileResponse | null> => {
     try {
-      const res = await fetch("/api/provider/dashboard-profile", { cache: "no-store" });
+      const url = isDefaultRange
+        ? "/api/provider/dashboard-profile"
+        : `/api/provider/dashboard-profile?range=${encodeURIComponent(rangeKey)}`;
+      const res = await fetch(url, { cache: "no-store" });
       const text = await res.text();
       let data: DashboardProfileResponse | null = null;
       try {
@@ -97,7 +116,10 @@ export async function fetchProviderDashboardProfile(): Promise<DashboardProfileR
       }
 
       if (typeof window !== "undefined") {
-        if (res.ok && data?.ok && data.provider) {
+        // Only the all-time fetch writes to localStorage. The Sidebar reads
+        // this cache for the header chip and expects all-time Metrics; a
+        // range-filtered response would corrupt that snapshot.
+        if (res.ok && data?.ok && data.provider && isDefaultRange) {
           try {
             // Persist with `Name` normalized from `ProviderName`. The Sidebar's
             // cache check at Sidebar.tsx ~244 requires a non-empty `Name` field
@@ -114,8 +136,10 @@ export async function fetchProviderDashboardProfile(): Promise<DashboardProfileR
           } catch {
             // localStorage may be unavailable (private mode / quota) — non-fatal.
           }
-        } else if (res.status === 404) {
+        } else if (res.status === 404 && isDefaultRange) {
           // Provider deleted/missing — clear stale cache and notify listeners.
+          // Only act on the default-range fetch so a transient 404 from a
+          // bad range param can't wipe a valid cache.
           try {
             window.localStorage.removeItem(STORAGE_KEY);
             window.dispatchEvent(new Event(PROVIDER_PROFILE_UPDATED_EVENT));
@@ -127,13 +151,14 @@ export async function fetchProviderDashboardProfile(): Promise<DashboardProfileR
 
       return data;
     } finally {
-      inflightPromise = null;
-      inflightExpiresAt = 0;
+      inflightByRange.delete(rangeKey);
     }
   })();
 
-  inflightPromise = promise;
-  inflightExpiresAt = Date.now() + INFLIGHT_SAFETY_TTL_MS;
+  inflightByRange.set(rangeKey, {
+    promise,
+    expiresAt: Date.now() + INFLIGHT_SAFETY_TTL_MS,
+  });
 
   return promise;
 }

@@ -10,6 +10,7 @@ import { isProviderVerifiedBadge } from "@/lib/providerPresentation";
 import {
   fetchProviderDashboardProfile,
   readCachedProviderProfile,
+  type DashboardMetricsRange,
 } from "@/lib/providerDashboardProfile";
 
 const MAX_SERVICES = 3;
@@ -237,6 +238,18 @@ function getDemandRangeLabels(rangeKey: DemandRangeKey) {
   );
 }
 
+// Time-range filter for the 5 metric tiles. "all" is the default and
+// preserves the all-time numbers the dashboard has always shown. Keys mirror
+// the API contract on /api/provider/dashboard-profile?range=…
+const METRICS_RANGE_OPTIONS: { key: DashboardMetricsRange; label: string }[] = [
+  { key: "today", label: "Today" },
+  { key: "7d", label: "7 Days" },
+  { key: "30d", label: "30 Days" },
+  { key: "6m", label: "6 Months" },
+  { key: "1y", label: "1 Year" },
+  { key: "all", label: "All" },
+];
+
 function buildCategoryInviteMessage(
   categoryName: string,
   requestCount: number,
@@ -271,6 +284,8 @@ function ProviderDashboardInner() {
   const [apiDebug, setApiDebug] = useState<unknown>(null);
   const [debugPhone, setDebugPhone] = useState("");
   const [categoryDemandRange, setCategoryDemandRange] = useState<DemandRangeKey>("today");
+  const [metricsRange, setMetricsRange] = useState<DashboardMetricsRange>("all");
+  const [metricsLoading, setMetricsLoading] = useState(false);
   const [shareFeedback, setShareFeedback] = useState("");
   const [openingChatTaskId, setOpeningChatTaskId] = useState("");
   const [chatErrorByTaskId, setChatErrorByTaskId] = useState<Record<string, string>>({});
@@ -332,14 +347,20 @@ function ProviderDashboardInner() {
     // Warm-cache hydration: if a cached profile exists for THIS phone, render
     // it instantly so the dashboard does not block on the network round-trip.
     // The background refresh below will overwrite once fresh data arrives.
-    const cached = readCachedProviderProfile(phone);
+    // Cached snapshot is always all-time (Sidebar's contract), so only honor
+    // it when we're on the default range.
+    const cached = metricsRange === "all" ? readCachedProviderProfile(phone) : null;
     if (cached) {
       setProfile(cached as ProviderProfile);
       setLoading(false);
     }
 
     const load = async () => {
-      if (!cached) setLoading(true);
+      const isFirstFullLoad = !profile && !cached;
+      if (isFirstFullLoad) setLoading(true);
+      // Tile-only loading state for range switches (initial full load owns
+      // the page-level `loading` flag instead).
+      if (!isFirstFullLoad) setMetricsLoading(true);
       setError("");
       setApiError("");
       setApiDebug(null);
@@ -349,13 +370,12 @@ function ProviderDashboardInner() {
           payload: null,
           phoneFromSession: phone,
           warmCacheUsed: Boolean(cached),
+          metricsRange,
         });
         // Shared helper: de-dupes the in-flight call with the Sidebar's own
-        // fetch, persists to localStorage, and dispatches
-        // PROVIDER_PROFILE_UPDATED_EVENT — so we collapse the two
-        // simultaneous round-trips into a single network request on first
-        // mount.
-        const profileData = await fetchProviderDashboardProfile();
+        // fetch, persists to localStorage (only on default range), and
+        // dispatches PROVIDER_PROFILE_UPDATED_EVENT.
+        const profileData = await fetchProviderDashboardProfile(metricsRange);
         if (!profileData) {
           throw new Error("Invalid JSON from provider profile API.");
         }
@@ -378,7 +398,10 @@ function ProviderDashboardInner() {
           setError(err instanceof Error ? err.message : "Unable to load provider dashboard.");
         }
       } finally {
-        if (!ignore) setLoading(false);
+        if (!ignore) {
+          setLoading(false);
+          setMetricsLoading(false);
+        }
       }
     };
 
@@ -386,7 +409,11 @@ function ProviderDashboardInner() {
     return () => {
       ignore = true;
     };
-  }, [phone]);
+    // `profile` is intentionally omitted — including it would re-fire on
+    // every state set inside `load`, causing an infinite loop. The first-
+    // load detection inside `load` reads the latest `profile` via closure.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phone, metricsRange]);
 
   useEffect(() => {
     if (!phone) return;
@@ -892,17 +919,71 @@ function ProviderDashboardInner() {
           </section>
         ) : null}
 
-        <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
-          {statsCards.map((card) => (
-            <div
-              key={card.title}
-              className={`rounded-[24px] border px-5 py-5 shadow-sm ${card.tone}`}
-            >
-              <p className="text-sm font-semibold">{card.title}</p>
-              <p className="mt-3 text-3xl font-bold">{card.value}</p>
-              <p className="mt-2 text-xs opacity-80">{card.note}</p>
+        <section
+          aria-labelledby="provider-metrics-heading"
+          className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm"
+        >
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h2 id="provider-metrics-heading" className="text-xl font-semibold text-slate-900">
+                Your activity
+              </h2>
+              <p className="mt-1 text-sm text-slate-500">
+                Filter the tiles below by time range. The default is all-time.
+              </p>
             </div>
-          ))}
+            <div
+              role="radiogroup"
+              aria-label="Metrics time range"
+              data-testid="metrics-range-selector"
+              className="flex flex-wrap gap-2"
+            >
+              {METRICS_RANGE_OPTIONS.map((option) => {
+                const isSelected = metricsRange === option.key;
+                return (
+                  <button
+                    key={option.key}
+                    type="button"
+                    role="radio"
+                    aria-checked={isSelected}
+                    data-testid={`metrics-range-option-${option.key}`}
+                    data-selected={isSelected ? "true" : "false"}
+                    onClick={() => {
+                      if (metricsRange === option.key) return;
+                      setMetricsRange(option.key);
+                    }}
+                    className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+                      isSelected
+                        ? "border-slate-900 bg-slate-900 text-white shadow-sm"
+                        : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50"
+                    }`}
+                  >
+                    {option.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <div
+            className={`mt-5 grid gap-4 transition-opacity sm:grid-cols-2 xl:grid-cols-5 ${
+              metricsLoading ? "opacity-60" : "opacity-100"
+            }`}
+            aria-busy={metricsLoading}
+            data-testid="metrics-tiles"
+          >
+            {statsCards.map((card) => (
+              <div
+                key={card.title}
+                className={`rounded-[24px] border px-5 py-5 shadow-sm ${card.tone}`}
+              >
+                <p className="text-sm font-semibold">{card.title}</p>
+                <p className="mt-3 text-3xl font-bold">
+                  {metricsLoading ? "…" : card.value}
+                </p>
+                <p className="mt-2 text-xs opacity-80">{card.note}</p>
+              </div>
+            ))}
+          </div>
         </section>
 
         <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">

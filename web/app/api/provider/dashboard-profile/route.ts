@@ -53,8 +53,59 @@ function categoriesCacheKey(categories: string[]): string {
     .join("|");
 }
 
-function providerMetricsCacheKey(providerId: string, categories: string[]): string {
-  return `${providerId}::${categoriesCacheKey(categories)}`;
+// Same shape as categoriesCacheKey but kept as a separate name so cache-key
+// formation is greppable for either dimension. Areas participate in the
+// metrics cache key because TotalRequestsInMyCategories now filters by area.
+function areasCacheKey(areas: string[]): string {
+  return Array.from(
+    new Set((areas || []).map((a) => String(a || "").trim()).filter((a) => a.length > 0))
+  )
+    .sort()
+    .join("|");
+}
+
+export type MetricsRange = "today" | "7d" | "30d" | "6m" | "1y" | "all";
+
+const VALID_METRICS_RANGES: ReadonlySet<MetricsRange> = new Set([
+  "today",
+  "7d",
+  "30d",
+  "6m",
+  "1y",
+  "all",
+]);
+
+function parseMetricsRange(raw: string | null): MetricsRange {
+  if (!raw) return "all";
+  const trimmed = raw.trim().toLowerCase();
+  return VALID_METRICS_RANGES.has(trimmed as MetricsRange)
+    ? (trimmed as MetricsRange)
+    : "all";
+}
+
+// Start-of-window timestamp for the given range, or null for "all". "today"
+// uses startOfTodayUTC to match getCategoryDemandByRangeFromSupabase's
+// existing convention in this file. "6m" = 180d; "1y" = 365d.
+function metricsRangeSince(range: MetricsRange): Date | null {
+  if (range === "all") return null;
+  const now = Date.now();
+  if (range === "today") {
+    const d = new Date(now);
+    d.setUTCHours(0, 0, 0, 0);
+    return d;
+  }
+  const days =
+    range === "7d" ? 7 : range === "30d" ? 30 : range === "6m" ? 180 : 365;
+  return new Date(now - days * 24 * 60 * 60 * 1000);
+}
+
+function providerMetricsCacheKey(
+  providerId: string,
+  categories: string[],
+  areas: string[],
+  range: MetricsRange
+): string {
+  return `${providerId}::${categoriesCacheKey(categories)}::${areasCacheKey(areas)}::${range}`;
 }
 
 const PERF_DEBUG = process.env.NODE_ENV !== "production";
@@ -197,10 +248,22 @@ const EMPTY_PROVIDER_METRICS: ProviderMetrics = {
 // parallel via head-only count queries (no row payloads transferred). Any
 // individual query failure is logged and its count is coerced to 0, so one
 // missing/denied table never zeroes out the whole panel.
+//
+// `since` applies the dashboard time-range filter:
+//   - TotalRequestsInMyCategories : tasks.created_at >= since
+//   - TotalRequestsMatchedToMe    : provider_task_matches.created_at >= since
+//   - TotalRequestsRespondedByMe  : provider_task_matches.created_at >= since
+//   - TotalRequestsAcceptedByMe   : provider_task_matches.created_at >= since
+//   - TotalRequestsCompletedByMe  : tasks.closed_at >= since (jobs CLOSED in
+//     the window, regardless of when the match was created — matches the
+//     "completed during this period" mental model).
+// `since === null` means "all time" — no filter.
 async function getProviderMetricsFromSupabase(
   supabase: ServerSupabase,
   providerId: string,
-  categories: string[]
+  categories: string[],
+  providerAreas: string[],
+  since: Date | null
 ): Promise<ProviderMetrics> {
   if (!providerId) return EMPTY_PROVIDER_METRICS;
 
@@ -211,36 +274,63 @@ async function getProviderMetricsFromSupabase(
         .filter((c) => c.length > 0)
     )
   );
+  const areaList = Array.from(
+    new Set(
+      (providerAreas || [])
+        .map((a) => String(a || "").trim())
+        .filter((a) => a.length > 0)
+    )
+  );
 
-  const categoriesCountPromise =
-    categoryList.length > 0
-      ? supabase
-          .from("tasks")
-          .select("task_id", { count: "exact", head: true })
-          .in("category", categoryList)
-      : Promise.resolve({ count: 0, error: null } as {
-          count: number | null;
-          error: unknown;
-        });
+  const sinceIso = since ? since.toISOString() : null;
+  const sinceMs = since ? since.getTime() : null;
 
-  const matchedCountPromise = supabase
-    .from("provider_task_matches")
-    .select("task_id", { count: "exact", head: true })
-    .eq("provider_id", providerId);
+  // Requests In Your Services — filtered by category AND provider's approved
+  // areas. A provider with no approved areas is not eligible to receive any
+  // matches, so the count is 0 (matches existing matching-pipeline semantics).
+  const categoriesCountPromise = (() => {
+    if (categoryList.length === 0 || areaList.length === 0) {
+      return Promise.resolve({ count: 0, error: null } as {
+        count: number | null;
+        error: unknown;
+      });
+    }
+    let q = supabase
+      .from("tasks")
+      .select("task_id", { count: "exact", head: true })
+      .in("category", categoryList)
+      .in("area", areaList);
+    if (sinceIso) q = q.gte("created_at", sinceIso);
+    return q;
+  })();
 
-  const respondedCountPromise = supabase
-    .from("provider_task_matches")
-    .select("task_id", { count: "exact", head: true })
-    .eq("provider_id", providerId)
-    .in("match_status", ["responded", "accepted"]);
+  const matchedCountPromise = (() => {
+    let q = supabase
+      .from("provider_task_matches")
+      .select("task_id", { count: "exact", head: true })
+      .eq("provider_id", providerId);
+    if (sinceIso) q = q.gte("created_at", sinceIso);
+    return q;
+  })();
 
-  // Provider-task linkage now lives in provider_task_matches. The accepted
-  // count is the number of match rows for this provider with match_status in
-  // ("accepted","assigned"); the completed count needs the underlying task_ids
-  // because closure state is on `tasks`, so it runs as a follow-up query.
+  const respondedCountPromise = (() => {
+    let q = supabase
+      .from("provider_task_matches")
+      .select("task_id", { count: "exact", head: true })
+      .eq("provider_id", providerId)
+      .in("match_status", ["responded", "accepted"]);
+    if (sinceIso) q = q.gte("created_at", sinceIso);
+    return q;
+  })();
+
+  // Accepted matches — fetched as rows (not head:true) because we need the
+  // underlying task_ids to chain into the Completed count. created_at is
+  // included so we can apply the in-window filter for Accepted in memory
+  // without a second round-trip; Completed uses the FULL accepted task-id
+  // set and is filtered at the DB by tasks.closed_at instead.
   const acceptedMatchesPromise = supabase
     .from("provider_task_matches")
-    .select("task_id")
+    .select("task_id, created_at")
     .eq("provider_id", providerId)
     .in("match_status", ["accepted", "assigned"]);
 
@@ -292,19 +382,36 @@ async function getProviderMetricsFromSupabase(
       error: msg,
     });
   } else {
-    acceptedTaskIds = (acceptedMatchesResult.data ?? [])
-      .map((row) => String((row as { task_id?: unknown }).task_id ?? "").trim())
+    type AcceptedMatchRow = { task_id?: unknown; created_at?: unknown };
+    const rows = (acceptedMatchesResult.data ?? []) as AcceptedMatchRow[];
+    acceptedTaskIds = rows
+      .map((row) => String(row.task_id ?? "").trim())
       .filter((id) => id.length > 0);
-    totalRequestsAcceptedByMe = acceptedTaskIds.length;
+    if (sinceMs === null) {
+      totalRequestsAcceptedByMe = acceptedTaskIds.length;
+    } else {
+      // In-memory window filter on the rows we already paid to fetch — avoids
+      // a second DB round-trip for the count.
+      totalRequestsAcceptedByMe = rows.reduce((acc, row) => {
+        const t = Date.parse(String(row.created_at ?? ""));
+        return Number.isFinite(t) && t >= sinceMs ? acc + 1 : acc;
+      }, 0);
+    }
   }
 
+  // Completed: tasks closed/completed AND closed_at within the window. Uses
+  // the FULL accepted-task-id set (not the in-window filtered Accepted set)
+  // so a job accepted last month and closed today still counts under
+  // "Completed in the last 7 days".
   let totalRequestsCompletedByMe = 0;
   if (acceptedTaskIds.length > 0) {
-    const completedResult = await supabase
+    let q = supabase
       .from("tasks")
       .select("task_id", { count: "exact", head: true })
       .in("task_id", acceptedTaskIds)
       .in("status", ["closed", "completed"]);
+    if (sinceIso) q = q.gte("closed_at", sinceIso);
+    const completedResult = await q;
     totalRequestsCompletedByMe = readCount(completedResult, "TotalRequestsCompletedByMe");
   }
 
@@ -745,6 +852,11 @@ export async function GET(request: NextRequest) {
 
   const handlerStart = perfMark();
 
+  // Time-range filter for the 5 metric tiles. Default "all" preserves
+  // existing all-time behavior when no param is supplied.
+  const metricsRange = parseMetricsRange(request.nextUrl.searchParams.get("range"));
+  const metricsSince = metricsRangeSince(metricsRange);
+
   // Per-request debug timing collector. Active only when explicitly opted in
   // AND we're not in production. Output ships as the `x-debug-timings`
   // response header so the response body shape stays unchanged.
@@ -920,11 +1032,16 @@ export async function GET(request: NextRequest) {
       (async () => {
         const t = perfMark();
         // TTL cache for the 5 head-only count queries that dominate this
-        // block. Keyed by (providerId, sorted categories) so a category-set
-        // edit invalidates immediately. Honors the same `bypassCache` flag
-        // as the city-wide analytics caches so ZZ-prefixed test providers
-        // always observe their own writes.
-        const cacheKey = providerMetricsCacheKey(providerIdString, providerCategoryList);
+        // block. Keyed by (providerId, sorted categories, sorted areas,
+        // range) so any of those four dimensions invalidates independently.
+        // Honors the same `bypassCache` flag as the city-wide analytics
+        // caches so ZZ-prefixed test providers always observe their own writes.
+        const cacheKey = providerMetricsCacheKey(
+          providerIdString,
+          providerCategoryList,
+          providerAreaList,
+          metricsRange
+        );
         let value: ProviderMetrics;
         let cacheHit = false;
         const cached = cacheOptions.bypassCache
@@ -937,7 +1054,9 @@ export async function GET(request: NextRequest) {
           value = await getProviderMetricsFromSupabase(
             supabase,
             providerIdString,
-            providerCategoryList
+            providerCategoryList,
+            providerAreaList,
+            metricsSince
           );
           if (!cacheOptions.bypassCache) {
             if (providerMetricsCache.size >= PROVIDER_METRICS_CACHE_MAX_ENTRIES) {
@@ -1266,6 +1385,7 @@ export async function GET(request: NextRequest) {
             ProviderID: String(provider.provider_id || ""),
             Categories: providerCategoryList,
             Areas: providerAreaList,
+            MetricsRange: metricsRange,
           },
           AreaDemand: areaDemand,
           SelectedAreaDemand: selectedAreaDemand,

@@ -1682,11 +1682,6 @@ export async function POST(request: NextRequest) {
       const pendingNewAreas = Array.isArray(body.pendingNewAreas)
         ? body.pendingNewAreas
         : [];
-      const requiresAdminApproval =
-        typeof body.requiresAdminApproval === "string"
-          ? body.requiresAdminApproval.trim()
-          : "";
-
       if (!phone || !name || categories.length === 0 || areas.length === 0) {
         return withNoCache(
           NextResponse.json(
@@ -1697,7 +1692,36 @@ export async function POST(request: NextRequest) {
       }
 
       const supabase = await createClient();
-      const pendingApproval = requiresAdminApproval === "true" ? "yes" : "no";
+      const [{ data: approvedCategories, error: approvedCategoriesError }, { data: approvedAreas, error: approvedAreasError }] =
+        await Promise.all([
+          supabase.from("categories").select("name").eq("active", true),
+          supabase.from("areas").select("area_name").eq("active", true),
+        ]);
+
+      if (approvedCategoriesError) {
+        return withNoCache(
+          NextResponse.json({ ok: false, error: approvedCategoriesError.message }, { status: 500 })
+        );
+      }
+      if (approvedAreasError) {
+        return withNoCache(
+          NextResponse.json({ ok: false, error: approvedAreasError.message }, { status: 500 })
+        );
+      }
+
+      const approvedCategoryNames = new Set(
+        (approvedCategories ?? []).map((row) => String(row.name || "").trim().toLowerCase())
+      );
+      const approvedAreaNames = new Set(
+        (approvedAreas ?? []).map((row) => String(row.area_name || "").trim().toLowerCase())
+      );
+      const hasNewCategory = categories.some(
+        (category) => !approvedCategoryNames.has(String(category || "").trim().toLowerCase())
+      );
+      const hasNewArea = areas.some(
+        (area) => !approvedAreaNames.has(String(area || "").trim().toLowerCase())
+      );
+      const pendingApproval = hasNewCategory || hasNewArea ? "yes" : "no";
 
       // Pre-check: if phone already exists, return 409 with the existing
       // provider_id so the UI can deep-link to login/edit. The unique
@@ -1726,65 +1750,30 @@ export async function POST(request: NextRequest) {
       const isDuplicateName = duplicateMatches.length > 0;
       const nowIso = new Date().toISOString();
 
-      // Sequential PR-XXXX generator. Reads max numeric suffix from the
-      // canonical 1–6 digit form (e.g. PR-3129) and ignores legacy
-      // pathological values like PR-1776527015511 (Date.now() format) or
-      // PR-QA-* test fixtures, so new IDs continue from the real sequence.
-      async function generateNextProviderId(): Promise<string> {
-        const { data, error } = await supabase
-          .from("providers")
-          .select("provider_id")
-          .like("provider_id", "PR-%");
-        if (error) throw new Error(error.message);
-        let maxNum = 0;
-        for (const row of data || []) {
-          const m = String(row.provider_id || "").match(/^PR-(\d{1,6})$/);
-          if (!m) continue;
-          const n = Number(m[1]);
-          if (Number.isFinite(n) && n > maxNum) maxNum = n;
-        }
-        return `PR-${String(maxNum + 1).padStart(4, "0")}`;
+      const providerInsertRow: Record<string, unknown> = {
+        full_name: name,
+        phone,
+        business_name: null,
+        experience_years: null,
+        notes: null,
+        status: pendingApproval === "yes" ? "pending" : "active",
+        verified: isDuplicateName ? "no" : "yes",
+      };
+      if (isDuplicateName) {
+        providerInsertRow.duplicate_name_review_status = "pending";
+        providerInsertRow.duplicate_name_matches = duplicateMatches.map((m) => m.provider_id);
+        providerInsertRow.duplicate_name_flagged_at = nowIso;
       }
 
-      const MAX_ID_RETRIES = 5;
-      let providerId = "";
-      let providerInsertOk = false;
-      let lastInsertError: { code?: string; message?: string } | null = null;
+      const { data: insertedProvider, error: providerError } = await supabase
+        .from("providers")
+        .insert(providerInsertRow)
+        .select("provider_id")
+        .single();
 
-      for (let attempt = 0; attempt < MAX_ID_RETRIES; attempt++) {
-        providerId = await generateNextProviderId();
-
-        const providerInsertRow: Record<string, unknown> = {
-          provider_id: providerId,
-          full_name: name,
-          phone,
-          business_name: null,
-          experience_years: null,
-          notes: null,
-          status: "pending",
-          verified: isDuplicateName ? "no" : "yes",
-        };
-        if (isDuplicateName) {
-          providerInsertRow.duplicate_name_review_status = "pending";
-          providerInsertRow.duplicate_name_matches = duplicateMatches.map((m) => m.provider_id);
-          providerInsertRow.duplicate_name_flagged_at = nowIso;
-        }
-
-        const { error: providerError } = await supabase
-          .from("providers")
-          .insert(providerInsertRow);
-
-        if (!providerError) {
-          providerInsertOk = true;
-          break;
-        }
-
+      if (providerError) {
         const code = (providerError as { code?: string }).code;
         const message = String(providerError.message || "");
-        lastInsertError = { code, message };
-
-        // Phone uniqueness collision: a concurrent registration with the
-        // same phone slipped past the pre-check. Surrender immediately.
         if (code === "23505" && message.includes("providers_phone_key")) {
           return withNoCache(
             NextResponse.json(
@@ -1793,13 +1782,6 @@ export async function POST(request: NextRequest) {
             )
           );
         }
-
-        // PK collision on provider_id — concurrent registration grabbed
-        // the same sequential number. Recompute max and retry.
-        if (code === "23505") {
-          continue;
-        }
-
         return withNoCache(
           NextResponse.json(
             { ok: false, error: message || "Failed to create provider" },
@@ -1808,17 +1790,7 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      if (!providerInsertOk) {
-        return withNoCache(
-          NextResponse.json(
-            {
-              ok: false,
-              error: lastInsertError?.message || "Failed to create provider after retries",
-            },
-            { status: 500 }
-          )
-        );
-      }
+      const providerId = insertedProvider.provider_id;
 
       // Best-effort rollback for child-insert failures. Supabase JS has no
       // transactions, so on partial failure we delete the orphan rows
@@ -1903,12 +1875,7 @@ export async function POST(request: NextRequest) {
       }
 
       const effectiveVerified = isDuplicateName ? "no" : "yes";
-      const hasNewCustomCategories = pendingNewCategories.length > 0;
-      const effectivePendingApproval = isDuplicateName
-        ? "yes"
-        : hasNewCustomCategories
-          ? "yes"
-          : pendingApproval;
+      const effectivePendingApproval = pendingApproval;
 
       return withNoCache(
         NextResponse.json({
@@ -1928,7 +1895,7 @@ export async function POST(request: NextRequest) {
             Phone: phone,
             Verified: effectiveVerified,
             PendingApproval: effectivePendingApproval,
-            Status: "pending",
+            Status: pendingApproval === "yes" ? "pending" : "active",
             DuplicateNameReviewStatus: isDuplicateName ? "pending" : null,
           },
         })
