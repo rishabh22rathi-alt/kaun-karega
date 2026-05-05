@@ -1,5 +1,8 @@
 import { createClient } from "@/lib/supabase/server";
 import { canonicalizeProviderAreasToCanonicalNames } from "@/lib/admin/adminAreaMappings";
+// CHANGE: import alias resolver so user-typed variants ("lohar", "welding")
+// map to canonical category ("welder") before downstream matching.
+import { resolveCategoryAlias } from "@/lib/categoryAliases";
 
 const clean = (s: string) => (s || "").trim().replace(/\s+/g, " ");
 
@@ -21,10 +24,13 @@ async function handle(req: Request) {
     }
   }
 
-  const category = clean(
+  // CHANGE: resolve aliases (lohar → welder, etc.) before matching.
+  // Falls through to the original cleaned input if no alias row matches.
+  const rawCategory = clean(
     (typeof body.category === "string" ? body.category : queryCategory) ||
       queryService
   );
+  const category = await resolveCategoryAlias(rawCategory);
   const area = clean(
     (typeof body.area === "string" ? body.area : queryArea) || ""
   );

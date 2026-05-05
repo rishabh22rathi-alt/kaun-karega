@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { getAuthSession } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
+// CHANGE: import alias resolver so submitted task category is normalized
+// (e.g. "lohar" → "welder") before the categories-table canonicalization.
+import { resolveCategoryAlias } from "@/lib/categoryAliases";
 
 function getTodayDateInKolkata() {
   return new Intl.DateTimeFormat("en-CA", {
@@ -30,7 +33,10 @@ export async function POST(request: Request) {
     const body = await request.json();
     const bodyParsedMs = Date.now();
     // Destructure the data coming from your frontend component
-    const category = typeof body?.category === "string" ? body.category.trim() : "";
+    // CHANGE: resolve user-typed alias to canonical category before persisting.
+    // The downstream categories-table lookup will further canonicalize casing.
+    const rawCategory = typeof body?.category === "string" ? body.category.trim() : "";
+    const category = await resolveCategoryAlias(rawCategory);
     const area = typeof body?.area === "string" ? body.area.trim() : "";
     const selectedTimeframe =
       typeof body?.time === "string"

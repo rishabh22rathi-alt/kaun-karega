@@ -68,6 +68,10 @@ import {
   sendNeedChatMessageFromSupabase,
   createOrGetNeedChatThreadFromSupabase,
 } from "@/lib/chat/chatPersistence";
+// CHANGE: import alias resolver. Used by create_need (submit task) and the
+// public/admin needs search filters so user-typed variants resolve to the
+// canonical category before insert/filter.
+import { resolveCategoryAlias } from "@/lib/categoryAliases";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -515,7 +519,10 @@ export async function POST(request: NextRequest) {
     }
     if (action === "admin_get_needs") {
       const statusFilter = typeof body.Status === "string" ? body.Status.trim().toLowerCase() : "all";
-      const categoryFilter = typeof body.Category === "string" ? body.Category.trim().toLowerCase() : "";
+      // CHANGE: resolve alias on the admin search filter so admins typing
+      // "lohar" still find "welder" needs. Helper already lowercases + trims.
+      const categoryFilter =
+        typeof body.Category === "string" ? await resolveCategoryAlias(body.Category) : "";
       const areaFilter = typeof body.Area === "string" ? body.Area.trim().toLowerCase() : "";
       const searchFilter = typeof body.Search === "string" ? body.Search.trim().toLowerCase() : "";
 
@@ -1147,7 +1154,9 @@ export async function POST(request: NextRequest) {
         body.IsAnonymous !== undefined ? body.IsAnonymous : body.isAnonymous
       );
       let displayName = String(body.DisplayName ?? body.displayName ?? "").trim();
-      const category = String(body.Category ?? body.category ?? "").trim();
+      // CHANGE: resolve alias on submit-task path so "lohar" / "welding" get
+      // persisted as the canonical category ("welder").
+      const category = await resolveCategoryAlias(String(body.Category ?? body.category ?? ""));
       const rawAreasInput = body.Areas ?? body.areas ?? body.Area ?? body.area ?? "";
       const areasList = (Array.isArray(rawAreasInput)
         ? rawAreasInput.map((v) => String(v ?? ""))
@@ -1288,7 +1297,10 @@ export async function POST(request: NextRequest) {
       );
     }
     if (action === "get_needs") {
-      const categoryFilter = typeof body.Category === "string" ? body.Category.trim().toLowerCase() : "";
+      // CHANGE: resolve alias on the public search filter so a user searching
+      // "iron work" finds "welder" needs. Helper lowercases + trims.
+      const categoryFilter =
+        typeof body.Category === "string" ? await resolveCategoryAlias(body.Category) : "";
       const areaFilter = typeof body.Area === "string" ? body.Area.trim().toLowerCase() : "";
 
       const supabase = await createClient();
