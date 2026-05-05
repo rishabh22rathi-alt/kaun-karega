@@ -344,6 +344,11 @@ function PageContent() {
   const [shakeOtp, setShakeOtp] = useState(false);
   const [isHydrated, setIsHydrated] = useState(false);
   const lastOtpSentAtRef = useRef(0);
+  // Flips to true the moment the user actively claims ownership of the
+  // category field (selection or typing). Mount-time bootstrap effects
+  // (URL ?category=, session draft) bail out once this is set, so a stale
+  // URL value can't snap back over a user-picked canonical.
+  const userPickedCategoryRef = useRef(false);
 
   // ── Typewriter animation ──────────────────────────────────────────────────
   const TW_HINTS = ["Carpenter", "Plumber", "Electrician", "Mechanic", "Teacher", "Home Tutor", "AC Repair"];
@@ -425,15 +430,17 @@ function PageContent() {
   }, []);
 
   useEffect(() => {
+    if (userPickedCategoryRef.current) return;
     const fromParams = params.get("category") || "";
     if (fromParams && fromParams !== category) {
       setCategory(fromParams);
       setSelectedCategory(fromParams.trim());
       console.debug("[home] category selected from query:", fromParams.trim());
     }
-  }, [params, category]);
+  }, [params]);
 
   useEffect(() => {
+    if (userPickedCategoryRef.current) return;
     const draft = readTaskDraftFromSessionStorage();
     if (!draft) return;
 
@@ -644,7 +651,7 @@ function PageContent() {
     if (!query) return [];
     const candidates = categoryList.filter((item) => isActiveCategory(item.active));
 
-    const results = candidates
+    const matched = candidates
       .map((item) => {
         const name = item.name;
         if (typeof name !== "string" || !name) return null;
@@ -674,7 +681,27 @@ function PageContent() {
           type: "canonical" | "alias" | undefined;
           matchPriority: 1 | 2 | undefined;
         } => Boolean(item)
-      )
+      );
+
+    // Final dedup gate: keep one entry per lowercased label. On collision the
+    // lower matchPriority wins (canonical 1 beats alias 2); equal priority
+    // keeps the first occurrence so the server's canonical-before-alias
+    // ordering is preserved.
+    const dedupedByLabel = new Map<string, (typeof matched)[number]>();
+    for (const item of matched) {
+      const existing = dedupedByLabel.get(item.lower);
+      if (!existing) {
+        dedupedByLabel.set(item.lower, item);
+        continue;
+      }
+      const existingPriority = existing.matchPriority ?? 1;
+      const itemPriority = item.matchPriority ?? 1;
+      if (itemPriority < existingPriority) {
+        dedupedByLabel.set(item.lower, item);
+      }
+    }
+
+    const results = Array.from(dedupedByLabel.values())
       .sort((a, b) => {
         // Primary: matchPriority (canonical 1 before alias 2). Falls through
         // to today's tie-breakers when priority is equal or absent.
@@ -701,12 +728,21 @@ function PageContent() {
     category.trim().length > 0 &&
     filteredCategories.length > 0;
 
-  const selectCategory = (name: string) => {
-    setCategory(name);
-    setSelectedCategory(name.trim());
+  const selectCategory = (label: string, canonical?: string) => {
+    // Claim ownership of the category field before any state update so the
+    // URL/draft bootstrap effects can't re-fire and snap the value back.
+    userPickedCategoryRef.current = true;
+    // When the picked suggestion carries a canonical key (alias rows), commit
+    // the canonical so downstream submission uses it directly without relying
+    // on resolveCategory to re-derive it. Falls back to the label for typed
+    // input or canonical rows where canonical is absent.
+    const canonicalTrimmed = canonical?.trim() ?? "";
+    const finalValue = canonicalTrimmed || label;
+    setCategory(finalValue);
+    setSelectedCategory(finalValue.trim());
     setIsCategoryFocused(false);
     setHighlightIndex(-1);
-    console.debug("[home] category selected:", name.trim());
+    console.debug("[home] category selected:", finalValue.trim());
   };
 
   useEffect(() => {
@@ -764,7 +800,7 @@ function PageContent() {
           ? filteredCategories[0]
           : filteredCategories[highlightIndex];
       if (selected) {
-        selectCategory(selected.name);
+        selectCategory(selected.name, selected.canonical);
       }
       return;
     }
@@ -1216,6 +1252,7 @@ const hasArea = area.trim() !== "";
                   value={category}
                   onChange={(e) => {
                     const value = e.target.value;
+                    userPickedCategoryRef.current = true;
                     setCategory(value);
                     setSelectedCategory(value.trim());
                     setHighlightIndex(-1);
@@ -1249,7 +1286,8 @@ const hasArea = area.trim() !== "";
                   type="button"
                   onClick={() => {
                     if (filteredCategories.length > 0) {
-                      selectCategory(filteredCategories[0].name);
+                      const first = filteredCategories[0];
+                      selectCategory(first.name, first.canonical);
                     } else if (category.trim()) {
                       selectCategory(category.trim());
                     } else {
@@ -1292,7 +1330,7 @@ const hasArea = area.trim() !== "";
                             : "hover:bg-[#003d20]/10 hover:text-[#003d20]"
                         }`}
                         onMouseEnter={() => setHighlightIndex(index)}
-                        onClick={() => selectCategory(item.name)}
+                        onClick={() => selectCategory(item.name, item.canonical)}
                       >
                         {renderHighlightedMatch(item.name, category)}
                         {showAliasHint && (
