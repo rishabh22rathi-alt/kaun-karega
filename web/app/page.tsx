@@ -87,17 +87,28 @@ function normalizeDateOnly(value: string) {
 type CategoryOption = {
   name: string;
   active?: string | boolean;
+  // Additive, optional: only populated when /api/categories?include=aliases
+  // returned a `suggestions[]` row. Existing consumers that read only
+  // `name`/`active` are unaffected.
+  canonical?: string;
+  type?: "canonical" | "alias";
+  matchPriority?: 1 | 2;
 };
 
 type ActiveCategory = {
   originalName: string;
   normName: string;
+  // Present only for alias rows. Undefined for canonical rows so resolver
+  // falls back to today's behavior.
+  canonical?: string;
 };
 
 type CategoryResolution = {
   resolvedName: string;
   confidence: number;
-  reason: "exact" | "fuzzy" | "none";
+  // "alias" added so the existing "Using category: …" hint (which fires for
+  // any reason !== "exact") covers alias matches automatically.
+  reason: "exact" | "fuzzy" | "alias" | "none";
   isConfident: boolean;
   bestMatch: string | null;
 };
@@ -160,12 +171,15 @@ const resolveCategory = (
     (item) => item.normName === normalizedInput
   );
   if (exactMatch) {
+    // Use canonical ONLY if present (alias rows). Otherwise fall back to
+    // originalName — preserves today's behavior for canonical rows.
+    const resolvedName = exactMatch.canonical || exactMatch.originalName;
     return {
-      resolvedName: exactMatch.originalName,
+      resolvedName,
       confidence: 1,
-      reason: "exact",
+      reason: exactMatch.canonical ? "alias" : "exact",
       isConfident: true,
-      bestMatch: exactMatch.originalName,
+      bestMatch: resolvedName,
     };
   }
 
@@ -174,6 +188,7 @@ const resolveCategory = (
     normName: string;
     similarity: number;
     distance: number;
+    canonical?: string;
   } | null>((currentBest, item) => {
     const distance = levenshteinDistance(normalizedInput, item.normName);
     const similarity = similarityScore(normalizedInput, item.normName);
@@ -183,6 +198,7 @@ const resolveCategory = (
         normName: item.normName,
         similarity,
         distance,
+        canonical: item.canonical,
       };
     }
     return currentBest;
@@ -204,12 +220,14 @@ const resolveCategory = (
     (best.distance <= 2 && maxLen <= 12) ||
     (best.distance <= 3 && maxLen > 12);
 
+  // Same canonical-only-if-present rule on the fuzzy branch.
+  const resolvedName = best.canonical || best.name;
   return {
-    resolvedName: best.name,
+    resolvedName,
     confidence: best.similarity,
-    reason: confident ? "fuzzy" : "none",
+    reason: confident ? (best.canonical ? "alias" : "fuzzy") : "none",
     isConfident: confident,
-    bestMatch: best.name,
+    bestMatch: resolvedName,
   };
 };
 
@@ -449,14 +467,26 @@ function PageContent() {
   useEffect(() => {
     const fetchCategories = async () => {
       try {
-        const res = await fetch("/api/categories");
+        // Opt-in to alias suggestions. Server returns the original `data`
+        // shape PLUS a `suggestions[]` array with canonical/alias rows.
+        // E2E mocks (URL glob `**/api/categories**`) still match this URL and
+        // return their legacy shape — the parser below falls through to the
+        // legacy branch when `suggestions` is absent.
+        const res = await fetch("/api/categories?include=aliases");
         console.log("CATEGORIES RAW RESPONSE:", res);
         if (!res.ok) {
           throw new Error("Failed to fetch categories");
         }
         const data = await res.json();
         console.log("CATEGORIES API RESPONSE:", data);
-        const categoriesRaw = Array.isArray(data)
+        // Prefer `suggestions[]` when present — carries label, canonical,
+        // type, matchPriority. Otherwise fall back to the legacy parser.
+        const suggestionsRaw = Array.isArray(data?.suggestions)
+          ? data.suggestions
+          : null;
+        const categoriesRaw = suggestionsRaw
+          ? suggestionsRaw
+          : Array.isArray(data)
           ? data
           : Array.isArray(data?.categories)
           ? data.categories
@@ -479,9 +509,35 @@ function PageContent() {
                   record.category_name) ||
                 "";
               if (!name) return null;
+              const canonicalRaw =
+                typeof record.canonical === "string" ? record.canonical.trim() : "";
+              const typeRaw =
+                record.type === "alias" || record.type === "canonical"
+                  ? record.type
+                  : undefined;
+              const matchPriorityRaw =
+                record.matchPriority === 1 || record.matchPriority === 2
+                  ? record.matchPriority
+                  : undefined;
               return {
                 name,
-                active: record.active as string | boolean | undefined,
+                // Server already filters `active=true` on the suggestions
+                // path, so default to true there. Legacy path keeps the
+                // original record.active value.
+                active:
+                  suggestionsRaw !== null
+                    ? true
+                    : (record.active as string | boolean | undefined),
+                // Only set canonical for alias rows whose canonical key
+                // actually differs from the displayed label. Canonical rows
+                // leave it undefined so resolveCategory falls back to its
+                // original behavior.
+                canonical:
+                  typeRaw === "alias" && canonicalRaw && canonicalRaw !== name
+                    ? canonicalRaw
+                    : undefined,
+                type: typeRaw,
+                matchPriority: matchPriorityRaw,
               };
             }
             return null;
@@ -561,6 +617,9 @@ function PageContent() {
       .map((item) => ({
         originalName: item.name,
         normName: normalizeCategory(item.name),
+        // Pass-through. Undefined for canonical rows — resolveCategory
+        // treats absence as "use originalName" (today's behavior).
+        canonical: item.canonical,
       }));
   }, [categoryList]);
 
@@ -597,13 +656,31 @@ function PageContent() {
           name,
           startsWith,
           lower,
+          // Carry through so the dropdown can render the muted "(Welder)"
+          // hint on alias rows. Undefined on canonical rows / legacy shape.
+          canonical: item.canonical,
+          type: item.type,
+          matchPriority: item.matchPriority,
         };
       })
       .filter(
-        (item): item is { name: string; startsWith: boolean; lower: string } =>
-          Boolean(item)
+        (
+          item
+        ): item is {
+          name: string;
+          startsWith: boolean;
+          lower: string;
+          canonical: string | undefined;
+          type: "canonical" | "alias" | undefined;
+          matchPriority: 1 | 2 | undefined;
+        } => Boolean(item)
       )
       .sort((a, b) => {
+        // Primary: matchPriority (canonical 1 before alias 2). Falls through
+        // to today's tie-breakers when priority is equal or absent.
+        const pa = a.matchPriority ?? 1;
+        const pb = b.matchPriority ?? 1;
+        if (pa !== pb) return pa - pb;
         if (a.startsWith !== b.startsWith) {
           return a.startsWith ? -1 : 1;
         }
@@ -1193,6 +1270,18 @@ const hasArea = area.trim() !== "";
                 >
                   {filteredCategories.map((item, index) => {
                     const isHighlighted = index === highlightIndex;
+                    // Alias-row hint: e.g. label "lohar" → muted "(Welder)".
+                    // Only render when canonical is present AND differs from
+                    // the displayed label (parser already enforces both, but
+                    // double-check defensively).
+                    const showAliasHint =
+                      item.type === "alias" &&
+                      typeof item.canonical === "string" &&
+                      item.canonical.length > 0 &&
+                      item.canonical.toLowerCase() !== item.name.toLowerCase();
+                    const aliasHintText = showAliasHint && item.canonical
+                      ? `(${item.canonical.charAt(0).toUpperCase()}${item.canonical.slice(1)})`
+                      : "";
                     return (
                       <button
                         key={item.name}
@@ -1206,6 +1295,11 @@ const hasArea = area.trim() !== "";
                         onClick={() => selectCategory(item.name)}
                       >
                         {renderHighlightedMatch(item.name, category)}
+                        {showAliasHint && (
+                          <span className="ml-2 text-xs text-slate-400">
+                            {aliasHintText}
+                          </span>
+                        )}
                       </button>
                     );
                   })}

@@ -58,9 +58,12 @@ export async function GET(request: Request) {
   // ----- OPT-IN PATH: ?include=aliases -----
   // Two queries run in parallel via Promise.all so total wall-clock latency
   // is max(t1, t2) rather than t1 + t2.
+  // Includes `alias_type` so consumers (e.g. provider register work-tag UI)
+  // can filter rows by tag kind. Pre-existing rows without alias_type fall
+  // through with the field undefined; clients use that as a "no filter" cue.
   const aliasesQuery = adminSupabase
     .from("category_aliases")
-    .select("alias, canonical_category, active")
+    .select("alias, canonical_category, active, alias_type")
     .eq("active", true)
     .limit(MAX_ROWS);
 
@@ -116,6 +119,9 @@ export async function GET(request: Request) {
     canonical: string;
     type: "canonical" | "alias";
     matchPriority: 1 | 2;
+    // Only set on alias rows when the DB column has a non-empty value.
+    // Consumers fall back to "no filter" when absent.
+    aliasType?: string;
   };
   const suggestions: Suggestion[] = [];
 
@@ -149,11 +155,19 @@ export async function GET(request: Request) {
     if (!activeCanonicalSet.has(canonical.toLowerCase())) continue;
     if (takenLabels.has(label.toLowerCase())) continue;
 
+    // Pass-through alias_type so the provider register page can filter
+    // chips to ('work_tag','local_name'). Omitted from the row when blank
+    // so default-shape consumers see no extra noise.
+    const aliasType = String(
+      (row as { alias_type?: unknown }).alias_type || ""
+    ).trim();
+
     suggestions.push({
       label,
       canonical,
       type: "alias",
       matchPriority: 2,
+      ...(aliasType ? { aliasType } : {}),
     });
     takenLabels.add(label.toLowerCase());
   }
