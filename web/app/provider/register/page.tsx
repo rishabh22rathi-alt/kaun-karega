@@ -187,6 +187,14 @@ function ProviderRegisterPageInner() {
   const [areas, setAreas] = useState<string[]>([]);
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
   const [customCategoryKeys, setCustomCategoryKeys] = useState<string[]>([]);
+  // Tag pool from /api/categories?include=aliases. Key = canonical name lowercased.
+  const [workTagsByCanonical, setWorkTagsByCanonical] = useState<
+    Record<string, Array<{ tag: string; aliasType?: string }>>
+  >({});
+  // Provider's tag picks per category. Key = categoryKey(category).
+  const [selectedWorkTags, setSelectedWorkTags] = useState<Record<string, string[]>>(
+    {}
+  );
   const [selectedAreas, setSelectedAreas] = useState<string[]>([]);
   const [customAreaKeys, setCustomAreaKeys] = useState<string[]>([]);
 
@@ -275,7 +283,10 @@ function ProviderRegisterPageInner() {
       setIsLoadingCategories(true);
       setCategoriesError("");
       try {
-        const response = await fetch("/api/categories", {
+        // Opt-in to alias suggestions so we can derive work-tag chips.
+        // The strict `data.data[]` parser below is unchanged; we only ALSO
+        // read the new `data.suggestions[]` array for tag building.
+        const response = await fetch("/api/categories?include=aliases", {
           cache: "no-store",
         });
         const text = await response.text();
@@ -308,6 +319,36 @@ function ProviderRegisterPageInner() {
             (typeof data?.error === "string" && data.error) || "Failed to load categories"
           );
         }
+
+        // Build the tag map keyed by canonical (lowercased). Non-alias rows
+        // and rows missing label/canonical are skipped. When the API or
+        // mocks omit `suggestions`, this leaves the map empty and the
+        // tag-chip section never renders — registration flow unaffected.
+        const suggestions = Array.isArray(data?.suggestions)
+          ? (data.suggestions as Array<Record<string, unknown>>)
+          : [];
+        const tagsMap: Record<string, Array<{ tag: string; aliasType?: string }>> = {};
+        for (const row of suggestions) {
+          if (!row || row.type !== "alias") continue;
+          const label = typeof row.label === "string" ? row.label.trim() : "";
+          const canonical =
+            typeof row.canonical === "string" ? row.canonical.trim() : "";
+          if (!label || !canonical) continue;
+          const aliasType =
+            typeof row.aliasType === "string" ? row.aliasType.trim() : "";
+          const key = canonical.toLowerCase();
+          if (!tagsMap[key]) tagsMap[key] = [];
+
+          // Guard against duplicate alias rows in the suggestions[] feed
+          // (e.g. same "lohar" returned twice). Match by tag label only.
+          const exists = tagsMap[key].some((t) => t.tag === label);
+          if (!exists) {
+            tagsMap[key].push(
+              aliasType ? { tag: label, aliasType } : { tag: label }
+            );
+          }
+        }
+        setWorkTagsByCanonical(tagsMap);
       } catch (error) {
         setCategories([]);
         setCategoriesError(normalizeLoadError("Failed to load categories", error));
@@ -521,6 +562,14 @@ function ProviderRegisterPageInner() {
       if (!normalized) return prev;
       if (hasCategoryKey(prev, key)) {
         setCustomCategoryKeys((existingKeys) => existingKeys.filter((item) => item !== key));
+        // Drop any tag picks tied to a category that's being deselected so
+        // we never ship orphan tags in the payload.
+        setSelectedWorkTags((wt) => {
+          if (!wt[key]) return wt;
+          const next = { ...wt };
+          delete next[key];
+          return next;
+        });
         return removeCategoryKey(prev, key);
       }
       if (prev.length >= MAX_CATEGORIES) {
@@ -553,6 +602,40 @@ function ProviderRegisterPageInner() {
     const key = categoryKey(category);
     setCustomCategoryKeys((prev) => prev.filter((item) => item !== key));
     setSelectedCategories((prev) => removeCategoryKey(prev, key));
+    // Mirror toggleCategory's cleanup so the X button doesn't leave orphans.
+    setSelectedWorkTags((wt) => {
+      if (!wt[key]) return wt;
+      const next = { ...wt };
+      delete next[key];
+      return next;
+    });
+  };
+
+  // Tag derivation per category. If any row for this canonical has
+  // alias_type IN ('work_tag','local_name'), use ONLY those. Otherwise fall
+  // back to all aliases for the category — matches the user spec for
+  // partially-populated `alias_type` data.
+  const getWorkTagsForCategory = (category: string): string[] => {
+    const key = categoryKey(category);
+    const rows = workTagsByCanonical[key] || [];
+    if (rows.length === 0) return [];
+    const strict = rows
+      .filter(
+        (r) => r.aliasType === "work_tag" || r.aliasType === "local_name"
+      )
+      .map((r) => r.tag);
+    return strict.length > 0 ? strict : rows.map((r) => r.tag);
+  };
+
+  const toggleWorkTag = (category: string, tag: string) => {
+    const key = categoryKey(category);
+    setSelectedWorkTags((prev) => {
+      const current = prev[key] || [];
+      const next = current.includes(tag)
+        ? current.filter((t) => t !== tag)
+        : [...current, tag];
+      return { ...prev, [key]: next };
+    });
   };
 
   const removeArea = (area: string) => {
@@ -663,6 +746,10 @@ function ProviderRegisterPageInner() {
         pendingNewCategories: JSON.stringify(pendingNewCategories),
         pendingNewAreas: JSON.stringify(pendingNewAreas),
         customCategory,
+        // MVP: ship tag picks on the wire. Backend currently ignores unknown
+        // fields — when DB persistence lands the route reads this directly.
+        // Edit-mode path doesn't reach this payload.
+        workTags: JSON.stringify(selectedWorkTags),
         requiresAdminApproval:
           pendingNewCategories.length > 0 || pendingNewAreas.length > 0 ? "true" : "false",
       };
@@ -895,6 +982,51 @@ function ProviderRegisterPageInner() {
                         <span aria-hidden="true">x</span>
                       </button>
                     ))}
+                    </div>
+                  ) : null}
+                  {/* Work-tag chips, one section per selected category that
+                      has tags. Hidden in edit mode (decision 7) and hidden
+                      for categories with no tag rows so the UI stays quiet
+                      for plain categories. */}
+                  {!isEditMode && totalSelectedServices > 0 ? (
+                    <div className="mt-3 space-y-3">
+                      {selectedCategories.map((category) => {
+                        const tags = getWorkTagsForCategory(category);
+                        if (tags.length === 0) return null;
+                        const key = categoryKey(category);
+                        const selectedTags = new Set(
+                          selectedWorkTags[key] || []
+                        );
+                        return (
+                          <div key={`tags-${key}`}>
+                            <p className="mb-1 text-xs text-slate-500">
+                              Work tags for{" "}
+                              <span className="font-semibold text-slate-700">
+                                {category}
+                              </span>
+                            </p>
+                            <div className="flex flex-wrap gap-2">
+                              {tags.map((tag) => {
+                                const isSelected = selectedTags.has(tag);
+                                return (
+                                  <button
+                                    key={`${key}-${tag}`}
+                                    type="button"
+                                    onClick={() => toggleWorkTag(category, tag)}
+                                    className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+                                      isSelected
+                                        ? "border-green-700 bg-green-700 text-white"
+                                        : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+                                    }`}
+                                  >
+                                    {tag}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
                   ) : null}
                 </div>
