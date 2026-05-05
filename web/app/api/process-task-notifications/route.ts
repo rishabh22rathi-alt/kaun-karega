@@ -55,10 +55,14 @@ export async function POST(request: Request) {
     // matching later) but must not generate leads in the meantime.
     // Fail-open on Supabase error: log and continue, so a transient DB blip
     // does not silently drop legitimate leads.
+    //
+    // Case-insensitive: a task category of "Plumbing" must match a canonical
+    // row of "plumbing". `.ilike` handles that without requiring a Postgres
+    // trigger or a backfill.
     const { data: categoryRow, error: categoryError } = await supabase
       .from("categories")
       .select("name")
-      .eq("name", task.category)
+      .ilike("name", String(task.category || ""))
       .eq("active", true)
       .maybeSingle();
 
@@ -81,18 +85,21 @@ export async function POST(request: Request) {
       });
     }
 
-    // 2. Find providers matching by category
+    // 2. Find providers matching by category. Use the canonical category
+    //    name from the categories row when present so the join key is stable
+    //    even if the task was inserted with a different casing.
+    const canonicalCategory = String(categoryRow?.name || task.category || "");
     const { data: serviceRows } = await supabase
       .from("provider_services")
       .select("provider_id")
-      .eq("category", task.category)
+      .ilike("category", canonicalCategory)
       .limit(5000);
 
     // 3. Find providers matching by area
     const { data: areaRows } = await supabase
       .from("provider_areas")
       .select("provider_id")
-      .eq("area", task.area)
+      .ilike("area", String(task.area || ""))
       .limit(5000);
 
     const serviceIds = new Set(

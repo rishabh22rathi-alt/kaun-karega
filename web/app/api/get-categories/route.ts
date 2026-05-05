@@ -1,14 +1,15 @@
-import { getAllCategories } from "@/lib/googleSheets";
+import { NextResponse } from "next/server";
 
+// Disabled: this route used to fetch categories through Google Apps Script
+// via `lib/googleSheets.ts`. The active path is GET /api/categories which
+// reads directly from the Supabase `categories` table. Returning 410 Gone
+// fails closed.
 export async function GET() {
-  try {
-    const categories = await getAllCategories();
-    return Response.json({ categories });
-  } catch (error: any) {
-    console.error("get-categories error", error);
-    return Response.json(
-      { error: error?.message || "Failed to fetch categories" },
-      { status: 500 }
-    );
-  }
+  return NextResponse.json(
+    {
+      ok: false,
+      error: "Legacy route disabled. Use /api/categories.",
+    },
+    { status: 410 }
+  );
 }

@@ -61,8 +61,6 @@ import {
   getChatThreadsFromSupabase,
   markChatReadFromSupabase,
   sendChatMessageFromSupabase,
-  syncChatSnapshotFromGasPayload,
-  syncChatThreadsFromGasPayload,
   updateChatThreadStatusFromSupabase,
   getNeedChatMessagesFromSupabase,
   getNeedChatThreadsForNeedFromSupabase,
@@ -169,7 +167,6 @@ function extractAction(source: unknown): string {
   return "";
 }
 
-const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_URL;
 const STANDARDIZED_ADMIN_ACTIONS = new Set([...ADMIN_ONLY_ACTIONS, "admin_verify", "get_admin_requests"]);
 
 function parseArrayLike(value: unknown): unknown[] {
@@ -197,17 +194,6 @@ function normalizeProxyBody(rawBody: unknown): Record<string, unknown> {
     body.pendingNewCategories = parseArrayLike(body.pendingNewCategories);
   }
   return body;
-}
-
-function buildTargetUrl(request: NextRequest): URL {
-  if (!APPS_SCRIPT_URL) {
-    throw new Error("APPS_SCRIPT_URL is not configured");
-  }
-  const target = new URL(APPS_SCRIPT_URL);
-  request.nextUrl.searchParams.forEach((value, key) => {
-    target.searchParams.set(key, value);
-  });
-  return target;
 }
 
 function withNoCache(response: NextResponse) {
@@ -283,102 +269,6 @@ function normalizeAdminPayload(
   };
 }
 
-async function buildProxyResponse(upstream: Response, action: string) {
-  const text = await upstream.text();
-  const contentType = upstream.headers.get("content-type") || "application/json; charset=utf-8";
-
-  try {
-    const parsed = text ? (JSON.parse(text) as unknown) : {};
-    const normalized = normalizeAdminPayload(action, parsed);
-    if (normalized) {
-      return withNoCache(
-        NextResponse.json(normalized, {
-          status: upstream.status,
-          headers: {
-            "Content-Type": contentType,
-          },
-        })
-      );
-    }
-  } catch {
-    // Fall back to passthrough below when the upstream response is not JSON.
-  }
-
-  return withNoCache(
-    new NextResponse(text, {
-      status: upstream.status,
-      headers: {
-        "Content-Type": contentType,
-      },
-    })
-  );
-}
-
-async function postUpstreamJson(
-  targetUrl: URL,
-  body: Record<string, unknown>
-): Promise<{ upstream: Response; parsed: unknown | null }> {
-  const upstream = await fetch(targetUrl.toString(), {
-    method: "POST",
-    cache: "no-store",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json, text/plain, */*",
-    },
-    body: JSON.stringify(body),
-  });
-
-  let parsed: unknown | null = null;
-  try {
-    parsed = (await upstream.clone().json()) as unknown;
-  } catch {
-    parsed = null;
-  }
-
-  return { upstream, parsed };
-}
-
-async function hydrateChatSnapshotFromGas(
-  targetUrl: URL,
-  body: Record<string, unknown>
-): Promise<{ ok: boolean; upstream?: Response; parsed?: unknown | null }> {
-  const hydrateBody = {
-    ...body,
-    action: "chat_get_messages",
-  };
-  const { upstream, parsed } = await postUpstreamJson(targetUrl, hydrateBody);
-  if (upstream.ok && parsed && typeof parsed === "object" && (parsed as { ok?: boolean }).ok) {
-    try {
-      await syncChatSnapshotFromGasPayload(parsed);
-      return { ok: true, upstream, parsed };
-    } catch {
-      return { ok: false, upstream, parsed };
-    }
-  }
-  return { ok: false, upstream, parsed };
-}
-
-async function hydrateChatThreadsFromGas(
-  targetUrl: URL,
-  body: Record<string, unknown>,
-  actionOverride: string
-): Promise<{ ok: boolean; upstream?: Response; parsed?: unknown | null }> {
-  const hydrateBody = {
-    ...body,
-    action: actionOverride,
-  };
-  const { upstream, parsed } = await postUpstreamJson(targetUrl, hydrateBody);
-  if (upstream.ok && parsed && typeof parsed === "object" && (parsed as { ok?: boolean }).ok) {
-    try {
-      await syncChatThreadsFromGasPayload(parsed);
-      return { ok: true, upstream, parsed };
-    } catch {
-      return { ok: false, upstream, parsed };
-    }
-  }
-  return { ok: false, upstream, parsed };
-}
-
 export async function GET(request: NextRequest) {
   try {
     const action = request.nextUrl.searchParams.get("action") ?? "";
@@ -411,15 +301,19 @@ export async function GET(request: NextRequest) {
         NextResponse.json({ ok: true, status: "success", areas }, { status: 200 })
       );
     }
-    const targetUrl = buildTargetUrl(request);
-    const upstream = await fetch(targetUrl.toString(), {
-      method: "GET",
-      cache: "no-store",
-      headers: {
-        Accept: "application/json, text/plain, */*",
-      },
-    });
-    return await buildProxyResponse(upstream, action);
+    // Fail closed: any GET action that did not match a native intercept
+    // above is not supported. The legacy Apps Script GET fallthrough has
+    // been removed.
+    return withNoCache(
+      NextResponse.json(
+        {
+          ok: false,
+          error: "Unsupported action",
+          action,
+        },
+        { status: 400 }
+      )
+    );
   } catch (error: any) {
     return withNoCache(
       NextResponse.json(
@@ -438,7 +332,6 @@ export async function POST(request: NextRequest) {
   try {
     const rawBody = await request.json();
     const action = extractAction(rawBody);
-    const getTargetUrl = (): URL => buildTargetUrl(request);
     if (ADMIN_ONLY_ACTIONS.has(action)) {
       const auth = await requireAdminSession(request);
       if (!auth.ok) {
@@ -1546,25 +1439,19 @@ export async function POST(request: NextRequest) {
       return withNoCache(NextResponse.json(result));
     }
     if (action === "admin_list_chat_threads" || action === "get_admin_chat_threads") {
-      let result = await getAdminChatThreadsFromSupabase(body);
-      if (result.ok && result.threads.length === 0) {
-        await hydrateChatThreadsFromGas(getTargetUrl(), body, "admin_list_chat_threads");
-        result = await getAdminChatThreadsFromSupabase(body);
-      }
+      // Supabase is the source of truth. An empty result is a clean empty
+      // inbox, not a signal to fall back to Apps Script.
+      const result = await getAdminChatThreadsFromSupabase(body);
       const normalized = normalizeAdminPayload(action, result) ?? result;
       return withNoCache(NextResponse.json(normalized));
     }
     if (action === "admin_get_chat_thread") {
-      let result = await getAdminChatThreadFromSupabase(body);
-      if (!result.ok && result.error === "Thread not found") {
-        const { parsed } = await postUpstreamJson(getTargetUrl(), body);
-        if (parsed && typeof parsed === "object" && (parsed as { ok?: boolean }).ok) {
-          await syncChatSnapshotFromGasPayload(parsed);
-          result = await getAdminChatThreadFromSupabase(body);
-        }
-      }
+      // No GAS hydration: a missing thread is a real 404 from Supabase.
+      const result = await getAdminChatThreadFromSupabase(body);
       const normalized = normalizeAdminPayload(action, result) ?? result;
-      return withNoCache(NextResponse.json(normalized));
+      return withNoCache(
+        NextResponse.json(normalized, { status: result.ok ? 200 : 404 })
+      );
     }
     if (action === "close_chat_thread") {
       const threadId =
@@ -1901,16 +1788,19 @@ export async function POST(request: NextRequest) {
         })
       );
     }
-    const upstream = await fetch(buildTargetUrl(request).toString(), {
-      method: "POST",
-      cache: "no-store",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json, text/plain, */*",
-      },
-      body: JSON.stringify(body),
-    });
-    return await buildProxyResponse(upstream, action);
+    // Fail closed: any POST action that did not match a native intercept
+    // above is not supported. The legacy Apps Script POST fallthrough has
+    // been removed.
+    return withNoCache(
+      NextResponse.json(
+        {
+          ok: false,
+          error: "Unsupported action",
+          action,
+        },
+        { status: 400 }
+      )
+    );
   } catch (error: any) {
     return withNoCache(
       NextResponse.json(

@@ -1,81 +1,36 @@
-export const ADMIN_KEY = process.env.NEXT_PUBLIC_ADMIN_KEY || "";
+// Disabled. This module used to call Google Apps Script via APPS_SCRIPT_URL
+// for legacy admin and provider flows. The active backend is Supabase + the
+// native Next.js API routes under /api/admin/*, /api/provider/*, etc.
+//
+// The helpers below are kept as exports so historical importers (lib/api/
+// analytics, logs, provider, reviews, tasks) continue to type-check; they all
+// already wrap calls in try/catch and degrade to empty defaults on throw.
+// Anything new should call Supabase directly, not these stubs.
 
-function resolveBaseUrl() {
-  const baseUrl = (process.env.APPS_SCRIPT_URL || "").trim();
+export const ADMIN_KEY = "";
 
-  if (!baseUrl || baseUrl.includes("XXXX")) {
-    throw new Error("APPS_SCRIPT_URL is not configured.");
-  }
-
-  return baseUrl.replace(/\/$/, "");
-}
-
-type QueryValue = string | number | boolean | undefined | null;
+const DISABLED_ERROR =
+  "Apps Script client is disabled. Migrate this caller to a Supabase-backed API route.";
 
 export function buildAppsScriptUrl(
-  path: string,
-  params?: Record<string, QueryValue>
-) {
-  const url = new URL(resolveBaseUrl());
-  url.searchParams.set("path", path.replace(/^\//, ""));
-  if (params) {
-    Object.entries(params).forEach(([key, value]) => {
-      if (value !== undefined && value !== null) {
-        url.searchParams.set(key, String(value));
-      }
-    });
-  }
-  return url.toString();
+  _path: string,
+  _params?: Record<string, unknown>
+): string {
+  throw new Error(DISABLED_ERROR);
 }
 
 export async function appsScriptGet<T>(
-  path: string,
-  params?: Record<string, QueryValue>,
-  opts?: { admin?: boolean }
+  _path: string,
+  _params?: Record<string, unknown>,
+  _opts?: { admin?: boolean }
 ): Promise<T> {
-  const finalParams = { ...(params || {}) };
-  if (opts?.admin && ADMIN_KEY) {
-    finalParams["x-admin-key"] = ADMIN_KEY;
-  }
-  const url = buildAppsScriptUrl(path, finalParams);
-  const res = await fetch(url, { cache: "no-store" });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Apps Script GET ${res.status}: ${text}`);
-  }
-  const text = await res.text();
-  try {
-    return JSON.parse(text) as T;
-  } catch (err) {
-    throw new Error(`Apps Script GET parse error: ${text}`);
-  }
+  throw new Error(DISABLED_ERROR);
 }
 
 export async function appsScriptPost<T>(
-  path: string,
-  body?: Record<string, unknown>,
-  opts?: { admin?: boolean }
+  _path: string,
+  _body?: Record<string, unknown>,
+  _opts?: { admin?: boolean }
 ): Promise<T> {
-  const payload: Record<string, unknown> = { ...(body || {}) };
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (opts?.admin && ADMIN_KEY) {
-    payload.adminKey = ADMIN_KEY;
-    headers["x-admin-key"] = ADMIN_KEY;
-  }
-  const res = await fetch(buildAppsScriptUrl(path), {
-    method: "POST",
-    cache: "no-store",
-    headers,
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Apps Script POST ${res.status}: ${text}`);
-  }
-  const text = await res.text();
-  try {
-    return JSON.parse(text) as T;
-  } catch (err) {
-    throw new Error(`Apps Script POST parse error: ${text}`);
-  }
+  throw new Error(DISABLED_ERROR);
 }

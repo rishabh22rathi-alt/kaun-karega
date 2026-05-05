@@ -1,46 +1,23 @@
 import { NextResponse } from "next/server";
-import { appsScriptPost } from "@/lib/api/client";
 
-export async function POST(req: Request) {
-  try {
-    const { name, phone, categories, areas, providerId } = await req.json();
+// Disabled: this route used to call Apps Script `providers/register`. The
+// active path is POST /api/kk action="provider_register" which writes to
+// Supabase `providers`, `provider_services`, `provider_areas`. Returning
+// 410 Gone fails closed.
+function gone() {
+  return NextResponse.json(
+    {
+      ok: false,
+      error: "Legacy route disabled. Use /api/kk action=provider_register.",
+    },
+    { status: 410 }
+  );
+}
 
-    if (
-      !name ||
-      !phone ||
-      !Array.isArray(categories) ||
-      categories.length === 0 ||
-      !Array.isArray(areas) ||
-      areas.length === 0
-    ) {
-      return NextResponse.json(
-        { success: false, message: "Invalid provider payload" },
-        { status: 400 }
-      );
-    }
+export async function POST() {
+  return gone();
+}
 
-    const result = await appsScriptPost<{ success?: boolean; error?: string }>(
-      "providers/register",
-      {
-        id: providerId,
-        name,
-        phone,
-        categories,
-        areas,
-      },
-      { admin: true }
-    );
-
-    if (!result?.success) {
-      throw new Error(result?.error || "Unable to register provider");
-    }
-
-    return NextResponse.json({ success: true });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Unexpected error";
-    return NextResponse.json(
-      { success: false, message },
-      { status: 500 }
-    );
-  }
+export async function GET() {
+  return gone();
 }

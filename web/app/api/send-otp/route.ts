@@ -3,6 +3,18 @@ import { adminSupabase } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
 
+// Single canonical phone format for the OTP system: 12-digit `91XXXXXXXXXX`.
+// Accept either the user's raw 10-digit input or an already-prefixed value
+// and normalise before any DB write. Mirrors the logic in
+// /api/send-whatsapp-otp and /api/verify-otp so all three routes write and
+// match against the same shape.
+function normalizeIndianPhone(value: string): string | null {
+  const digitsOnly = String(value || "").replace(/\D/g, "");
+  if (digitsOnly.length === 10) return `91${digitsOnly}`;
+  if (digitsOnly.length === 12 && digitsOnly.startsWith("91")) return digitsOnly;
+  return null;
+}
+
 export async function POST(request: Request) {
   let body: { toPhoneNumber?: unknown; phone?: unknown; requestId?: unknown };
   try {
@@ -23,6 +35,14 @@ export async function POST(request: Request) {
     return NextResponse.json({ success: false, error: "Phone number required" }, { status: 400 });
   }
 
+  const normalizedPhone = normalizeIndianPhone(rawPhone);
+  if (!normalizedPhone) {
+    return NextResponse.json(
+      { success: false, error: "Enter a valid 10-digit Indian mobile number" },
+      { status: 400 }
+    );
+  }
+
   const requestId =
     typeof body.requestId === "string" && body.requestId.trim()
       ? body.requestId.trim()
@@ -32,7 +52,7 @@ export async function POST(request: Request) {
   const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
 
   const { error } = await adminSupabase.from("otp_requests").insert({
-    phone: rawPhone,
+    phone: normalizedPhone,
     otp,
     request_id: requestId,
     is_verified: false,

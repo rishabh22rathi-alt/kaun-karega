@@ -47,9 +47,14 @@ export async function GET(request: Request) {
         })
       : allAreas;
 
+    // Autocomplete callers (header search) cap to a small dropdown via `q`.
+    // List callers (forms — e.g. /i-need/post) ask for the full canonical
+    // list with no query and need every active area.
+    const limited = q ? filtered.slice(0, 8) : filtered;
+
     return NextResponse.json({
       ok: true,
-      areas: filtered.slice(0, 8),
+      areas: limited,
     });
   } catch (error: any) {
     console.error("[areas API] error", error);

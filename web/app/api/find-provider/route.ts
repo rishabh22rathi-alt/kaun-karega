@@ -60,10 +60,16 @@ async function handle(req: Request) {
     // master `categories` table with active = true. Mirrors the gate in
     // process-task-notifications. Fail-open on Supabase error: log and
     // continue, so a transient DB blip does not silently drop results.
+    //
+    // Case-insensitive: a task or UI input of "Plumbing" must still match a
+    // canonical row of "plumbing". `.ilike("name", category)` does the job
+    // without requiring a Postgres trigger. `.maybeSingle()` is fine because
+    // the categories.name column already has a uniqueness constraint
+    // (case-insensitive duplicates are not expected).
     const { data: categoryRow, error: categoryError } = await supabase
       .from("categories")
       .select("name")
-      .eq("name", category)
+      .ilike("name", category)
       .eq("active", true)
       .maybeSingle();
 
@@ -84,10 +90,16 @@ async function handle(req: Request) {
       );
     }
 
+    // Use the canonical category name (and area) for downstream lookups so
+    // every join key is the same casing regardless of how the request was
+    // typed. Falls back to the raw input if the categories row was skipped
+    // (transient DB error → fail-open path above).
+    const canonicalCategory = String(categoryRow?.name || category);
+
     const { data: serviceRows, error: servicesError } = await supabase
       .from("provider_services")
       .select("provider_id, category")
-      .eq("category", category)
+      .ilike("category", canonicalCategory)
       .limit(5000);
 
     if (servicesError) {
@@ -97,7 +109,7 @@ async function handle(req: Request) {
     const { data: areaRows, error: areasError } = await supabase
       .from("provider_areas")
       .select("provider_id, area")
-      .eq("area", area)
+      .ilike("area", area)
       .limit(5000);
 
     if (areasError) {

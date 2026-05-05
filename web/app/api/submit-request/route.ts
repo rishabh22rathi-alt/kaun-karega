@@ -91,13 +91,37 @@ export async function POST(request: Request) {
     }
 
     const supabase = await createClient();
+
+    // Canonicalize category to its master `categories.name` casing if a row
+    // exists. Prevents downstream matching from depending on whatever case
+    // the user typed. Falls back to the trimmed input when the category does
+    // not exist in master (e.g. fresh custom request) — the same behaviour
+    // as before this change.
+    let canonicalCategory = category;
+    try {
+      const { data: categoryRow } = await supabase
+        .from("categories")
+        .select("name")
+        .ilike("name", category)
+        .eq("active", true)
+        .maybeSingle();
+      if (categoryRow?.name) {
+        canonicalCategory = String(categoryRow.name);
+      }
+    } catch (lookupError) {
+      console.warn(
+        "[submit-request] category canonicalisation lookup failed; storing as-typed",
+        lookupError instanceof Error ? lookupError.message : lookupError
+      );
+    }
+
     const taskId = `TK-${Date.now()}`;
     const insertStartedMs = Date.now();
     const { data, error } = await supabase
       .from("tasks")
       .insert({
         task_id: taskId,
-        category,
+        category: canonicalCategory,
         area,
         details,
         phone: session.phone,

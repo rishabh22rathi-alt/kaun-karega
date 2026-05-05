@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { getAuthSession } from "@/lib/auth";
 
@@ -18,18 +18,10 @@ const CATEGORY_OPTIONS = [
   "Other",
 ];
 
-const AREA_OPTIONS = [
-  "Sardarpura",
-  "Shastri Nagar",
-  "Ratanada",
-  "Paota",
-  "Basni",
-  "Pal Road",
-  "Chopasni Housing Board",
-  "Mandore",
-  "Soorsagar",
-  "Kudi Bhagtasni",
-];
+// Areas are loaded dynamically from /api/areas (Supabase-backed) so newly
+// admin-approved areas appear without a redeploy. The hardcoded list that
+// used to live here drifted from the canonical `areas` table the rest of
+// the app reads from.
 
 const VALIDITY_OPTIONS = [
   { value: "3", label: "3 days" },
@@ -335,6 +327,44 @@ export default function PostNeedPage() {
   const [dynamicSelections, setDynamicSelections] = useState<Record<string, string>>({});
   const [dynamicOtherText, setDynamicOtherText] = useState<Record<string, string>>({});
 
+  // ── Areas: loaded from /api/areas (Supabase canonical list). The fetch
+  //   passes no `q` so the route returns the full active list (capped at 8 by
+  //   the route's own slice — fine for the I-Need form's chip UI). ──
+  const [areaOptions, setAreaOptions] = useState<string[]>([]);
+  const [areasLoading, setAreasLoading] = useState(true);
+  const [areasLoadError, setAreasLoadError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch("/api/areas", { cache: "no-store" });
+        const data = (await res.json()) as { ok?: boolean; areas?: unknown; error?: string };
+        if (cancelled) return;
+        if (!res.ok || data?.ok !== true || !Array.isArray(data.areas)) {
+          throw new Error(data?.error || `Failed to load areas (HTTP ${res.status})`);
+        }
+        const list = data.areas
+          .filter((value): value is string => typeof value === "string")
+          .map((value) => value.trim())
+          .filter((value) => value.length > 0);
+        setAreaOptions(list);
+        setAreasLoadError("");
+      } catch (err) {
+        if (cancelled) return;
+        setAreaOptions([]);
+        setAreasLoadError(
+          err instanceof Error ? err.message : "Failed to load areas. Please retry."
+        );
+      } finally {
+        if (!cancelled) setAreasLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const isAnonymous = identityMode === "anonymous";
   const dynamicGroups = category ? (DYNAMIC_OPTIONS[category] ?? []) : [];
 
@@ -615,16 +645,28 @@ export default function PostNeedPage() {
                 </div>
               )}
 
-              <div className="flex flex-wrap gap-2">
-                {AREA_OPTIONS.map((opt) => (
-                  <Chip
-                    key={opt}
-                    label={opt}
-                    selected={selectedAreas.includes(opt)}
-                    onClick={() => handleAreaToggle(opt)}
-                  />
-                ))}
-              </div>
+              {areasLoading ? (
+                <p className="text-xs text-slate-500">Loading areas…</p>
+              ) : areasLoadError ? (
+                <p className="text-xs font-medium text-rose-600">
+                  {areasLoadError}
+                </p>
+              ) : areaOptions.length === 0 ? (
+                <p className="text-xs text-slate-500">
+                  No areas are available right now. Please try again shortly.
+                </p>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {areaOptions.map((opt) => (
+                    <Chip
+                      key={opt}
+                      label={opt}
+                      selected={selectedAreas.includes(opt)}
+                      onClick={() => handleAreaToggle(opt)}
+                    />
+                  ))}
+                </div>
+              )}
 
               {areaError && (
                 <p className="mt-2 text-xs font-medium text-rose-600">
