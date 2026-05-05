@@ -16,6 +16,7 @@ import {
   UserPlus,
   ListTodo,
   Briefcase,
+  Lock,
 } from "lucide-react";
 import {
   PROVIDER_PROFILE_UPDATED_EVENT,
@@ -330,6 +331,16 @@ export default function Sidebar() {
   useEffect(() => {
     if (typeof window === "undefined") return;
 
+    // I-Need feature is publicly paused (see app/i-need/page.tsx). Skip the
+    // unread-count polling so the sidebar does not hit /api/kk get_my_needs
+    // and need_chat_get_threads_for_need on every page load. Flip this flag
+    // back to true (or delete the gate entirely) when the feature relaunches.
+    const I_NEED_FEATURE_ACTIVE = false;
+    if (!I_NEED_FEATURE_ACTIVE) {
+      setMyNeedsUnreadCount(0);
+      return;
+    }
+
     const phone = normalizePhoneToTen(session?.phone || "");
     if (!/^\d{10}$/.test(phone)) {
       setMyNeedsUnreadCount(0);
@@ -521,51 +532,54 @@ export default function Sidebar() {
       </p>
     );
 
+  // Launching Soon: I-Need feature is publicly paused. Sub-items are shown
+  // for visibility (so users can see what's coming) but every sub-item routes
+  // to /i-need (the Launching Soon page) — none open active flows. Restore
+  // the original interactive routing (`/i-need?category=…`) from git history
+  // alongside the I_NEED_FEATURE_ACTIVE flip when re-enabling the feature.
+  const iNeedComingItems = [
+    { label: "Naukri", emoji: "💼" },
+    { label: "Property", emoji: "🏗️" },
+    { label: "Rent", emoji: "🏠" },
+    { label: "Buy-Sell", emoji: "🤝" },
+  ];
+
   const postARequestButton = (
     <div key="post-a-request">
-      <button
-        type="button"
-        onClick={() => setINeedOpen((v) => !v)}
+      <Link
+        href="/i-need"
+        onClick={() => setIsOpen(false)}
         className="flex w-full items-center gap-3 rounded-lg bg-transparent px-3 py-2 font-semibold text-white transition hover:bg-white/[0.06]"
       >
         <ListTodo className="h-4 w-4 shrink-0 text-white/90" />
         {isCollapsed ? (
-          <span className="sr-only">Jodhpur ko chahiye</span>
+          <span className="sr-only">Jodhpur ko chahiye — Launching Soon</span>
         ) : (
           <>
             <span className="text-sm whitespace-nowrap">Jodhpur ko chahiye</span>
-            <ChevronRight
-              className={`ml-auto h-3.5 w-3.5 transition-transform duration-200 ${
-                iNeedOpen ? "rotate-90 text-white" : "text-white/70"
-              }`}
-            />
+            <span className="ml-auto rounded-full bg-orange-500/90 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">
+              Soon
+            </span>
           </>
         )}
-      </button>
+      </Link>
 
-      {iNeedOpen && !isCollapsed && (
-        <div className="pt-1">
-          <div className="ml-5 space-y-0.5">
-            {[
-              { label: "Naukri", emoji: "💼", category: "Employer" },
-              { label: "Property", emoji: "🏗️", category: "Property Buyer" },
-              { label: "Rent", emoji: "🏠", category: "Tenant" },
-              { label: "Buy / Sell", emoji: "🤝", category: "Vehicle Buyer" },
-            ].map((needItem) => (
-              <button
-                key={needItem.label}
-                type="button"
-                onClick={() => {
-                  setIsOpen(false);
-                  router.push(`/i-need?category=${encodeURIComponent(needItem.category)}`);
-                }}
-                className="flex w-full items-center gap-2 rounded-lg bg-white/[0.12] px-3 py-2 text-sm text-white/85 ring-1 ring-inset ring-white/10 transition hover:bg-white/[0.18] hover:text-white"
-              >
-                <span>{needItem.emoji}</span>
-                {needItem.label}
-              </button>
-            ))}
-          </div>
+      {!isCollapsed && (
+        <div className="ml-5 mt-1 space-y-0.5">
+          {iNeedComingItems.map((item) => (
+            <Link
+              key={item.label}
+              href="/i-need"
+              onClick={() => setIsOpen(false)}
+              aria-label={`${item.label} — coming soon`}
+              title="Coming soon"
+              className="flex w-full items-center gap-2 rounded-lg bg-white/[0.06] px-3 py-1.5 text-sm text-white/70 ring-1 ring-inset ring-white/10 transition hover:bg-white/[0.10] hover:text-white/90"
+            >
+              <span aria-hidden>{item.emoji}</span>
+              <span>{item.label}</span>
+              <Lock className="ml-auto h-3 w-3 text-white/50" aria-hidden />
+            </Link>
+          ))}
         </div>
       )}
     </div>
@@ -716,14 +730,11 @@ export default function Sidebar() {
                 {postARequestButton}
 
                 {renderSectionHeader("MY ACTIVITY")}
+                {/* "My Posts" hidden while I-Need is paused — it points at
+                    /i-need/my-needs which now redirects to /i-need (Launching
+                    Soon). Restore alongside the I-Need feature re-enable. */}
                 {renderNavLink({
-                  label: "My Posts",
-                  href: "/i-need/my-needs",
-                  icon: ClipboardList,
-                  showBadge: true,
-                })}
-                {renderNavLink({
-                  label: "My Responses",
+                  label: "My Requests",
                   href: "/dashboard/my-requests",
                   icon: ClipboardList,
                 })}
