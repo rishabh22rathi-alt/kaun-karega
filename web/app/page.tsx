@@ -1226,7 +1226,7 @@ const hasArea = area.trim() !== "";
           {/* Text wordmark */}
           <div className="mb-3 flex justify-center select-none">
             <div className="inline-flex items-start justify-center gap-2 leading-none sm:gap-3">
-              <span className="relative inline-block translate-y-[18px] text-[2.75rem] font-extrabold tracking-tight text-orange-500 sm:text-6xl md:text-[4.8rem]">
+              <span className="relative inline-block translate-y-[18px] text-[2.75rem] font-extrabold tracking-tight text-orange-500 sm:translate-y-[22px] sm:text-6xl md:translate-y-[28px] md:text-[4.8rem]">
                 कौन
               </span>
               <div className="flex flex-col items-start">
@@ -1246,41 +1246,43 @@ const hasArea = area.trim() !== "";
             <div className="relative">
               <div className="relative flex items-center rounded-2xl border border-slate-300 bg-white px-4 py-3 shadow-lg transition-all duration-200 focus-within:ring-2 focus-within:ring-[#003d20]/40">
                 <span className="mr-3 shrink-0 text-xl text-[#003d20]">&#128269;</span>
-                <input
-                  ref={categoryInputRef}
-                  type="text"
-                  value={category}
-                  onChange={(e) => {
-                    const value = e.target.value;
-                    userPickedCategoryRef.current = true;
-                    setCategory(value);
-                    setSelectedCategory(value.trim());
-                    setHighlightIndex(-1);
-                  }}
-                  onFocus={() => setIsCategoryFocused(true)}
-                  onBlur={() => { if (!category) setIsCategoryFocused(false); }}
-                  onKeyDown={handleCategoryKeyDown}
-                  onDrop={(e) => e.preventDefault()}
-                  onDragOver={(e) => e.preventDefault()}
-                  placeholder={isHydrated && !isCategoryFocused && twText ? "" : "What service do you need? (e.g. Electrician)"}
-                  className="min-w-0 flex-1 bg-transparent pr-3 text-base text-slate-900 outline-none placeholder:text-slate-400 md:text-lg"
-                />
-                {/* Typewriter overlay — right-padded to clear the Search button */}
-                {isHydrated && !isCategoryFocused && category === "" && twText !== "" && (
-                  <div
-                    aria-hidden="true"
-                    className="pointer-events-none select-none absolute inset-y-0 left-0 right-[96px] flex items-center rounded-l-2xl bg-white pl-[52px] pr-4"
-                    onDragStart={(e) => e.preventDefault()}
-                  >
-                    <span className="text-base font-medium text-slate-500 md:text-lg">
-                      {twText}
-                      <span
-                        className="ml-px"
-                        style={{ opacity: twCaretOn ? 1 : 0, transition: "opacity 50ms" }}
-                      >|</span>
-                    </span>
-                  </div>
-                )}
+                <div className="relative flex-1 min-w-0">
+                  <input
+                    ref={categoryInputRef}
+                    type="text"
+                    value={category}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      userPickedCategoryRef.current = true;
+                      setCategory(value);
+                      setSelectedCategory(value.trim());
+                      setHighlightIndex(-1);
+                    }}
+                    onFocus={() => setIsCategoryFocused(true)}
+                    onBlur={() => { if (!category) setIsCategoryFocused(false); }}
+                    onKeyDown={handleCategoryKeyDown}
+                    onDrop={(e) => e.preventDefault()}
+                    onDragOver={(e) => e.preventDefault()}
+                    placeholder={isHydrated && !isCategoryFocused && twText ? "" : "What service do you need? (e.g. Electrician)"}
+                    className="w-full bg-transparent pr-3 text-base text-slate-900 outline-none placeholder:text-slate-400 md:text-lg"
+                  />
+                  {/* Typewriter overlay — anchored to input wrapper */}
+                  {isHydrated && !isCategoryFocused && category === "" && twText !== "" && (
+                    <div
+                      aria-hidden="true"
+                      className="pointer-events-none select-none absolute inset-0 flex items-center bg-white"
+                      onDragStart={(e) => e.preventDefault()}
+                    >
+                      <span className="text-base font-medium text-slate-500 md:text-lg">
+                        {twText}
+                        <span
+                          className="ml-px"
+                          style={{ opacity: twCaretOn ? 1 : 0, transition: "opacity 50ms" }}
+                        >|</span>
+                      </span>
+                    </div>
+                  )}
+                </div>
                 {/* Search button */}
                 <button
                   type="button"
@@ -1294,7 +1296,7 @@ const hasArea = area.trim() !== "";
                       categoryInputRef.current?.focus();
                     }
                   }}
-                  className="ml-2 shrink-0 rounded-xl bg-[#003d20] px-5 py-2.5 text-sm font-bold text-white transition hover:bg-[#002a15] active:scale-[0.97]"
+                  className="ml-2 shrink-0 rounded-xl bg-[#003d20] px-5 py-2.5 text-sm font-bold text-white transition hover:bg-[#002a15] active:scale-[0.97] md:text-base"
                 >
                   Search
                 </button>
@@ -1367,7 +1369,11 @@ const hasArea = area.trim() !== "";
             </div>
 
             {/* Trust strip */}
-            <div className="mt-5 grid grid-cols-3 gap-3 select-none">
+            <div
+              className={`mt-5 grid grid-cols-3 gap-2 select-none sm:gap-3 ${
+                isCategoryFocused || hasCategory ? "hidden md:grid" : ""
+              }`}
+            >
               {[
                 { icon: "✓", label: "Trusted", desc: "Verified providers" },
                 { icon: "⚡", label: "Quick", desc: "Matched in minutes" },
@@ -1375,11 +1381,11 @@ const hasArea = area.trim() !== "";
               ].map(({ icon, label, desc }) => (
                 <div
                   key={label}
-                  className="flex flex-col items-center rounded-xl border border-slate-100 bg-slate-50 px-3 py-3 text-center"
+                  className="flex flex-col items-center rounded-xl border border-slate-100 bg-slate-50 px-2 py-3 text-center sm:px-3"
                 >
                   <span className="text-base text-[#003d20]/60">{icon}</span>
                   <p className="mt-1 text-sm font-medium text-slate-600">{label}</p>
-                  <p className="mt-0.5 text-xs text-slate-400">{desc}</p>
+                  <p className="mt-0.5 text-[11px] leading-snug text-slate-400 sm:text-xs sm:leading-normal">{desc}</p>
                 </div>
               ))}
             </div>
@@ -1390,21 +1396,23 @@ const hasArea = area.trim() !== "";
       {/* ── STATS BAR ────────────────────────────────────────────────── */}
       {!hasCategory && (
         <div
-          className="border-b border-slate-100 bg-white select-none"
+          className={`border-b border-slate-100 bg-white select-none ${
+            isCategoryFocused ? "hidden md:block" : ""
+          }`}
           onDragStart={(e) => e.preventDefault()}
         >
           <div className="mx-auto grid max-w-2xl grid-cols-3 divide-x divide-slate-100">
             <div className="py-3 text-center">
               <p className="text-lg font-semibold text-[#003d20]/60">50+</p>
-              <p className="mt-0.5 text-xs text-slate-400">Service Types</p>
+              <p className="mt-0.5 text-[11px] leading-snug text-slate-400 sm:text-xs sm:leading-normal">Service Types</p>
             </div>
             <div className="py-3 text-center">
               <p className="text-lg font-semibold text-[#003d20]/60">40+</p>
-              <p className="mt-0.5 text-xs text-slate-400">Areas in Jodhpur</p>
+              <p className="mt-0.5 text-[11px] leading-snug text-slate-400 sm:text-xs sm:leading-normal">Areas in Jodhpur</p>
             </div>
             <div className="py-3 text-center">
               <p className="text-lg font-semibold text-[#003d20]/60">Free</p>
-              <p className="mt-0.5 text-xs text-slate-400">To Post a Request</p>
+              <p className="mt-0.5 text-[11px] leading-snug text-slate-400 sm:text-xs sm:leading-normal">To Post a Request</p>
             </div>
           </div>
         </div>

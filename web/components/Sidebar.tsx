@@ -169,7 +169,7 @@ export default function Sidebar() {
         detail: { isOpen: isSidebarVisible, isCollapsed },
       })
     );
-  }, [isOpen, isCollapsed, shouldHide]);
+  }, [isOpen, isCollapsed, shouldHide, isMobile]);
 
   useEffect(() => {
     setSession(getAuthSession());
@@ -413,7 +413,14 @@ export default function Sidebar() {
 
   useEffect(() => {
     if (!isLoggedIn) {
-      setIsCollapsed(false);
+      if (typeof window === "undefined") {
+        setIsCollapsed(false);
+        return;
+      }
+      const isTablet =
+        window.matchMedia("(min-width: 768px)").matches &&
+        !window.matchMedia("(min-width: 1024px)").matches;
+      setIsCollapsed(isTablet);
     }
   }, [isLoggedIn]);
 
@@ -424,14 +431,17 @@ export default function Sidebar() {
       window.matchMedia("(min-width: 768px)").matches;
     const isSidebarVisible = isDesktop ? !shouldHide : isOpen && !shouldHide;
     const width = !isSidebarVisible ? "0rem" : isCollapsed ? "80px" : "288px";
+    const mobileHeaderHeight = shouldHide ? "0px" : "68px";
     const shell = document.getElementById("kk-app-shell");
     if (shell) {
       shell.style.setProperty("--kk-sidebar-width", width);
+      shell.style.setProperty("--kk-mobile-header-height", mobileHeaderHeight);
     }
     return () => {
       const shellNode = document.getElementById("kk-app-shell");
       if (shellNode) {
         shellNode.style.removeProperty("--kk-sidebar-width");
+        shellNode.style.removeProperty("--kk-mobile-header-height");
       }
     };
   }, [isCollapsed, shouldHide, isOpen, isLoggedIn, isMobile]);

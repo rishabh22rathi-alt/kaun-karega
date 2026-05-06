@@ -35,11 +35,14 @@ export default function RootLayout({
         <div
           id="kk-app-shell"
           className="flex min-h-screen"
-          style={{ "--kk-sidebar-width": "0px" } as React.CSSProperties}
+          style={{
+            "--kk-sidebar-width": "0px",
+            "--kk-mobile-header-height": "68px",
+          } as React.CSSProperties}
         >
           <SidebarToggle />
           <Sidebar />
-          <div className="min-h-screen min-w-0 flex-1 pt-[68px] transition-[padding] duration-200 md:pt-0 md:pl-[var(--kk-sidebar-width)]">
+          <div className="min-h-screen min-w-0 flex-1 pt-[var(--kk-mobile-header-height)] transition-[padding] duration-200 md:pt-0 md:pl-[var(--kk-sidebar-width)]">
             {children}
           </div>
         </div>

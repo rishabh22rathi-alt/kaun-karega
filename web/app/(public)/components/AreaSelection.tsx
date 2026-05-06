@@ -293,7 +293,7 @@ export default function AreaSelection({
       </div>
 
       {showAreaInput && (
-        <div ref={inputShellRef} className="relative mt-3 flex flex-wrap items-center gap-2">
+        <div ref={inputShellRef} className="relative mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
           <input
             ref={inputRef}
             type="text"
@@ -312,13 +312,13 @@ export default function AreaSelection({
               }
             }}
             placeholder="Type your area"
-            className="min-w-[220px] flex-1 rounded-lg border border-emerald-200 px-3 py-2 text-sm text-slate-800 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+            className="w-full rounded-lg border border-emerald-200 px-3 py-2 text-sm text-slate-800 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 sm:w-auto sm:min-w-[220px] sm:flex-1"
           />
           <button
             type="button"
             onClick={handleUseTypedArea}
             disabled={!normalizeAreaValue(typedArea)}
-            className="rounded-lg border border-[#1B5E20] px-3 py-2 text-sm font-semibold text-[#1B5E20] transition hover:bg-[#1B5E20]/10 disabled:cursor-not-allowed disabled:opacity-50"
+            className="w-full rounded-lg border border-[#1B5E20] px-3 py-2 text-sm font-semibold text-[#1B5E20] transition hover:bg-[#1B5E20]/10 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
           >
             Use this area
           </button>

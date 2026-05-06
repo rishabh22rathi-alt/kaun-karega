@@ -110,6 +110,8 @@ export default function ChatThreadPage() {
   const [error, setError] = useState("");
   const [accessDenied, setAccessDenied] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const nearBottomRef = useRef(true);
+  const justSentRef = useRef(false);
   const backHref = actorType === "user" ? "/dashboard/my-requests" : "/provider/dashboard";
   const nextPath = actorType === "user" ? `/chat/thread/${threadId}?actor=user` : `/chat/thread/${threadId}`;
   const loginHref = actorType === "user" ? "/login" : "/provider/login";
@@ -232,9 +234,21 @@ export default function ChatThreadPage() {
   }, [actorType, loginHref, nextPath, router, threadId]);
 
   useEffect(() => {
-    if (!scrollRef.current) return;
-    scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    const node = scrollRef.current;
+    if (!node) return;
+    if (justSentRef.current || nearBottomRef.current) {
+      node.scrollTop = node.scrollHeight;
+    }
+    justSentRef.current = false;
   }, [messages]);
+
+  const handleScrollContainerScroll = () => {
+    const node = scrollRef.current;
+    if (!node) return;
+    const NEAR_BOTTOM_THRESHOLD = 80;
+    const distanceFromBottom = node.scrollHeight - node.scrollTop - node.clientHeight;
+    nearBottomRef.current = distanceFromBottom <= NEAR_BOTTOM_THRESHOLD;
+  };
 
   const sendMessage = async (messageText: string) => {
     const trimmedMessage = messageText.trim();
@@ -284,6 +298,7 @@ export default function ChatThreadPage() {
       const refreshData = (await refreshRes.json()) as ChatMessagesResponse;
       if (refreshRes.ok && refreshData.ok) {
         setThread(refreshData.thread || thread);
+        justSentRef.current = true;
         setMessages(Array.isArray(refreshData.messages) ? refreshData.messages : []);
       }
     } catch (err) {
@@ -362,13 +377,13 @@ export default function ChatThreadPage() {
     <main className="min-h-screen bg-[radial-gradient(circle_at_top,#e0f2fe,transparent_35%),linear-gradient(180deg,#f8fbff_0%,#eef4f8_100%)] px-4 py-6 sm:py-8">
       <div className="mx-auto max-w-4xl space-y-4">
         <div className="overflow-hidden rounded-[28px] border border-slate-200/80 bg-white/95 shadow-[0_20px_60px_rgba(15,23,42,0.08)] backdrop-blur">
-          <div className="border-b border-slate-200 bg-[linear-gradient(135deg,#0f172a_0%,#1d4ed8_100%)] px-5 py-5 text-white sm:px-6">
+          <div className="border-b border-slate-200 bg-[linear-gradient(135deg,#0f172a_0%,#1d4ed8_100%)] px-4 py-4 text-white sm:px-6 sm:py-5">
             <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
               <div>
                 <p className="text-xs font-semibold uppercase tracking-[0.24em] text-sky-200">
                   {actorType === "provider" ? "Provider Chat" : "User Chat"}
                 </p>
-                <h1 className="mt-2 text-2xl font-semibold">{headerTitle}</h1>
+                <h1 className="mt-1 text-xl font-semibold sm:mt-2 sm:text-2xl">{headerTitle}</h1>
                 <p className="mt-1 text-sm text-sky-100/90">{headerSubtitle}</p>
               </div>
               <div className="rounded-2xl border border-white/15 bg-white/10 px-4 py-3 text-sm text-sky-50">
@@ -386,7 +401,7 @@ export default function ChatThreadPage() {
               <span className="rounded-full border border-white/15 bg-white/10 px-3 py-1">
                 {getTaskDisplayLabel(thread, thread.TaskID)}
               </span>
-              <span className="rounded-full border border-white/15 bg-white/10 px-3 py-1">
+              <span className="hidden rounded-full border border-white/15 bg-white/10 px-3 py-1 md:inline">
                 Thread ID: {thread.ThreadID}
               </span>
             </div>
@@ -427,7 +442,8 @@ export default function ChatThreadPage() {
         <div className="overflow-hidden rounded-[28px] border border-slate-200/80 bg-white/95 shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
           <div
             ref={scrollRef}
-            className="h-[62vh] space-y-4 overflow-y-auto bg-[linear-gradient(180deg,#ffffff_0%,#f8fafc_100%)] px-4 py-5 sm:px-6"
+            onScroll={handleScrollContainerScroll}
+            className="h-[62dvh] space-y-4 overflow-y-auto bg-[linear-gradient(180deg,#ffffff_0%,#f8fafc_100%)] px-4 py-5 sm:px-6"
           >
             {messages.length === 0 ? (
               <div className="flex h-full min-h-[280px] items-center justify-center">
@@ -489,7 +505,7 @@ export default function ChatThreadPage() {
             )}
           </div>
 
-          <div className="border-t border-slate-200 bg-white px-4 py-4 sm:px-6">
+          <div className="border-t border-slate-200 bg-white px-4 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:px-6">
             <div className="mb-3">
               <div className="mb-2 flex items-center justify-between gap-3">
                 <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
@@ -519,7 +535,7 @@ export default function ChatThreadPage() {
                 </button>
               </div>
             </div>
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+            <div className="flex items-end gap-2 sm:gap-3">
               <textarea
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
@@ -538,15 +554,15 @@ export default function ChatThreadPage() {
                 rows={3}
                 className="min-h-[84px] flex-1 rounded-2xl border border-slate-300 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-sky-500 focus:bg-white"
               />
-              <div className="flex items-center justify-between gap-3 sm:w-auto sm:flex-col sm:items-end">
-                <p className="text-xs text-slate-500">
+              <div className="flex flex-col items-end gap-2">
+                <p className="hidden text-xs text-slate-500 sm:block">
                   {isClosed ? "Closed conversation" : "Press Enter to send, Shift+Enter for a new line"}
                 </p>
                 <button
                   type="button"
                   onClick={() => void handleSend()}
                   disabled={sending || isClosed || !trimmedInput}
-                  className="inline-flex min-w-28 items-center justify-center rounded-2xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                  className="inline-flex min-w-[88px] items-center justify-center rounded-2xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300 sm:min-w-28"
                 >
                   {sending ? "Sending..." : "Send"}
                 </button>
