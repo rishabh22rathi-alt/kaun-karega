@@ -55,6 +55,7 @@ export default function AreaSelection({
   const [inputError, setInputError] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
   const inputShellRef = useRef<HTMLDivElement | null>(null);
+  const dropdownRef = useRef<HTMLDivElement | null>(null);
   const blurTimerRef = useRef<number | null>(null);
 
   const chipClass = (active: boolean) =>
@@ -251,6 +252,14 @@ export default function AreaSelection({
     filteredSuggestions.length === 0 &&
     !loadingAreas;
 
+  useEffect(() => {
+    if (!renderDropdown) return;
+    const id = requestAnimationFrame(() => {
+      dropdownRef.current?.scrollIntoView({ block: "nearest" });
+    });
+    return () => cancelAnimationFrame(id);
+  }, [renderDropdown]);
+
   return (
     <div className="w-full">
       <p className="mb-2 text-sm font-semibold text-[#111827]">
@@ -328,7 +337,10 @@ export default function AreaSelection({
           ) : null}
 
           {renderDropdown ? (
-            <div className="absolute left-0 right-0 z-50 max-h-48 overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg bottom-full mb-2 md:bottom-auto md:top-full md:mb-0 md:mt-2">
+            <div
+              ref={dropdownRef}
+              className="absolute left-0 right-0 z-50 max-h-48 overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg bottom-full mb-2 md:bottom-auto md:top-full md:mb-0 md:mt-2"
+            >
               {filteredSuggestions.map((area) => (
                 <button
                   key={area}

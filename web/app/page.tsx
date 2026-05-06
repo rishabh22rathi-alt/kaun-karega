@@ -728,6 +728,14 @@ function PageContent() {
     category.trim().length > 0 &&
     filteredCategories.length > 0;
 
+  useEffect(() => {
+    if (!showSuggestions) return;
+    const id = requestAnimationFrame(() => {
+      categoryDropdownRef.current?.scrollIntoView({ block: "nearest" });
+    });
+    return () => cancelAnimationFrame(id);
+  }, [showSuggestions]);
+
   const selectCategory = (label: string, canonical?: string) => {
     // Claim ownership of the category field before any state update so the
     // URL/draft bootstrap effects can't re-fire and snap the value back.
