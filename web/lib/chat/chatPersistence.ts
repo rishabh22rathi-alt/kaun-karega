@@ -652,14 +652,82 @@ async function resolveChatActor(data: Record<string, unknown>): Promise<ChatActo
 }
 
 function canChatActorAccessThread(actor: Extract<ChatActor, { ok: true }>, thread: ChatThreadRow): boolean {
+  // ─── DEBUG START — temporary deny-path diagnostic.
+  // Search server logs for `[chat-deny]`. Remove this block (and the
+  // matching DEBUG markers below) once the access-denied root cause is
+  // confirmed. Authorization semantics are unchanged: every branch still
+  // returns the exact same boolean it returned before.
+  const normThreadProviderPhone = normalizePhone10(thread.provider_phone);
+  const normThreadUserPhone = normalizePhone10(thread.user_phone);
+  // ─── DEBUG END
+
   if (actor.actorType === "user") {
-    return normalizePhone10(thread.user_phone) === normalizePhone10(actor.userPhone);
+    const normActorUserPhone = normalizePhone10(actor.userPhone);
+    const sameUserPhone = normThreadUserPhone === normActorUserPhone;
+    // ─── DEBUG START
+    if (!sameUserPhone) {
+      console.warn("[chat-deny]", {
+        branch: "user",
+        thread: {
+          thread_id: thread.thread_id,
+          provider_id: thread.provider_id,
+          provider_phone: thread.provider_phone,
+          user_phone: thread.user_phone,
+        },
+        actor: {
+          actorType: actor.actorType,
+          providerId: null,
+          providerPhone: null,
+          userPhone: actor.userPhone,
+        },
+        normalized: {
+          thread_provider_phone: normThreadProviderPhone,
+          thread_user_phone: normThreadUserPhone,
+          actor_provider_phone: "",
+          actor_user_phone: normActorUserPhone,
+        },
+        sameProviderId: false,
+        sameProviderPhone: false,
+        sameUserPhone,
+      });
+    }
+    // ─── DEBUG END
+    return sameUserPhone;
   }
 
   const sameProviderId = trimString(thread.provider_id) === trimString(actor.providerId);
-  const sameProviderPhone =
-    normalizePhone10(thread.provider_phone) === normalizePhone10(actor.providerPhone);
-  return sameProviderId || sameProviderPhone;
+  const normActorProviderPhone = normalizePhone10(actor.providerPhone);
+  const sameProviderPhone = normThreadProviderPhone === normActorProviderPhone;
+  const granted = sameProviderId || sameProviderPhone;
+  // ─── DEBUG START
+  if (!granted) {
+    console.warn("[chat-deny]", {
+      branch: "provider",
+      thread: {
+        thread_id: thread.thread_id,
+        provider_id: thread.provider_id,
+        provider_phone: thread.provider_phone,
+        user_phone: thread.user_phone,
+      },
+      actor: {
+        actorType: actor.actorType,
+        providerId: actor.providerId,
+        providerPhone: actor.providerPhone,
+        userPhone: null,
+      },
+      normalized: {
+        thread_provider_phone: normThreadProviderPhone,
+        thread_user_phone: normThreadUserPhone,
+        actor_provider_phone: normActorProviderPhone,
+        actor_user_phone: "",
+      },
+      sameProviderId,
+      sameProviderPhone,
+      sameUserPhone: false,
+    });
+  }
+  // ─── DEBUG END
+  return granted;
 }
 
 async function getChatThreadRow(threadId: string): Promise<ChatThreadRow | null> {
