@@ -663,12 +663,19 @@ function canChatActorAccessThread(actor: Extract<ChatActor, { ok: true }>, threa
 }
 
 async function getChatThreadRow(threadId: string): Promise<ChatThreadRow | null> {
+  // Case-insensitive equality so WhatsApp/Meta URL path normalisation
+  // (some clients lowercase the path) still resolves to the original
+  // upper-cased thread_id produced by buildThreadId(). LIKE metacharacters
+  // are escaped so the predicate always behaves as a plain equality, never
+  // a pattern — buildThreadId() cannot emit '%', '_', or '\' today, but the
+  // threadId reaches here via a URL segment and stays trust-but-verify.
+  const pattern = threadId.replace(/[\\%_]/g, "\\$&");
   const { data, error } = await adminSupabase
     .from("chat_threads")
     .select(
       "thread_id, task_id, user_phone, provider_id, provider_phone, category, area, status, created_at, updated_at, last_message_at, last_message_by, unread_user_count, unread_provider_count, thread_status, moderation_reason, last_moderated_at, last_moderated_by"
     )
-    .eq("thread_id", threadId)
+    .ilike("thread_id", pattern)
     .maybeSingle();
 
   if (error) {
