@@ -20,6 +20,30 @@ type CreateThreadResponse = {
   };
 };
 
+// ─── DEBUG START — temporary diagnostics for /respond CTA failure ─────────
+// Remove this block, the `debug` state, the diag capture inside `run`, and
+// the <pre> render below (each marked with DEBUG START/END) once the
+// WhatsApp CTA → chat flow is confirmed working in production.
+type DebugInfo = {
+  taskId: string;
+  providerId: string;
+  phone10: string;
+  origin: string;
+  respondStatus: number | null;
+  respondBody: unknown;
+  threadStatus: number | null;
+  threadBody: unknown;
+};
+
+function safeParseJson(text: string): unknown {
+  try {
+    return text ? JSON.parse(text) : null;
+  } catch {
+    return text;
+  }
+}
+// ─── DEBUG END ────────────────────────────────────────────────────────────
+
 function extractThreadId(data: CreateThreadResponse): string {
   return String(
     data?.thread?.ThreadID ||
@@ -34,6 +58,9 @@ export default function RespondPage({ params }: PageProps) {
   const { taskId, providerId } = use(params);
   const router = useRouter();
   const [error, setError] = useState("");
+  // DEBUG START
+  const [debug, setDebug] = useState<DebugInfo | null>(null);
+  // DEBUG END
 
   useEffect(() => {
     if (!taskId || !providerId) {
@@ -55,19 +82,37 @@ export default function RespondPage({ params }: PageProps) {
     let cancelled = false;
 
     const run = async () => {
+      // DEBUG START — capture every step into `diag`; only surfaced on error.
+      const diag: DebugInfo = {
+        taskId,
+        providerId,
+        phone10: phone,
+        origin: typeof window !== "undefined" ? window.location.origin : "",
+        respondStatus: null,
+        respondBody: null,
+        threadStatus: null,
+        threadBody: null,
+      };
+      // DEBUG END
+
       // 1. Record the response. Same backend the in-app "Open Chat" button
-      //    already calls (provider/my-jobs, provider/job-requests). It is
-      //    idempotent: re-runs flip match_status to 'responded' without
-      //    side effects. Soft-fail — a transient blip here must not block
-      //    the provider from reaching the chat.
+      //    already calls. Idempotent. Soft-fail — a transient blip here
+      //    must not block the provider from reaching the chat.
       try {
-        await fetch("/api/tasks/respond", {
+        const respondRes = await fetch("/api/tasks/respond", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ taskId, providerId }),
         });
-      } catch {
-        // Continue to chat regardless.
+        // DEBUG START
+        diag.respondStatus = respondRes.status;
+        diag.respondBody = safeParseJson(await respondRes.text());
+        // DEBUG END
+      } catch (err) {
+        // DEBUG START
+        diag.respondBody =
+          err instanceof Error ? `network: ${err.message}` : "network error";
+        // DEBUG END
       }
 
       // 2. Create or fetch the chat thread for the LOGGED-IN provider.
@@ -85,18 +130,37 @@ export default function RespondPage({ params }: PageProps) {
             loggedInProviderPhone: phone,
           }),
         });
-        const data = (await res.json()) as CreateThreadResponse;
+        // DEBUG START — read body via .text() so we can both diagnose and
+        // pass it through the existing parse path. (.json() consumes the
+        // stream; .text()+JSON.parse() captures both shape and raw fallback.)
+        const rawText = await res.text();
+        const parsed = safeParseJson(rawText);
+        diag.threadStatus = res.status;
+        diag.threadBody = parsed;
+        const data = (parsed && typeof parsed === "object" ? parsed : {}) as CreateThreadResponse;
+        // DEBUG END
         const threadId = extractThreadId(data);
 
         if (cancelled) return;
         if (!res.ok || !data?.ok || !threadId) {
           setError(data?.error || data?.message || "Unable to open chat.");
+          // DEBUG START
+          console.warn("[respond] open chat failed", diag);
+          setDebug(diag);
+          // DEBUG END
           return;
         }
 
         router.replace(`/chat/thread/${encodeURIComponent(threadId)}`);
-      } catch {
-        if (!cancelled) setError("Network error. Please try again.");
+      } catch (err) {
+        if (cancelled) return;
+        // DEBUG START
+        diag.threadBody =
+          err instanceof Error ? `network: ${err.message}` : "network error";
+        console.warn("[respond] open chat exception", diag);
+        setDebug(diag);
+        // DEBUG END
+        setError("Network error. Please try again.");
       }
     };
 
@@ -109,7 +173,9 @@ export default function RespondPage({ params }: PageProps) {
 
   return (
     <main className="min-h-screen bg-[#FFE3C2] flex items-center justify-center px-4 py-8">
-      <div className="w-full max-w-lg bg-white rounded-2xl shadow-lg p-6 space-y-3 text-center">
+      <div
+        className={`w-full ${debug ? "max-w-2xl" : "max-w-lg"} bg-white rounded-2xl shadow-lg p-6 space-y-3 text-center`}
+      >
         <header className="space-y-1">
           <p className="text-xs font-semibold text-[#0EA5E9] uppercase">
             Kaun Karega
@@ -130,6 +196,27 @@ export default function RespondPage({ params }: PageProps) {
             >
               Back to my jobs
             </a>
+
+            {/* ─── DEBUG START — on-screen diagnostic shown only on failure.
+                Delete this entire {debug ? ... : null} block (and the matching
+                DEBUG markers above) once the issue is resolved. ─── */}
+            {debug ? (
+              <pre className="mt-4 text-left text-[11px] leading-5 text-slate-700 bg-slate-50 border border-slate-200 rounded-lg p-3 overflow-x-auto whitespace-pre-wrap break-all">
+{`URL taskId       : ${debug.taskId}
+URL providerId   : ${debug.providerId}
+session phone    : ${debug.phone10}
+origin           : ${debug.origin}
+
+/api/tasks/respond
+  status         : ${debug.respondStatus ?? "-"}
+  body           : ${JSON.stringify(debug.respondBody, null, 2)}
+
+/api/kk chat_create_or_get_thread
+  status         : ${debug.threadStatus ?? "-"}
+  body           : ${JSON.stringify(debug.threadBody, null, 2)}`}
+              </pre>
+            ) : null}
+            {/* ─── DEBUG END ─── */}
           </div>
         )}
       </div>
