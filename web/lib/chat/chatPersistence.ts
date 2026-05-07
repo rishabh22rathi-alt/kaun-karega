@@ -133,6 +133,10 @@ export type ChatMessagesActionPayload =
       status: "success";
       thread: ChatThreadPayload;
       messages: ChatMessagePayload[];
+      // Echoed back so a caller that omitted ActorType (auto-mode) learns
+      // which side of the thread the session resolved to and can supply the
+      // matching ActorType on subsequent send/mark-read calls.
+      actorType?: "user" | "provider";
     }
   | {
       ok: false;
@@ -651,6 +655,78 @@ async function resolveChatActor(data: Record<string, unknown>): Promise<ChatActo
   return resolveProviderActor(data);
 }
 
+// Auto-resolution path. Used by message-side actions when the caller omits
+// `ActorType` — the session phone is matched against the loaded thread row
+// to determine whether the session belongs to the thread's user side or
+// provider side. Privacy boundary is unchanged: the returned actor still
+// flows through canChatActorAccessThread on the predicate side, and any
+// non-matching session phone produces "Access denied" identically to the
+// explicit-mode path. No changes to schema, templates, or the predicate.
+async function resolveChatActorAuto(
+  data: Record<string, unknown>,
+  threadRow: ChatThreadRow
+): Promise<ChatActor> {
+  const sessionPhone10 = normalizePhone10(
+    data.SessionPhone ||
+      data.sessionPhone ||
+      data.phone ||
+      data.requesterPhone
+  );
+  if (!sessionPhone10) {
+    return { ok: false, error: "SessionPhone required for actor auto-resolution" };
+  }
+
+  const threadProviderPhone10 = normalizePhone10(threadRow.provider_phone);
+  const threadUserPhone10 = normalizePhone10(threadRow.user_phone);
+
+  // Tie-break: prefer "provider" when both sides share the session phone
+  // (sole-trader testing as their own customer). Real (user, provider)
+  // pairs on a thread are distinct per the create-thread flow, so this
+  // branch is effectively the provider-side check in normal operation.
+  if (threadProviderPhone10 && sessionPhone10 === threadProviderPhone10) {
+    const { data: providerRows, error } = await adminSupabase
+      .from("providers")
+      .select("provider_id, full_name, phone")
+      .or(`phone.eq.${sessionPhone10},phone.eq.91${sessionPhone10}`)
+      .limit(5);
+    if (error) {
+      return { ok: false, error: error.message };
+    }
+    const provider = ((providerRows ?? []) as ProviderRow[]).find(
+      (row) => normalizePhone10(row.phone) === sessionPhone10
+    );
+    if (!provider || !trimString(provider.provider_id)) {
+      // Phone matches the thread's provider side but the providers row has
+      // gone away. Treat as access denied rather than letting the request
+      // through with an empty providerId — keeps canChatActorAccessThread's
+      // contract intact (sameProviderId check still meaningful).
+      return { ok: false, error: "Access denied" };
+    }
+    return {
+      ok: true,
+      actorType: "provider",
+      providerId: trimString(provider.provider_id),
+      providerPhone: sessionPhone10,
+      senderPhone: sessionPhone10,
+      senderName:
+        trimString(data.SenderName || data.senderName || provider.full_name || "Provider") ||
+        "Provider",
+    };
+  }
+
+  if (threadUserPhone10 && sessionPhone10 === threadUserPhone10) {
+    return {
+      ok: true,
+      actorType: "user",
+      userPhone: sessionPhone10,
+      senderPhone: sessionPhone10,
+      senderName: trimString(data.SenderName || data.senderName || "User") || "User",
+    };
+  }
+
+  return { ok: false, error: "Access denied" };
+}
+
 function canChatActorAccessThread(actor: Extract<ChatActor, { ok: true }>, thread: ChatThreadRow): boolean {
   // ─── DEBUG START — temporary deny-path diagnostic.
   // Search server logs for `[chat-deny]`. Remove this block (and the
@@ -1161,11 +1237,17 @@ export async function markChatReadFromSupabase(
     const threadId = trimString(data.ThreadID || data.threadId);
     if (!threadId) return { ok: false, status: "error", error: "ThreadID required" };
 
-    const actor = await resolveChatActor(data);
-    if (!actor.ok) return { ok: false, status: "error", error: actor.error };
-
+    // Thread first, then actor — same reorder as the other message-side
+    // actions, so the auto-mode branch can read the thread phones.
     const threadRow = await getChatThreadRow(threadId);
     if (!threadRow) return { ok: false, status: "error", error: "Thread not found" };
+
+    const explicitActorType = trimString(data.ActorType || data.actorType).toLowerCase();
+    const actor = explicitActorType
+      ? await resolveChatActor(data)
+      : await resolveChatActorAuto(data, threadRow);
+    if (!actor.ok) return { ok: false, status: "error", error: actor.error };
+
     if (!canChatActorAccessThread(actor, threadRow)) {
       return { ok: false, status: "error", error: "Access denied" };
     }
@@ -1420,11 +1502,18 @@ export async function getChatMessagesFromSupabase(
     const threadId = trimString(data.ThreadID || data.threadId);
     if (!threadId) return { ok: false, status: "error", error: "ThreadID required" };
 
-    const actor = await resolveChatActor(data);
-    if (!actor.ok) return { ok: false, status: "error", error: actor.error };
-
+    // Thread is loaded first so the auto-mode branch (no ActorType) can
+    // compare the session phone against the row. Explicit-mode callers
+    // pick up the same row and skip the second query they used to do.
     const threadRow = await getChatThreadRow(threadId);
     if (!threadRow) return { ok: false, status: "error", error: "Thread not found" };
+
+    const explicitActorType = trimString(data.ActorType || data.actorType).toLowerCase();
+    const actor = explicitActorType
+      ? await resolveChatActor(data)
+      : await resolveChatActorAuto(data, threadRow);
+    if (!actor.ok) return { ok: false, status: "error", error: actor.error };
+
     if (!canChatActorAccessThread(actor, threadRow)) {
       return { ok: false, status: "error", error: "Access denied" };
     }
@@ -1435,6 +1524,7 @@ export async function getChatMessagesFromSupabase(
       status: "success",
       thread: await mapThreadRow(threadRow),
       messages: messageRows.map(mapMessageRow),
+      actorType: actor.actorType,
     };
   } catch (error) {
     return {
@@ -1503,11 +1593,18 @@ export async function sendChatMessageFromSupabase(
       return { ok: false, status: "error", error: "Only text messages are supported" };
     }
 
-    const actor = await resolveChatActor(data);
-    if (!actor.ok) return { ok: false, status: "error", error: actor.error };
-
+    // Thread first, then actor — same reorder as getChatMessagesFromSupabase.
+    // Explicit-mode callers go through the original resolver; callers that
+    // omit ActorType go through the thread-driven auto-resolver.
     const threadRow = await getChatThreadRow(threadId);
     if (!threadRow) return { ok: false, status: "error", error: "Thread not found" };
+
+    const explicitActorType = trimString(data.ActorType || data.actorType).toLowerCase();
+    const actor = explicitActorType
+      ? await resolveChatActor(data)
+      : await resolveChatActorAuto(data, threadRow);
+    if (!actor.ok) return { ok: false, status: "error", error: actor.error };
+
     if (!canChatActorAccessThread(actor, threadRow)) {
       return { ok: false, status: "error", error: "Access denied" };
     }
