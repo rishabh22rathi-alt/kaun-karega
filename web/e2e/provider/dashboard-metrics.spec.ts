@@ -68,12 +68,12 @@ test.describe("Provider dashboard: metric cards", () => {
     // Value assertions are tight: second <p> inside the card is the big number.
     await expect(cardByTitle(page, "Requests In Your Services").locator("p").nth(1)).toHaveText("4");
     await expect(cardByTitle(page, "Matched To You").locator("p").nth(1)).toHaveText("3");
-    await expect(cardByTitle(page, "Responded By You").locator("p").nth(1)).toHaveText("2");
+    await expect(cardByTitle(page, "Chat Opened By You").locator("p").nth(1)).toHaveText("2");
     await expect(cardByTitle(page, "Accepted By You").locator("p").nth(1)).toHaveText("2");
     await expect(cardByTitle(page, "Completed By You").locator("p").nth(1)).toHaveText("1");
 
     // Rate notes live in the third <p> of their cards.
-    await expect(cardByTitle(page, "Responded By You")).toContainText("Response rate 67%");
+    await expect(cardByTitle(page, "Chat Opened By You")).toContainText("Chat-open rate 67%");
     await expect(cardByTitle(page, "Accepted By You")).toContainText("Acceptance rate 67%");
 
     diag.assertClean();
@@ -90,13 +90,13 @@ test.describe("Provider dashboard: metric cards", () => {
     for (const title of [
       "Requests In Your Services",
       "Matched To You",
-      "Responded By You",
+      "Chat Opened By You",
       "Accepted By You",
       "Completed By You",
     ]) {
       await expect(cardByTitle(page, title).locator("p").nth(1)).toHaveText("0");
     }
-    await expect(cardByTitle(page, "Responded By You")).toContainText("Response rate 0%");
+    await expect(cardByTitle(page, "Chat Opened By You")).toContainText("Chat-open rate 0%");
     await expect(cardByTitle(page, "Accepted By You")).toContainText("Acceptance rate 0%");
 
     diag.assertClean();
@@ -125,11 +125,11 @@ test.describe("Provider dashboard: metric cards", () => {
 
     await expect(cardByTitle(page, "Requests In Your Services").locator("p").nth(1)).toHaveText("5");
     await expect(cardByTitle(page, "Matched To You").locator("p").nth(1)).toHaveText("0");
-    await expect(cardByTitle(page, "Responded By You").locator("p").nth(1)).toHaveText("0");
+    await expect(cardByTitle(page, "Chat Opened By You").locator("p").nth(1)).toHaveText("0");
     await expect(cardByTitle(page, "Accepted By You").locator("p").nth(1)).toHaveText("0");
     await expect(cardByTitle(page, "Completed By You").locator("p").nth(1)).toHaveText("0");
 
-    await expect(cardByTitle(page, "Responded By You")).toContainText("Response rate 0%");
+    await expect(cardByTitle(page, "Chat Opened By You")).toContainText("Chat-open rate 0%");
     await expect(cardByTitle(page, "Accepted By You")).toContainText("Acceptance rate 0%");
 
     diag.assertClean();

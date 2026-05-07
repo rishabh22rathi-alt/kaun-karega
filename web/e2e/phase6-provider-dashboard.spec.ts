@@ -504,7 +504,7 @@ test.describe("Phase 6: Provider Dashboard — Full QA Audit", () => {
     const cards = [
       { title: "Requests In Your Services", value: "25", note: "Overall demand" },
       { title: "Matched To You",            value:  "8", note: "Leads where you were" },
-      { title: "Responded By You",          value:  "5", note: "Response rate 62%" },
+      { title: "Chat Opened By You",        value:  "5", note: "Chat-open rate 62%" },
       { title: "Accepted By You",           value:  "3", note: "Acceptance rate 37%" },
       { title: "Completed By You",          value:  "2", note: "Completed jobs" },
     ];

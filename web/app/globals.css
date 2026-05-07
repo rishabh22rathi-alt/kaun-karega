@@ -38,3 +38,37 @@ html, body {
   margin: 0;
   padding: 0;
 }
+
+/*
+ * Provider notification bell — attention shake.
+ * Applied via the `kk-bell-attention` wrapper class set by
+ * GlobalProviderNotificationBell when unreadCount > 0. The keyframe targets
+ * the immediate <button> child (the bell icon button rendered by
+ * ProviderNotificationBell) so the dropdown panel does not jiggle.
+ * Animation auto-disables while the panel is open (aria-expanded="true")
+ * and is fully suppressed for users with prefers-reduced-motion.
+ */
+@keyframes kk-bell-shake {
+  0%, 65%, 100% { transform: rotate(0deg); }
+  10% { transform: rotate(-12deg); }
+  20% { transform: rotate(10deg); }
+  30% { transform: rotate(-8deg); }
+  40% { transform: rotate(6deg); }
+  50% { transform: rotate(-4deg); }
+  60% { transform: rotate(2deg); }
+}
+
+.kk-bell-attention > button {
+  animation: kk-bell-shake 1.6s ease-in-out infinite;
+  transform-origin: 50% 22%;
+}
+
+.kk-bell-attention > button[aria-expanded="true"] {
+  animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kk-bell-attention > button {
+    animation: none;
+  }
+}

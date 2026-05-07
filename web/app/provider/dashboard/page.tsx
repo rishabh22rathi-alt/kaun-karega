@@ -5,9 +5,6 @@ import { useEffect, useMemo, useRef, useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import InAppToastStack, { type InAppToast } from "@/components/InAppToastStack";
 import ProviderDashboardCoachmark from "@/components/ProviderDashboardCoachmark";
-import ProviderNotificationBell, {
-  type ProviderNotificationItem,
-} from "@/components/ProviderNotificationBell";
 import ProviderAliasSubmitter from "@/components/ProviderAliasSubmitter";
 import { getAuthSession } from "@/lib/auth";
 import { getTaskDisplayLabel } from "@/lib/taskDisplay";
@@ -488,96 +485,6 @@ function ProviderDashboardInner() {
     };
   }, [phone]);
 
-  // Persistent provider notifications backed by the provider_notifications
-  // table (alias_approved / alias_rejected today; future event types here).
-  // Lightweight 60s poll piggybacks on the existing dashboard cadence — the
-  // chat thread polling at 18s is the realtime channel; alias notifications
-  // are slow-moving and tolerate longer intervals.
-  const [persistentNotifications, setPersistentNotifications] = useState<
-    ProviderNotificationItem[]
-  >([]);
-  // TaskIDs that already have a DB-backed job_matched notification. Used by
-  // the providerNotifications memo below to suppress the derived "job:" item
-  // for the same task — DB row wins (recency, mark-seen, persistence).
-  const [persistentJobTaskIds, setPersistentJobTaskIds] = useState<Set<string>>(
-    () => new Set()
-  );
-  // ThreadIDs that already have a DB-backed chat_message notification. Used
-  // by the providerNotifications memo to suppress the derived "chat:" item
-  // for the same thread. Mirrors the persistentJobTaskIds dedupe.
-  const [persistentChatThreadIds, setPersistentChatThreadIds] = useState<
-    Set<string>
-  >(() => new Set());
-  useEffect(() => {
-    if (!phone) return;
-    let cancelled = false;
-    const load = async () => {
-      try {
-        const res = await fetch("/api/provider/notifications", {
-          cache: "no-store",
-        });
-        if (!res.ok) return;
-        const data = (await res.json()) as {
-          ok?: boolean;
-          notifications?: Array<{
-            id: string;
-            type: string;
-            title: string;
-            message: string;
-            href?: string;
-            createdAt?: string;
-            seen?: boolean;
-            payload?: { taskId?: string; threadId?: string } | null;
-          }>;
-        };
-        if (cancelled || !data?.ok) return;
-
-        const dbJobTaskIds = new Set<string>();
-        const dbChatThreadIds = new Set<string>();
-        const mapped: ProviderNotificationItem[] = (data.notifications || []).map(
-          (row) => {
-            const t = String(row.type || "");
-            // DB type → bell group:
-            //   job_matched   -> "job"
-            //   chat_message  -> "chat"
-            //   alias_*, account_*, anything else -> "account"
-            let itemType: ProviderNotificationItem["type"] = "account";
-            if (t === "job_matched") itemType = "job";
-            else if (t === "chat_message") itemType = "chat";
-
-            if (t === "job_matched") {
-              const taskId = String(row.payload?.taskId || "").trim();
-              if (taskId) dbJobTaskIds.add(taskId);
-            } else if (t === "chat_message") {
-              const threadId = String(row.payload?.threadId || "").trim();
-              if (threadId) dbChatThreadIds.add(threadId);
-            }
-            return {
-              id: `db:${row.id}`,
-              type: itemType,
-              title: row.title || "Notification",
-              message: row.message || "",
-              href: row.href || "/provider/dashboard",
-              createdAt: row.createdAt,
-              seen: Boolean(row.seen),
-            };
-          }
-        );
-        setPersistentNotifications(mapped);
-        setPersistentJobTaskIds(dbJobTaskIds);
-        setPersistentChatThreadIds(dbChatThreadIds);
-      } catch {
-        // Soft-fail; bell continues to work with derived items only.
-      }
-    };
-    void load();
-    const interval = window.setInterval(() => void load(), 60_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, [phone]);
-
   const verified = useMemo(
     () => isProviderVerifiedBadge(profile ?? {}),
     [profile]
@@ -636,116 +543,6 @@ function ProviderDashboardInner() {
         : []
       ).filter((req) => !req.Accepted && !req.Responded).length,
     [analytics]
-  );
-  // Derive provider notifications from data already on hand. No new fetches,
-  // no mocks. Backed by /api/provider/dashboard-profile (jobs, account state)
-  // and the existing chat-thread polling (chat). When a real notifications
-  // service lands, this memo is the only thing that swaps.
-  const providerNotifications = useMemo<ProviderNotificationItem[]>(() => {
-    const items: ProviderNotificationItem[] = [];
-
-    const matchedRequests = Array.isArray(analytics.RecentMatchedRequests)
-      ? analytics.RecentMatchedRequests
-      : [];
-    const openJobs = matchedRequests
-      .filter((req) => !req.Accepted && !req.Responded)
-      // Drop derived items whose task already has a DB-backed job_matched
-      // row. The DB row (appended later in this memo via persistentNotifications)
-      // is authoritative — it has stable id, real createdAt, and mark-seen
-      // semantics that the derived item can't offer.
-      .filter((req) => {
-        const taskId = String(req.TaskID || "").trim();
-        return taskId.length === 0 || !persistentJobTaskIds.has(taskId);
-      })
-      .slice(0, 5);
-    for (const req of openJobs) {
-      const taskId = String(req.TaskID || "").trim();
-      if (!taskId) continue;
-      const taskLabel = getTaskDisplayLabel(req, taskId);
-      const locationFragment = req.Area ? ` · ${req.Area}` : "";
-      items.push({
-        id: `job:${taskId}`,
-        type: "job",
-        title: "New matched job",
-        message: `${taskLabel} — ${req.Category || "Service"}${locationFragment}`,
-        href: "/provider/my-jobs",
-        createdAt: req.CreatedAt,
-        seen: false,
-      });
-    }
-
-    const chatEntries = Object.entries(providerThreadSummaryByTaskId)
-      .filter(([, summary]) => summary.unreadProviderCount > 0)
-      // Drop derived chat items whose thread already has a DB-backed
-      // chat_message row. The DB row (appended later via persistentNotifications)
-      // is authoritative — has stable id, mark-seen support, and persists
-      // across sessions, which the polling-derived item can't.
-      .filter(([, summary]) => {
-        const threadId = String(summary.threadId || "").trim();
-        return threadId.length === 0 || !persistentChatThreadIds.has(threadId);
-      })
-      .sort(
-        ([, a], [, b]) =>
-          Date.parse(b.lastMessageAt || "") - Date.parse(a.lastMessageAt || "")
-      )
-      .slice(0, 5);
-    for (const [taskId, summary] of chatEntries) {
-      const taskLabel = getTaskDisplayLabel({ TaskID: taskId }, taskId);
-      const plural = summary.unreadProviderCount === 1 ? "" : "s";
-      items.push({
-        id: `chat:${taskId}`,
-        type: "chat",
-        title: "Customer replied",
-        message: `${taskLabel} · ${summary.unreadProviderCount} unread message${plural}`,
-        href: summary.threadId
-          ? `/chat/thread/${encodeURIComponent(summary.threadId)}`
-          : undefined,
-        createdAt: summary.lastMessageAt,
-        seen: false,
-      });
-    }
-
-    if (verified) {
-      items.push({
-        id: "account:verified",
-        type: "account",
-        title: "Account verified",
-        message: "Your provider phone is verified.",
-        href: "/provider/dashboard",
-        // Steady-state info — should not contribute to the unread badge.
-        seen: true,
-      });
-    } else if (pendingApproval) {
-      items.push({
-        id: "account:pending",
-        type: "account",
-        title: "Account under review",
-        message: "One or more service categories are awaiting admin review.",
-        href: "/provider/dashboard",
-        seen: false,
-      });
-    }
-
-    // Merge persistent rows (alias_approved / alias_rejected, future types).
-    // Persistent notifications come last so derived job/chat items keep their
-    // top position in the panel; the bell groups them by `type` regardless
-    // of order within the array.
-    items.push(...persistentNotifications);
-
-    return items;
-  }, [
-    analytics,
-    providerThreadSummaryByTaskId,
-    verified,
-    pendingApproval,
-    persistentNotifications,
-    persistentJobTaskIds,
-    persistentChatThreadIds,
-  ]);
-
-  const providerUnreadCount = useMemo(
-    () => providerNotifications.filter((item) => !item.seen).length,
-    [providerNotifications]
   );
   const recentRequestDisplayLabelByTaskId = useMemo(() => {
     const next: Record<string, string> = {};
@@ -1047,23 +844,6 @@ function ProviderDashboardInner() {
 
   return (
     <main className="min-h-screen bg-[linear-gradient(180deg,#f8fafc_0%,#eef6ff_100%)] px-4 py-8">
-      {/*
-        Floating bell — fixed to the viewport, aligned to the content area's
-        right edge via the inner max-w-6xl track. Pointer events pass through
-        the wrapper so the page stays interactive everywhere except the bell.
-        z-40 keeps it above content cards but below the coachmark (z-[80]).
-      */}
-      <div className="pointer-events-none fixed inset-x-0 top-3 z-40 md:top-5">
-        <div className="pointer-events-none mx-auto flex w-full max-w-6xl justify-end px-4 md:px-6">
-          <div className="pointer-events-auto">
-            <ProviderNotificationBell
-              notifications={providerNotifications}
-              unreadCount={providerUnreadCount}
-            />
-          </div>
-        </div>
-      </div>
-
       <div className="mx-auto w-full max-w-6xl space-y-6">
         {alreadyRegisteredNotice ? (
           <div className="rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-800">

@@ -346,8 +346,8 @@ test.describe("Provider dashboard: My Demand Insights", () => {
 
       await expect(page.getByRole("heading", { name: "My Demand Insights" })).toBeVisible();
       await expect(metricCardByTitle(page, "Matched To You").locator("p").nth(1)).toHaveText("4");
-      await expect(metricCardByTitle(page, "Responded By You").locator("p").nth(1)).toHaveText("2");
-      await expect(metricCardByTitle(page, "Responded By You")).toContainText("Response rate 50%");
+      await expect(metricCardByTitle(page, "Chat Opened By You").locator("p").nth(1)).toHaveText("2");
+      await expect(metricCardByTitle(page, "Chat Opened By You")).toContainText("Chat-open rate 50%");
       await expect(page.getByText(/Response rate:\s*50%/)).toBeVisible();
       await expect(page.getByText("You have responded to 2 out of 4 matched leads.")).toBeVisible();
       await expect(
@@ -387,8 +387,8 @@ test.describe("Provider dashboard: My Demand Insights", () => {
 
       await expect(page.getByRole("heading", { name: "My Demand Insights" })).toBeVisible();
       await expect(metricCardByTitle(page, "Matched To You").locator("p").nth(1)).toHaveText("0");
-      await expect(metricCardByTitle(page, "Responded By You").locator("p").nth(1)).toHaveText("0");
-      await expect(metricCardByTitle(page, "Responded By You")).toContainText("Response rate 0%");
+      await expect(metricCardByTitle(page, "Chat Opened By You").locator("p").nth(1)).toHaveText("0");
+      await expect(metricCardByTitle(page, "Chat Opened By You")).toContainText("Chat-open rate 0%");
       await expect(page.getByText(/Response rate:\s*0%/)).toBeVisible();
       await expect(
         page.getByText("Demand insights will appear once customer requests start coming in.", { exact: true })
