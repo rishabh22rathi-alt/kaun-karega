@@ -1,15 +1,16 @@
 import Link from "next/link";
 
 type ProviderLoginPageProps = {
-  searchParams?: {
+  searchParams?: Promise<{
     next?: string;
-  };
+  }>;
 };
 
-export default function ProviderLoginPage({ searchParams }: ProviderLoginPageProps) {
+export default async function ProviderLoginPage({ searchParams }: ProviderLoginPageProps) {
+  const params = (await searchParams) ?? {};
   const nextPath =
-    searchParams?.next && searchParams.next.startsWith("/") && !searchParams.next.startsWith("//")
-      ? searchParams.next
+    params.next && params.next.startsWith("/") && !params.next.startsWith("//")
+      ? params.next
       : "/provider/dashboard";
 
   return (
