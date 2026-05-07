@@ -2,16 +2,9 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { getAuthSession } from "@/lib/auth";
 import { getTaskDisplayLabel } from "@/lib/taskDisplay";
-
-type ProviderProfileResponse = {
-  ok?: boolean;
-  provider?: {
-    Phone?: string;
-  };
-};
 
 type Thread = {
   ThreadID: string;
@@ -39,6 +32,10 @@ type ChatMessagesResponse = {
   thread?: Thread;
   messages?: ChatMessage[];
   error?: string;
+  // Stage-1 backend addition: when the page omits ActorType (auto-mode),
+  // the backend echoes the resolved actor here so the page can pin it for
+  // subsequent send/mark-read calls.
+  actorType?: "user" | "provider";
 };
 
 type SendMessageResponse = {
@@ -99,8 +96,11 @@ export default function ChatThreadPage() {
   const routeThreadId = Array.isArray(params?.threadId) ? params.threadId[0] : params?.threadId;
   const threadId = decodeURIComponent(String(routeThreadId || "")).trim();
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const actorType = searchParams.get("actor") === "user" ? "user" : "provider";
+  // Actor type is no longer read from `?actor=user`. The backend infers it
+  // from the session phone vs. chat_threads row (Stage 1) and echoes the
+  // resolved value back in the chat_get_messages response — we pin that
+  // here for subsequent send/mark-read calls.
+  const [actorType, setActorType] = useState<"user" | "provider" | null>(null);
   const [actorPhone, setActorPhone] = useState("");
   const [thread, setThread] = useState<Thread | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -112,9 +112,14 @@ export default function ChatThreadPage() {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const nearBottomRef = useRef(true);
   const justSentRef = useRef(false);
-  const backHref = actorType === "user" ? "/dashboard/my-requests" : "/provider/dashboard";
-  const nextPath = actorType === "user" ? `/chat/thread/${threadId}?actor=user` : `/chat/thread/${threadId}`;
-  const loginHref = actorType === "user" ? "/login" : "/provider/login";
+  // backHref defaults to home pre-resolution and during access-denied; once
+  // the actor is known it points at the appropriate dashboard.
+  const backHref =
+    actorType === "user"
+      ? "/dashboard/my-requests"
+      : actorType === "provider"
+        ? "/provider/dashboard"
+        : "/";
   const trimmedInput = input.trim();
   const quickReplies = actorType === "provider" ? PROVIDER_QUICK_REPLIES : USER_QUICK_REPLIES;
 
@@ -124,6 +129,10 @@ export default function ChatThreadPage() {
       setLoading(false);
       return;
     }
+
+    // Generic login path — actor-agnostic. Backend auto-resolves on return.
+    const loginHref = "/login";
+    const nextPath = `/chat/thread/${threadId}`;
 
     const session = getAuthSession();
     const phone = String(session?.phone || "").replace(/\D/g, "").slice(-10);
@@ -135,17 +144,24 @@ export default function ChatThreadPage() {
     let ignore = false;
     let intervalId: ReturnType<typeof setInterval> | null = null;
 
-    const loadMessages = async (trustedPhone: string, shouldMarkRead = true) => {
+    // Polling helper. Once the actor is resolved on first load, every
+    // subsequent get/mark goes through the explicit-mode resolver with the
+    // pinned ActorType — same payload shape the page used before Stage 2.
+    const loadMessages = async (
+      knownActorType: "user" | "provider",
+      sessionPhone: string,
+      shouldMarkRead = true
+    ) => {
       const messageRes = await fetch("/api/kk", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "chat_get_messages",
-          ActorType: actorType,
+          ActorType: knownActorType,
           ThreadID: threadId,
-          ...(actorType === "provider"
-            ? { loggedInProviderPhone: trustedPhone }
-            : { UserPhone: trustedPhone }),
+          ...(knownActorType === "provider"
+            ? { loggedInProviderPhone: sessionPhone }
+            : { UserPhone: sessionPhone }),
         }),
       });
       const messageData = (await messageRes.json()) as ChatMessagesResponse;
@@ -164,11 +180,11 @@ export default function ChatThreadPage() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             action: "chat_mark_read",
-            ActorType: actorType,
+            ActorType: knownActorType,
             ThreadID: threadId,
-            ...(actorType === "provider"
-              ? { loggedInProviderPhone: trustedPhone }
-              : { UserPhone: trustedPhone }),
+            ...(knownActorType === "provider"
+              ? { loggedInProviderPhone: sessionPhone }
+              : { UserPhone: sessionPhone }),
           }),
         });
       }
@@ -180,37 +196,52 @@ export default function ChatThreadPage() {
       setAccessDenied(false);
 
       try {
-        if (actorType === "provider") {
-          const profileRes = await fetch(
-            `/api/kk?action=get_provider_by_phone&phone=${encodeURIComponent(phone)}`,
-            { cache: "no-store" }
-          );
-          const profileData = (await profileRes.json()) as ProviderProfileResponse;
-          const trustedProviderPhone = String(profileData.provider?.Phone || "")
-            .replace(/\D/g, "")
-            .slice(-10);
+        // First load uses Stage-1 auto-mode: no ActorType, just SessionPhone.
+        // Backend looks up the thread, compares session phone to the row's
+        // user_phone / provider_phone, and replies with the resolved actor.
+        const initialRes = await fetch("/api/kk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "chat_get_messages",
+            ThreadID: threadId,
+            SessionPhone: phone,
+          }),
+        });
+        const initialData = (await initialRes.json()) as ChatMessagesResponse;
 
-          if (!profileRes.ok || !profileData.ok || !trustedProviderPhone) {
-            router.replace(`${loginHref}?next=${encodeURIComponent(nextPath)}`);
-            return;
-          }
-
-          if (ignore) return;
-          setActorPhone(trustedProviderPhone);
-          await loadMessages(trustedProviderPhone, true);
-
-          intervalId = setInterval(() => {
-            void loadMessages(trustedProviderPhone, true).catch(() => undefined);
-          }, 5000);
-        } else {
-          if (ignore) return;
-          setActorPhone(phone);
-          await loadMessages(phone, true);
-
-          intervalId = setInterval(() => {
-            void loadMessages(phone, true).catch(() => undefined);
-          }, 5000);
+        if (!initialRes.ok || !initialData.ok) {
+          throw new Error(initialData.error || "Unable to load chat thread.");
         }
+
+        const resolved = initialData.actorType;
+        if (resolved !== "user" && resolved !== "provider") {
+          throw new Error("Unable to determine chat actor for this thread.");
+        }
+
+        if (ignore) return;
+        setActorType(resolved);
+        setActorPhone(phone);
+        setThread(initialData.thread || null);
+        setMessages(Array.isArray(initialData.messages) ? initialData.messages : []);
+
+        // Mark read once on initial load using the resolved actor.
+        await fetch("/api/kk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "chat_mark_read",
+            ActorType: resolved,
+            ThreadID: threadId,
+            ...(resolved === "provider"
+              ? { loggedInProviderPhone: phone }
+              : { UserPhone: phone }),
+          }),
+        });
+
+        intervalId = setInterval(() => {
+          void loadMessages(resolved, phone, true).catch(() => undefined);
+        }, 5000);
       } catch (err) {
         if (ignore) return;
         const message = err instanceof Error ? err.message : "Unable to load chat thread.";
@@ -231,7 +262,7 @@ export default function ChatThreadPage() {
       ignore = true;
       if (intervalId) clearInterval(intervalId);
     };
-  }, [actorType, loginHref, nextPath, router, threadId]);
+  }, [router, threadId]);
 
   useEffect(() => {
     const node = scrollRef.current;
@@ -252,13 +283,16 @@ export default function ChatThreadPage() {
 
   const sendMessage = async (messageText: string) => {
     const trimmedMessage = messageText.trim();
-    if (!thread || !actorPhone || !trimmedMessage || sending) return;
+    // actorType is set by the initial auto-resolve on load; sends are
+    // disabled in the UI until then (see Send button + quick-reply guards).
+    if (!thread || !actorPhone || !actorType || !trimmedMessage || sending) return;
+    const resolvedActor = actorType;
     setSending(true);
     setError("");
 
     try {
       console.log("[chat/thread] message sent", {
-        actorType,
+        actorType: resolvedActor,
         threadId: thread.ThreadID,
         messageText: trimmedMessage,
       });
@@ -267,9 +301,9 @@ export default function ChatThreadPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "chat_send_message",
-          ActorType: actorType,
+          ActorType: resolvedActor,
           ThreadID: thread.ThreadID,
-          ...(actorType === "provider"
+          ...(resolvedActor === "provider"
             ? { loggedInProviderPhone: actorPhone }
             : { UserPhone: actorPhone }),
           MessageText: trimmedMessage,
@@ -288,9 +322,9 @@ export default function ChatThreadPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "chat_get_messages",
-          ActorType: actorType,
+          ActorType: resolvedActor,
           ThreadID: thread.ThreadID,
-          ...(actorType === "provider"
+          ...(resolvedActor === "provider"
             ? { loggedInProviderPhone: actorPhone }
             : { UserPhone: actorPhone }),
         }),
@@ -349,7 +383,7 @@ export default function ChatThreadPage() {
     );
   }
 
-  if (error || !thread) {
+  if (error || !thread || !actorType) {
     return (
       <main className="min-h-screen bg-slate-50 px-4 py-8">
         <div className="mx-auto max-w-3xl rounded-2xl border border-rose-200 bg-white p-6 shadow-sm">
