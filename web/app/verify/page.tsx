@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useRef, useState, KeyboardEvent } from "react";
+import { Suspense, useEffect, useRef, useState, KeyboardEvent, ClipboardEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { setAuthSession } from "@/lib/auth";
 import { SIDEBAR_TOGGLE_EVENT } from "@/components/sidebarEvents";
@@ -46,6 +46,7 @@ function VerifyPageContent() {
   const [cooldown, setCooldown] = useState(0);
 
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
+  const verifyButtonRef = useRef<HTMLButtonElement | null>(null);
 
   // ---------------------------------------------------
   // AUTO SEND OTP ON MOUNT IF PHONE IS IN URL
@@ -271,11 +272,27 @@ function VerifyPageContent() {
     }
   };
 
+  const handleOtpPaste = (e: ClipboardEvent<HTMLInputElement>) => {
+    e.preventDefault();
+
+    const pasted = e.clipboardData.getData("text");
+    const digits = pasted.replace(/\D/g, "").slice(0, 4);
+    if (!digits) return;
+
+    setOtp(Array.from({ length: 4 }, (_, i) => digits[i] ?? "").join(""));
+
+    if (digits.length === 4) {
+      verifyButtonRef.current?.focus();
+    } else {
+      inputRefs.current[digits.length - 1]?.focus();
+    }
+  };
+
   // ---------------------------------------------------
   // UI
   // ---------------------------------------------------
   return (
-    <main className="min-h-screen bg-amber-50 flex items-center justify-center px-4 py-10">
+    <main className="flex min-h-screen justify-center bg-amber-50 px-4 pb-10 pt-[9vh] sm:pt-[11vh] lg:pt-[12vh]">
       <div className="w-full max-w-sm rounded-2xl bg-white shadow-lg p-8 space-y-6">
 
         {/* Heading */}
@@ -315,6 +332,7 @@ function VerifyPageContent() {
               value={otp[i] ?? ""}
               onChange={(e) => handleDigitInput(i, e.target.value)}
               onKeyDown={(e) => handleDigitKeyDown(i, e)}
+              onPaste={handleOtpPaste}
               className="w-14 h-14 rounded-xl border-2 border-slate-200 bg-white text-center text-2xl font-bold text-slate-900 shadow-sm transition focus:border-green-500 focus:outline-none focus:ring-2 focus:ring-green-500/30"
             />
           ))}
@@ -322,6 +340,7 @@ function VerifyPageContent() {
 
         {/* Verify Button */}
         <button
+          ref={verifyButtonRef}
           type="button"
           onClick={handleVerify}
           disabled={verifyingOtp}

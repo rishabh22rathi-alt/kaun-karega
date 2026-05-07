@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { getTaskDisplayLabel } from "@/lib/taskDisplay";
 import { normalizeVerifiedValue } from "@/lib/providerPresentation";
@@ -18,6 +18,9 @@ type SuccessClientProps = {
 type ProviderItem = {
   name: string;
   phone: string;
+  category: string;
+  area: string;
+  rating: string;
   verified: "yes" | "no";
 };
 
@@ -41,10 +44,33 @@ function toProviderItem(item: unknown): ProviderItem | null {
     (typeof record.phone_number === "string" && record.phone_number.trim()) ||
     (typeof record.ProviderPhone === "string" && record.ProviderPhone.trim()) ||
     "";
+  const category =
+    (typeof record.category === "string" && record.category.trim()) ||
+    (typeof record.Category === "string" && record.Category.trim()) ||
+    "";
+  const area =
+    (typeof record.area === "string" && record.area.trim()) ||
+    (typeof record.Area === "string" && record.Area.trim()) ||
+    "";
+  const ratingValue =
+    record.rating ??
+    record.Rating ??
+    record.average_rating ??
+    record.averageRating ??
+    record.review_rating;
+  const rating =
+    typeof ratingValue === "number"
+      ? String(ratingValue)
+      : typeof ratingValue === "string"
+        ? ratingValue.trim()
+        : "";
   if (!name || !phone) return null;
   return {
     name,
     phone,
+    category,
+    area,
+    rating,
     verified: normalizeVerifiedValue(record.verified),
   };
 }
@@ -58,7 +84,6 @@ export default function SuccessClient({
   status = "",
   requestRef = "",
 }: SuccessClientProps) {
-  const [showModal, setShowModal] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [providers, setProviders] = useState<ProviderItem[]>([]);
@@ -76,12 +101,6 @@ export default function SuccessClient({
     [displayId, taskId]
   );
   const notificationStatusMessage = useMemo(() => {
-    if (notificationStatus === "queued" || notificationStatus === "processing") {
-      return "Notifying nearby service providers...";
-    }
-    if (notificationStatus === "done") {
-      return "Nearby service providers have been informed.";
-    }
     if (notificationStatus === "error") {
       return "We could not notify providers right now. Please try again shortly.";
     }
@@ -153,8 +172,7 @@ export default function SuccessClient({
     };
   }, [taskId]);
 
-  const handleShowProviders = async () => {
-    setShowModal(true);
+  const fetchProviders = useCallback(async () => {
     setLoading(true);
     setError("");
     setProviders([]);
@@ -192,11 +210,17 @@ export default function SuccessClient({
         : [];
       setProviders(normalizedProviders);
     } catch {
-      setError("Unable to fetch providers right now. Please try again.");
+      setError("Could not load provider numbers right now.");
     } finally {
       setLoading(false);
     }
-  };
+  }, [area, canFetchProviders, service, taskId, userPhone]);
+
+  useEffect(() => {
+    if (status === "under_review") return;
+    void fetchProviders();
+  }, [fetchProviders, status]);
+
 
   if (status === "under_review") {
     return (
@@ -214,7 +238,7 @@ export default function SuccessClient({
         </p>
 
         {requestRef ? (
-          <p className="mx-auto mt-5 inline-flex rounded-full bg-white border border-amber-300 px-4 py-2 text-sm font-semibold text-amber-800">
+          <p className="mx-auto mt-5 inline-flex rounded-full bg-[#003d20] px-4 py-2 text-sm font-bold text-white shadow-sm">
             Kaam No. {requestRef}
           </p>
         ) : null}
@@ -230,13 +254,13 @@ export default function SuccessClient({
         <div className="mt-8 flex flex-col gap-3 sm:flex-row">
           <Link
             href="/"
-            className="inline-flex w-full items-center justify-center rounded-full bg-sky-500 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-sky-600"
+            className="inline-flex w-full items-center justify-center rounded-full bg-[#003d20] px-4 py-3 text-sm font-bold text-white shadow-md transition duration-200 hover:bg-[#002a16] hover:shadow-lg"
           >
             Post another request
           </Link>
           <Link
             href="/dashboard/my-requests"
-            className="inline-flex w-full items-center justify-center rounded-full border border-slate-300 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+            className="inline-flex w-full items-center justify-center rounded-full border border-orange-300 bg-white px-4 py-3 text-sm font-bold text-[#003d20] transition duration-200 hover:bg-orange-50"
           >
             Go to Responses
           </Link>
@@ -247,22 +271,13 @@ export default function SuccessClient({
 
   return (
     <>
-      <div className="w-full max-w-xl rounded-3xl border border-slate-200 bg-white p-6 text-center shadow-lg md:p-8">
+      <div className="w-full max-w-xl rounded-3xl border border-slate-200 bg-white p-5 text-center shadow-lg md:p-6">
         <h1 className="text-2xl font-semibold text-slate-900 md:text-3xl">
-          Task Submitted Successfully
+          Request Posted Successfully
         </h1>
 
-        <p className="mt-3 text-sm text-slate-600">
-          Nearby service providers have been notified. Most requests receive a response within a few minutes to a few hours.
-        </p>
-
-        <p className="mt-2 text-sm text-slate-500">
-          You will receive updates here and via WhatsApp when a provider responds.
-        </p>
-
-        <p className="mx-auto mt-3 max-w-lg text-sm text-slate-600 md:text-base">
-          Congratulations! Your task has been successfully posted.
-          {taskId ? " We are now informing nearby service providers." : ""}
+        <p className="mx-auto mt-2 max-w-md text-sm text-slate-600">
+          Nearby providers have been notified. You can also contact available providers directly below.
         </p>
 
         {notificationStatusMessage ? (
@@ -280,112 +295,107 @@ export default function SuccessClient({
         ) : null}
 
         {taskDisplayLabel ? (
-          <p className="mx-auto mt-4 inline-flex rounded-full bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-800">
+          <p className="mx-auto mt-3 inline-flex rounded-full bg-[#003d20] px-4 py-2 text-sm font-bold text-white shadow-sm">
             {taskDisplayLabel}
           </p>
         ) : null}
 
-        <div className="mx-auto mt-6 h-px w-full max-w-md bg-slate-200" />
-
-        <button
-          type="button"
-          onClick={() => {
-            void handleShowProviders();
-          }}
-          className="mx-auto mt-6 inline-flex w-full max-w-sm items-center justify-center rounded-full bg-emerald-600 px-5 py-3 text-sm font-semibold text-white shadow-md transition duration-200 hover:scale-105 hover:bg-emerald-700 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-emerald-400/50"
-        >
-          Show Service Provider Numbers
-        </button>
-
         {service || area ? (
-          <p className="mx-auto mt-4 max-w-md text-xs text-slate-500">
+          <p className="mx-auto mt-3 max-w-md text-xs text-slate-500">
             {service ? `Service: ${service}` : ""}
-            {service && area ? " | " : ""}
+            {service && area ? " · " : ""}
             {area ? `Area: ${area}` : ""}
           </p>
         ) : null}
 
-        <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+        <div className="mx-auto mt-4 h-px w-full max-w-md bg-slate-200" />
+
+        <div className="mt-4 text-left">
+          {loading ? (
+            <p className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-center text-sm text-slate-600">
+              Loading available providers...
+            </p>
+          ) : error ? (
+            <p className="rounded-2xl border border-red-100 bg-red-50 px-4 py-4 text-center text-sm text-red-600">
+              Could not load provider numbers right now.
+            </p>
+          ) : providers.length > 0 ? (
+            <>
+              <div className="hidden overflow-hidden rounded-xl border border-orange-200 md:block">
+                <table className="w-full table-fixed divide-y divide-orange-200 text-left text-sm">
+                  <thead className="bg-[#fb923c] text-left text-[#003d20]">
+                    <tr>
+                      <th className="w-[23%] whitespace-nowrap px-3 py-2 text-left align-middle text-base font-bold tracking-wide">Name</th>
+                      <th className="w-[21%] whitespace-nowrap px-3 py-2 text-left align-middle text-base font-bold tracking-wide">Category</th>
+                      <th className="w-[19%] whitespace-nowrap px-3 py-2 text-left align-middle text-base font-bold tracking-wide">Area</th>
+                      <th className="w-[20%] whitespace-nowrap px-3 py-2 text-left align-middle text-base font-bold tracking-wide">Phone</th>
+                      <th className="w-[17%] whitespace-nowrap pl-3 pr-6 py-2 text-left align-middle text-base font-bold tracking-wide">Rating</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-orange-100 bg-white text-slate-800">
+                    {providers.map((provider, index) => (
+                      <tr key={`${provider.phone}-${index}`} className="align-middle">
+                        <td className="px-3 py-2.5 font-medium leading-snug">{provider.name}</td>
+                        <td className="px-3 py-2.5 leading-snug text-slate-600">{provider.category || service || "—"}</td>
+                        <td className="px-3 py-2.5 leading-snug text-slate-600">{provider.area || area || "—"}</td>
+                        <td className="px-3 py-2.5">
+                          <div className="flex flex-col leading-tight">
+                            <a href={`tel:${provider.phone}`} className="font-bold text-[#003d20] underline decoration-[#f97316] decoration-2 underline-offset-4 transition-colors hover:text-[#002a16] hover:decoration-[#ea580c]">
+                              {provider.phone}
+                            </a>
+                            <span className="mt-1 text-[10px] font-medium text-[#003d20]/70">Tap to call</span>
+                          </div>
+                        </td>
+                        <td className="pl-3 pr-6 py-2.5 text-slate-600">{provider.rating || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="space-y-3 md:hidden">
+                {providers.map((provider, index) => (
+                  <div key={`${provider.phone}-${index}`} className="rounded-xl border border-orange-200 bg-white p-3.5 shadow-sm">
+                    <p className="font-semibold text-slate-900">{provider.name}</p>
+                    <p className="mt-1 text-sm text-slate-500">
+                      {provider.category || service || "Category not available"} · {provider.area || area || "Area not available"}
+                    </p>
+                    <div className="mt-3 flex flex-col">
+                      <a href={`tel:${provider.phone}`} className="inline-flex text-sm font-bold text-[#003d20] underline decoration-[#f97316] decoration-2 underline-offset-4 transition-colors hover:text-[#002a16] hover:decoration-[#ea580c]">
+                        {provider.phone}
+                      </a>
+                      <span className="mt-1 text-[11px] font-medium text-[#003d20]/70">Tap to call · Hold to copy</span>
+                    </div>
+                    <p className="mt-2 text-xs text-slate-500">
+                      Rating: {provider.rating || "Rating not available"}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <p className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-center text-sm text-slate-600">
+              No provider numbers available yet. We’ll notify you when providers respond.
+            </p>
+          )}
+        </div>
+
+        <div className="mt-5 flex flex-col gap-3 sm:flex-row">
           <Link
             href="/"
-            className="inline-flex w-full items-center justify-center rounded-full bg-sky-500 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-sky-600"
+            className="inline-flex w-full items-center justify-center rounded-full border border-orange-300 bg-orange-100 px-4 py-3 text-sm font-bold text-[#003d20] shadow-sm transition duration-200 hover:border-orange-400 hover:bg-orange-200 hover:shadow-md"
           >
             Post another request
           </Link>
           <Link
             href="/dashboard/my-requests"
-            className="inline-flex w-full items-center justify-center rounded-full border border-slate-300 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+            className="inline-flex w-full items-center justify-center rounded-full border border-transparent bg-[#003d20] px-4 py-3 text-sm font-bold text-white shadow-md transition duration-200 hover:bg-[#002a16] hover:shadow-lg"
           >
             Go to Responses
           </Link>
         </div>
       </div>
 
-      {showModal ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
-          <div className="w-full max-w-3xl rounded-2xl bg-white p-5 shadow-2xl md:p-6">
-            <div className="flex items-start justify-between gap-3">
-              <h2 className="text-lg font-semibold text-slate-900">
-                Available Providers
-              </h2>
-              <button
-                type="button"
-                onClick={() => setShowModal(false)}
-                className="rounded-md px-2 py-1 text-sm font-medium text-slate-500 hover:bg-slate-100 hover:text-slate-700"
-              >
-                Close
-              </button>
-            </div>
-
-            {loading ? (
-              <p className="mt-4 text-sm text-slate-600">Fetching providers...</p>
-            ) : error ? (
-              <p className="mt-4 text-sm text-red-600">{error}</p>
-            ) : providers.length > 0 ? (
-              <div className="mt-4 overflow-x-auto rounded-xl border border-slate-200">
-                <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
-                  <thead className="bg-slate-50 text-slate-700">
-                    <tr>
-                      <th className="px-3 py-3 font-semibold">S.No</th>
-                      <th className="px-3 py-3 font-semibold">Provider Name</th>
-                      <th className="px-3 py-3 font-semibold">Phone</th>
-                      <th className="px-3 py-3 font-semibold">Phone Verified</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-200 bg-white text-slate-800">
-                    {providers.map((provider, index) => (
-                      <tr key={`${provider.phone}-${index}`}>
-                        <td className="px-3 py-3 align-top">{index + 1}</td>
-                        <td className="px-3 py-3 align-top font-medium">{provider.name}</td>
-                        <td className="px-3 py-3 align-top">
-                          <a href={`tel:${provider.phone}`} className="text-blue-600 hover:underline">
-                            {provider.phone}
-                          </a>
-                        </td>
-                        <td className="px-3 py-3 align-top">
-                          <span
-                            className={
-                              provider.verified === "yes"
-                                ? "inline-flex rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-700"
-                                : "inline-flex rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-700"
-                            }
-                          >
-                            {provider.verified === "yes" ? "Verified" : "Not Verified"}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <p className="mt-4 text-sm text-slate-600">
-                No providers found for this service and area.
-              </p>
-            )}
-          </div>
-        </div>
-      ) : null}
     </>
   );
 }

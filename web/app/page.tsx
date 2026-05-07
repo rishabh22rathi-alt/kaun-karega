@@ -7,6 +7,7 @@ import AreaSelection, {
   normalizeAreaValue,
 } from "@/app/(public)/components/AreaSelection";
 import WhenNeedIt from "@/app/(public)/components/WhenNeedIt";
+import FirstVisitCoachmark from "@/components/FirstVisitCoachmark";
 import { getAuthSession, setAuthSession } from "@/lib/auth";
 
 const MASTER_AREAS = [
@@ -1200,6 +1201,7 @@ const submitResolvedRequest = async (resolution: CategoryResolution) => {
   };
 
   const hasCategory = category.trim() !== "";
+  const hasStartedRequest = hasCategory || selectedCategory.trim() !== "";
   const hasTime = time.trim() !== "";
 const hasArea = area.trim() !== "";
   const session = isHydrated ? getAuthSession() : null;
@@ -1234,12 +1236,12 @@ const hasArea = area.trim() !== "";
           {/* Text wordmark */}
           <div className="mb-3 flex justify-center select-none">
             <div className="inline-flex items-start justify-center gap-2 leading-none sm:gap-3">
-              <span className="relative inline-block translate-y-[18px] text-[2.75rem] font-extrabold tracking-tight text-orange-500 sm:translate-y-[22px] sm:text-6xl md:translate-y-[28px] md:text-[4.8rem]">
+              <span className="relative inline-block translate-y-[18px] text-[2.75rem] font-extrabold tracking-tight text-orange-600 sm:translate-y-[22px] sm:text-6xl md:translate-y-[28px] md:text-[4.8rem]">
                 कौन
               </span>
               <div className="flex flex-col items-start">
                 <span className="relative inline-block text-[2.4rem] font-extrabold tracking-[0.06em] text-[#003d20] sm:text-5xl md:text-[4.35rem]">
-                  <span className="relative inline-block pb-1 after:absolute after:bottom-[-10px] after:left-0 after:h-[5px] after:w-full after:bg-orange-500 after:content-['']">KAREGA</span><span>?</span>
+                  <span className="relative inline-block pb-1 after:absolute after:bottom-0 after:left-0 after:h-[5px] after:w-full after:translate-y-[-2px] after:bg-orange-600 after:content-['']">KAREGA</span><span>?</span>
                 </span>
                 <p className="mt-2 text-[11px] font-semibold uppercase tracking-[0.24em] text-gray-600 sm:text-xs">
                   Jodhpur Local Services
@@ -1252,7 +1254,7 @@ const hasArea = area.trim() !== "";
           <div className="mx-auto mt-3 max-w-xl">
 
             <div className="relative">
-              <div className="relative flex items-center rounded-2xl border border-slate-300 bg-white px-4 py-3 shadow-lg transition-all duration-200 focus-within:ring-2 focus-within:ring-[#003d20]/40">
+              <div data-tour="service" className="relative flex items-center rounded-2xl border border-orange-600/25 bg-white px-4 py-3 shadow-[0_18px_45px_rgba(234,88,12,0.12)] transition-all duration-200 focus-within:border-orange-600/40 focus-within:ring-2 focus-within:ring-orange-600/20 focus-within:shadow-[0_20px_50px_rgba(234,88,12,0.16)]">
                 <span className="mr-3 shrink-0 text-xl text-[#003d20]">&#128269;</span>
                 <div className="relative flex-1 min-w-0">
                   <input
@@ -1378,9 +1380,12 @@ const hasArea = area.trim() !== "";
 
             {/* Trust strip */}
             <div
-              className={`mt-5 grid grid-cols-3 gap-2 select-none sm:gap-3 ${
-                isCategoryFocused || hasCategory ? "hidden md:grid" : ""
+              className={`mt-5 grid grid-cols-3 gap-2 overflow-hidden select-none transition-all duration-300 ease-out sm:gap-3 ${
+                hasStartedRequest
+                  ? "max-h-0 translate-y-[-6px] opacity-0"
+                  : "max-h-32 translate-y-0 opacity-100"
               }`}
+              aria-hidden={hasStartedRequest}
             >
               {[
                 { icon: "✓", label: "Trusted", desc: "Verified providers" },
@@ -1402,13 +1407,15 @@ const hasArea = area.trim() !== "";
       </section>
 
       {/* ── STATS BAR ────────────────────────────────────────────────── */}
-      {!hasCategory && (
-        <div
-          className={`border-b border-slate-100 bg-white select-none ${
-            isCategoryFocused ? "hidden md:block" : ""
-          }`}
-          onDragStart={(e) => e.preventDefault()}
-        >
+      <div
+        className={`overflow-hidden border-b bg-white select-none transition-all duration-300 ease-out ${
+          hasStartedRequest
+            ? "max-h-0 border-transparent opacity-0"
+            : "max-h-24 border-slate-100 opacity-100"
+        }`}
+        aria-hidden={hasStartedRequest}
+        onDragStart={(e) => e.preventDefault()}
+      >
           <div className="mx-auto grid max-w-2xl grid-cols-3 divide-x divide-slate-100">
             <div className="py-3 text-center">
               <p className="text-lg font-semibold text-[#003d20]/60">50+</p>
@@ -1424,7 +1431,6 @@ const hasArea = area.trim() !== "";
             </div>
           </div>
         </div>
-      )}
 
       {/* ── PROGRESSIVE FORM STEPS ───────────────────────────────────── */}
       {hasCategory && (
@@ -1454,7 +1460,7 @@ const hasArea = area.trim() !== "";
           </div>
 
           {/* Step 2: When */}
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div data-tour="time" className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
             <p className="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-400">
               <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#003d20] text-[10px] font-bold text-white">
                 2
@@ -1484,7 +1490,7 @@ const hasArea = area.trim() !== "";
 
           {/* Step 3: Where */}
           {hasTime && (
-            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div data-tour="area" className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <p className="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-400">
                 <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#003d20] text-[10px] font-bold text-white">
                   3
@@ -1574,6 +1580,7 @@ const hasArea = area.trim() !== "";
               )}
 
               <button
+                data-tour="submit"
                 type="button"
                 onClick={handleSubmit}
                 disabled={loading || isRedirecting || !canSubmit || Boolean(serviceDateError)}
@@ -1803,6 +1810,7 @@ const hasArea = area.trim() !== "";
         </div>
       )}
 
+      <FirstVisitCoachmark />
     </div>
   );
 }
