@@ -54,8 +54,13 @@ function categoriesCacheKey(categories: string[]): string {
 }
 
 // Same shape as categoriesCacheKey but kept as a separate name so cache-key
-// formation is greppable for either dimension. Areas participate in the
-// metrics cache key because TotalRequestsInMyCategories now filters by area.
+// formation is greppable for either dimension. Areas are still included in
+// the metrics cache key as a conservative invalidation handle: changing a
+// provider's areas should not currently affect any of the five metrics in
+// this block (TotalRequestsInMyCategories is now city-wide, the others are
+// provider_id-scoped), but keeping `areas` in the key means any future
+// area-dependent metric added here is automatically invalidated when the
+// provider edits coverage.
 function areasCacheKey(areas: string[]): string {
   return Array.from(
     new Set((areas || []).map((a) => String(a || "").trim()).filter((a) => a.length > 0))
@@ -285,11 +290,15 @@ async function getProviderMetricsFromSupabase(
   const sinceIso = since ? since.toISOString() : null;
   const sinceMs = since ? since.getTime() : null;
 
-  // Requests In Your Services — filtered by category AND provider's approved
-  // areas. A provider with no approved areas is not eligible to receive any
-  // matches, so the count is 0 (matches existing matching-pipeline semantics).
+  // Requests In Your Services — total customer requests across the ENTIRE
+  // city in the provider's selected service categories. NOT scoped by the
+  // provider's approved areas, NOT scoped by the provider's signup/created-at,
+  // NOT scoped to provider_task_matches. The user-selected dashboard range
+  // (Today / 7d / 30d / 6m / 1y / All) is the only filter that applies via
+  // tasks.created_at. When `since === null` ("All"), this counts back to
+  // Kaam No. 1 / full task history.
   const categoriesCountPromise = (() => {
-    if (categoryList.length === 0 || areaList.length === 0) {
+    if (categoryList.length === 0) {
       return Promise.resolve({ count: 0, error: null } as {
         count: number | null;
         error: unknown;
@@ -298,8 +307,7 @@ async function getProviderMetricsFromSupabase(
     let q = supabase
       .from("tasks")
       .select("task_id", { count: "exact", head: true })
-      .in("category", categoryList)
-      .in("area", areaList);
+      .in("category", categoryList);
     if (sinceIso) q = q.gte("created_at", sinceIso);
     return q;
   })();

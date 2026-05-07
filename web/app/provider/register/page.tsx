@@ -8,7 +8,13 @@ import InAppToastStack, { type InAppToast } from "@/components/InAppToastStack";
 import { PROVIDER_PROFILE_UPDATED_EVENT } from "@/components/sidebarEvents";
 
 // Change limits here if business rules change.
-const MAX_CATEGORIES = 3;
+// Restricted from 3 to 1 — providers register a single canonical service
+// category. Aliases / work-tags under that category are surfaced through the
+// existing category_aliases table (resolveCategoryAlias) and a separate
+// provider-side alias-request endpoint (/api/provider/aliases). Bumping this
+// constant alone will NOT re-enable multi-category signup — backend caps in
+// /api/kk (provider_register) and /api/provider/update also enforce the limit.
+const MAX_CATEGORIES = 1;
 const MIN_AREAS = 1;
 const MAX_AREAS = 5;
 

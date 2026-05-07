@@ -1500,6 +1500,94 @@ export async function sendChatMessageFromSupabase(
       return { ok: false, status: "error", error: "Thread not found" };
     }
 
+    // Persist a "chat_message" provider notification when a customer/user
+    // sends a message to a provider. Burst dedupe: if an UNSEEN chat_message
+    // for the same (provider_id, threadId) already exists, skip — prevents
+    // one-row-per-message spam during a typing burst. Once the provider
+    // opens the bell (Phase 1 mark-seen flips seen_at), the next customer
+    // message creates a fresh row. Soft-fail: chat insert + thread update
+    // already succeeded above and are not blocked by notif failures.
+    if (actor.actorType === "user" && updatedThreadRow.provider_id) {
+      try {
+        const providerId = String(updatedThreadRow.provider_id || "").trim();
+        const taskIdForNotif = String(updatedThreadRow.task_id || "").trim();
+
+        const { data: existing, error: existingErr } = await adminSupabase
+          .from("provider_notifications")
+          .select("id, payload_json")
+          .eq("provider_id", providerId)
+          .eq("type", "chat_message")
+          .is("seen_at", null);
+
+        if (existingErr) {
+          console.warn(
+            "[chat] chat_message dedupe lookup failed; proceeding without dedupe",
+            existingErr.message
+          );
+        }
+
+        const alreadyHasUnseenForThread = (existing || []).some((row) => {
+          const payload = row.payload_json as { threadId?: string } | null;
+          return payload?.threadId === threadId;
+        });
+
+        if (!alreadyHasUnseenForThread) {
+          // Best-effort displayId lookup. Single round-trip; if it fails
+          // the message just falls back to the raw task_id label.
+          let displayId: number | null = null;
+          if (taskIdForNotif) {
+            const { data: taskRow } = await adminSupabase
+              .from("tasks")
+              .select("display_id")
+              .eq("task_id", taskIdForNotif)
+              .maybeSingle();
+            const dRaw = (taskRow as { display_id?: unknown } | null)
+              ?.display_id;
+            displayId =
+              typeof dRaw === "number"
+                ? dRaw
+                : typeof dRaw === "string" && /^\d+$/.test(dRaw)
+                  ? Number(dRaw)
+                  : null;
+          }
+
+          const taskLabel = displayId
+            ? `Kaam No. ${displayId}`
+            : taskIdForNotif || "your job";
+
+          const senderPhone = normalizePhone10(updatedThreadRow.user_phone);
+
+          const { error: notifInsertErr } = await adminSupabase
+            .from("provider_notifications")
+            .insert({
+              provider_id: providerId,
+              type: "chat_message",
+              title: "Customer replied",
+              message: `Customer replied on ${taskLabel}.`,
+              href: `/chat/thread/${encodeURIComponent(threadId)}`,
+              payload_json: {
+                threadId,
+                taskId: taskIdForNotif,
+                displayId,
+                senderPhone,
+                providerId,
+              },
+            });
+          if (notifInsertErr) {
+            console.warn(
+              "[chat] chat_message notif insert failed",
+              notifInsertErr.message
+            );
+          }
+        }
+      } catch (notifErr) {
+        console.warn(
+          "[chat] chat_message notification fan-out exception",
+          notifErr instanceof Error ? notifErr.message : notifErr
+        );
+      }
+    }
+
     await runChatNotificationSideEffects(updatedThreadRow, actor);
 
     return {

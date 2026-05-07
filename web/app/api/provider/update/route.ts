@@ -66,6 +66,17 @@ export async function POST(request: Request) {
       { status: 400 }
     );
   }
+  // Single-canonical-category policy. Multi-category submissions are rejected
+  // here so the cap holds even if a frontend bypasses MAX_CATEGORIES. Legacy
+  // providers whose stored row count exceeds 1 are unaffected on read paths;
+  // they will only encounter this gate when actively saving an edit, at which
+  // point the frontend must down-select to one primary category.
+  if (categories.length > 1) {
+    return NextResponse.json(
+      { ok: false, error: "ONLY_ONE_CATEGORY_ALLOWED" },
+      { status: 400 }
+    );
+  }
   if (areas.length === 0) {
     return NextResponse.json(
       { ok: false, error: "AREAS_REQUIRED" },

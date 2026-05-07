@@ -236,6 +236,78 @@ export async function POST(request: Request) {
       .from("provider_task_matches")
       .upsert(matchRows, { onConflict: "task_id,provider_id", ignoreDuplicates: false });
 
+    // 6b. Persist per-provider "job_matched" notifications for the bell.
+    //     Idempotent — pre-check existing rows so a retry of this route
+    //     does not double-notify any provider for the same task. Soft-fail
+    //     by design: if the notification insert errors, the matching
+    //     pipeline + WhatsApp dispatch above are already done and not
+    //     blocked. See provider_notifications schema:
+    //     supabase/migrations/20260507120000_alias_review_and_notifications.sql
+    try {
+      const matchedProviderIds = providerList
+        .map((p) => String(p.provider_id || "").trim())
+        .filter(Boolean);
+
+      if (matchedProviderIds.length > 0) {
+        const { data: existingNotifs, error: existingErr } = await supabase
+          .from("provider_notifications")
+          .select("provider_id, payload_json")
+          .eq("type", "job_matched")
+          .in("provider_id", matchedProviderIds);
+
+        if (existingErr) {
+          console.warn(
+            "[process-task-notifications] notif dedupe lookup failed; proceeding without dedupe",
+            existingErr.message
+          );
+        }
+
+        const alreadyNotifiedIds = new Set(
+          (existingNotifs || [])
+            .filter((row) => {
+              const payload = row.payload_json as { taskId?: string } | null;
+              return payload?.taskId === taskId;
+            })
+            .map((row) => String(row.provider_id || ""))
+        );
+
+        const toNotify = matchedProviderIds.filter(
+          (pid) => !alreadyNotifiedIds.has(pid)
+        );
+
+        if (toNotify.length > 0) {
+          const notifRows = toNotify.map((pid) => ({
+            provider_id: pid,
+            type: "job_matched",
+            title: "New job matched",
+            message: `New ${task.category} request in ${task.area}.`,
+            href: "/provider/my-jobs",
+            payload_json: {
+              taskId,
+              displayId: (task as { display_id?: unknown }).display_id ?? null,
+              category: task.category,
+              area: task.area,
+            },
+          }));
+
+          const { error: notifInsertErr } = await supabase
+            .from("provider_notifications")
+            .insert(notifRows);
+          if (notifInsertErr) {
+            console.warn(
+              "[process-task-notifications] notif insert failed",
+              notifInsertErr.message
+            );
+          }
+        }
+      }
+    } catch (notifErr) {
+      console.warn(
+        "[process-task-notifications] notification fan-out exception",
+        notifErr instanceof Error ? notifErr.message : notifErr
+      );
+    }
+
     // 7. Update task status
     await supabase
       .from("tasks")

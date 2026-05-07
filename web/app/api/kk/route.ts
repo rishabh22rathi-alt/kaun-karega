@@ -1589,6 +1589,19 @@ export async function POST(request: NextRequest) {
           )
         );
       }
+      // Single-canonical-category policy. Mirrors the cap in
+      // /api/provider/update so a bypassed frontend still cannot register a
+      // provider with multiple service categories. Aliases / work-tags belong
+      // in the category_aliases table, not as additional provider_services
+      // rows.
+      if (categories.length > 1) {
+        return withNoCache(
+          NextResponse.json(
+            { ok: false, error: "ONLY_ONE_CATEGORY_ALLOWED" },
+            { status: 400 }
+          )
+        );
+      }
 
       const supabase = await createClient();
       const [{ data: approvedCategories, error: approvedCategoriesError }, { data: approvedAreas, error: approvedAreasError }] =

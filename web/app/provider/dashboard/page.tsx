@@ -4,6 +4,11 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import InAppToastStack, { type InAppToast } from "@/components/InAppToastStack";
+import ProviderDashboardCoachmark from "@/components/ProviderDashboardCoachmark";
+import ProviderNotificationBell, {
+  type ProviderNotificationItem,
+} from "@/components/ProviderNotificationBell";
+import ProviderAliasSubmitter from "@/components/ProviderAliasSubmitter";
 import { getAuthSession } from "@/lib/auth";
 import { getTaskDisplayLabel } from "@/lib/taskDisplay";
 import { isProviderVerifiedBadge } from "@/lib/providerPresentation";
@@ -63,6 +68,7 @@ type ProviderThreadSummaryByTaskId = Record<
   {
     unreadProviderCount: number;
     lastMessageAt: string;
+    threadId: string;
   }
 >;
 
@@ -178,14 +184,19 @@ function summarizeProviderThreads(threads: ProviderThreadRow[]): ProviderThreadS
     const taskId = String(thread.TaskID || "").trim();
     if (!taskId) return acc;
 
-    const current = acc[taskId] || { unreadProviderCount: 0, lastMessageAt: "" };
+    const current = acc[taskId] || { unreadProviderCount: 0, lastMessageAt: "", threadId: "" };
     const candidateTime = String(thread.LastMessageAt || thread.UpdatedAt || thread.CreatedAt || "").trim();
     const currentTime = String(current.lastMessageAt || "").trim();
+    const candidateIsNewer = Date.parse(candidateTime || "") > Date.parse(currentTime || "");
+    const candidateThreadId = String(thread.ThreadID || "").trim();
 
     acc[taskId] = {
       unreadProviderCount: current.unreadProviderCount + (Number(thread.UnreadProviderCount) || 0),
-      lastMessageAt:
-        Date.parse(candidateTime || "") > Date.parse(currentTime || "") ? candidateTime : currentTime,
+      lastMessageAt: candidateIsNewer ? candidateTime : currentTime,
+      threadId:
+        candidateIsNewer && candidateThreadId
+          ? candidateThreadId
+          : current.threadId || candidateThreadId,
     };
 
     return acc;
@@ -477,6 +488,96 @@ function ProviderDashboardInner() {
     };
   }, [phone]);
 
+  // Persistent provider notifications backed by the provider_notifications
+  // table (alias_approved / alias_rejected today; future event types here).
+  // Lightweight 60s poll piggybacks on the existing dashboard cadence — the
+  // chat thread polling at 18s is the realtime channel; alias notifications
+  // are slow-moving and tolerate longer intervals.
+  const [persistentNotifications, setPersistentNotifications] = useState<
+    ProviderNotificationItem[]
+  >([]);
+  // TaskIDs that already have a DB-backed job_matched notification. Used by
+  // the providerNotifications memo below to suppress the derived "job:" item
+  // for the same task — DB row wins (recency, mark-seen, persistence).
+  const [persistentJobTaskIds, setPersistentJobTaskIds] = useState<Set<string>>(
+    () => new Set()
+  );
+  // ThreadIDs that already have a DB-backed chat_message notification. Used
+  // by the providerNotifications memo to suppress the derived "chat:" item
+  // for the same thread. Mirrors the persistentJobTaskIds dedupe.
+  const [persistentChatThreadIds, setPersistentChatThreadIds] = useState<
+    Set<string>
+  >(() => new Set());
+  useEffect(() => {
+    if (!phone) return;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await fetch("/api/provider/notifications", {
+          cache: "no-store",
+        });
+        if (!res.ok) return;
+        const data = (await res.json()) as {
+          ok?: boolean;
+          notifications?: Array<{
+            id: string;
+            type: string;
+            title: string;
+            message: string;
+            href?: string;
+            createdAt?: string;
+            seen?: boolean;
+            payload?: { taskId?: string; threadId?: string } | null;
+          }>;
+        };
+        if (cancelled || !data?.ok) return;
+
+        const dbJobTaskIds = new Set<string>();
+        const dbChatThreadIds = new Set<string>();
+        const mapped: ProviderNotificationItem[] = (data.notifications || []).map(
+          (row) => {
+            const t = String(row.type || "");
+            // DB type → bell group:
+            //   job_matched   -> "job"
+            //   chat_message  -> "chat"
+            //   alias_*, account_*, anything else -> "account"
+            let itemType: ProviderNotificationItem["type"] = "account";
+            if (t === "job_matched") itemType = "job";
+            else if (t === "chat_message") itemType = "chat";
+
+            if (t === "job_matched") {
+              const taskId = String(row.payload?.taskId || "").trim();
+              if (taskId) dbJobTaskIds.add(taskId);
+            } else if (t === "chat_message") {
+              const threadId = String(row.payload?.threadId || "").trim();
+              if (threadId) dbChatThreadIds.add(threadId);
+            }
+            return {
+              id: `db:${row.id}`,
+              type: itemType,
+              title: row.title || "Notification",
+              message: row.message || "",
+              href: row.href || "/provider/dashboard",
+              createdAt: row.createdAt,
+              seen: Boolean(row.seen),
+            };
+          }
+        );
+        setPersistentNotifications(mapped);
+        setPersistentJobTaskIds(dbJobTaskIds);
+        setPersistentChatThreadIds(dbChatThreadIds);
+      } catch {
+        // Soft-fail; bell continues to work with derived items only.
+      }
+    };
+    void load();
+    const interval = window.setInterval(() => void load(), 60_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [phone]);
+
   const verified = useMemo(
     () => isProviderVerifiedBadge(profile ?? {}),
     [profile]
@@ -527,6 +628,124 @@ function ProviderDashboardInner() {
         6
       ),
     [analytics]
+  );
+  const openRequestsWaitingCount = useMemo(
+    () =>
+      (Array.isArray(analytics.RecentMatchedRequests)
+        ? analytics.RecentMatchedRequests
+        : []
+      ).filter((req) => !req.Accepted && !req.Responded).length,
+    [analytics]
+  );
+  // Derive provider notifications from data already on hand. No new fetches,
+  // no mocks. Backed by /api/provider/dashboard-profile (jobs, account state)
+  // and the existing chat-thread polling (chat). When a real notifications
+  // service lands, this memo is the only thing that swaps.
+  const providerNotifications = useMemo<ProviderNotificationItem[]>(() => {
+    const items: ProviderNotificationItem[] = [];
+
+    const matchedRequests = Array.isArray(analytics.RecentMatchedRequests)
+      ? analytics.RecentMatchedRequests
+      : [];
+    const openJobs = matchedRequests
+      .filter((req) => !req.Accepted && !req.Responded)
+      // Drop derived items whose task already has a DB-backed job_matched
+      // row. The DB row (appended later in this memo via persistentNotifications)
+      // is authoritative — it has stable id, real createdAt, and mark-seen
+      // semantics that the derived item can't offer.
+      .filter((req) => {
+        const taskId = String(req.TaskID || "").trim();
+        return taskId.length === 0 || !persistentJobTaskIds.has(taskId);
+      })
+      .slice(0, 5);
+    for (const req of openJobs) {
+      const taskId = String(req.TaskID || "").trim();
+      if (!taskId) continue;
+      const taskLabel = getTaskDisplayLabel(req, taskId);
+      const locationFragment = req.Area ? ` · ${req.Area}` : "";
+      items.push({
+        id: `job:${taskId}`,
+        type: "job",
+        title: "New matched job",
+        message: `${taskLabel} — ${req.Category || "Service"}${locationFragment}`,
+        href: "/provider/my-jobs",
+        createdAt: req.CreatedAt,
+        seen: false,
+      });
+    }
+
+    const chatEntries = Object.entries(providerThreadSummaryByTaskId)
+      .filter(([, summary]) => summary.unreadProviderCount > 0)
+      // Drop derived chat items whose thread already has a DB-backed
+      // chat_message row. The DB row (appended later via persistentNotifications)
+      // is authoritative — has stable id, mark-seen support, and persists
+      // across sessions, which the polling-derived item can't.
+      .filter(([, summary]) => {
+        const threadId = String(summary.threadId || "").trim();
+        return threadId.length === 0 || !persistentChatThreadIds.has(threadId);
+      })
+      .sort(
+        ([, a], [, b]) =>
+          Date.parse(b.lastMessageAt || "") - Date.parse(a.lastMessageAt || "")
+      )
+      .slice(0, 5);
+    for (const [taskId, summary] of chatEntries) {
+      const taskLabel = getTaskDisplayLabel({ TaskID: taskId }, taskId);
+      const plural = summary.unreadProviderCount === 1 ? "" : "s";
+      items.push({
+        id: `chat:${taskId}`,
+        type: "chat",
+        title: "Customer replied",
+        message: `${taskLabel} · ${summary.unreadProviderCount} unread message${plural}`,
+        href: summary.threadId
+          ? `/chat/thread/${encodeURIComponent(summary.threadId)}`
+          : undefined,
+        createdAt: summary.lastMessageAt,
+        seen: false,
+      });
+    }
+
+    if (verified) {
+      items.push({
+        id: "account:verified",
+        type: "account",
+        title: "Account verified",
+        message: "Your provider phone is verified.",
+        href: "/provider/dashboard",
+        // Steady-state info — should not contribute to the unread badge.
+        seen: true,
+      });
+    } else if (pendingApproval) {
+      items.push({
+        id: "account:pending",
+        type: "account",
+        title: "Account under review",
+        message: "One or more service categories are awaiting admin review.",
+        href: "/provider/dashboard",
+        seen: false,
+      });
+    }
+
+    // Merge persistent rows (alias_approved / alias_rejected, future types).
+    // Persistent notifications come last so derived job/chat items keep their
+    // top position in the panel; the bell groups them by `type` regardless
+    // of order within the array.
+    items.push(...persistentNotifications);
+
+    return items;
+  }, [
+    analytics,
+    providerThreadSummaryByTaskId,
+    verified,
+    pendingApproval,
+    persistentNotifications,
+    persistentJobTaskIds,
+    persistentChatThreadIds,
+  ]);
+
+  const providerUnreadCount = useMemo(
+    () => providerNotifications.filter((item) => !item.seen).length,
+    [providerNotifications]
   );
   const recentRequestDisplayLabelByTaskId = useMemo(() => {
     const next: Record<string, string> = {};
@@ -664,12 +883,6 @@ function ProviderDashboardInner() {
     : pendingApproval
       ? "Pending Admin Approval"
       : "Not Verified";
-  const verificationMessage = verified
-    ? "Your phone login is verified. Keep responding quickly to improve your conversion."
-    : pendingApproval
-      ? "Your profile is live, but one or more categories are waiting for admin review."
-      : "Complete OTP login to show as phone verified and get higher user-facing ranking.";
-
   const maxDemandCount = useMemo(
     () => areaDemand.reduce((max, item) => Math.max(max, Number(item.RequestCount || 0)), 0),
     [areaDemand]
@@ -684,7 +897,6 @@ function ProviderDashboardInner() {
     (item) => getDemandLevel(Number(item.RequestCount || 0), selectedMaxDemandCount || maxDemandCount) === "High"
   );
   const responseRate = Number(metrics.ResponseRate || 0);
-  const acceptanceRate = Number(metrics.AcceptanceRate || 0);
   const maxCategoryDemandCount = useMemo(
     () => categoryDemand.reduce((max, item) => Math.max(max, Number(item.RequestCount || 0)), 0),
     [categoryDemand]
@@ -756,32 +968,25 @@ function ProviderDashboardInner() {
     {
       title: "Requests In Your Services",
       value: Number(metrics.TotalRequestsInMyCategories || 0),
-      tone: "bg-slate-900 text-white border-slate-900",
+      tone: "bg-orange-50 border-orange-200 text-[#003d20]",
       note: "Overall demand in your selected categories",
     },
     {
       title: "Matched To You",
       value: Number(metrics.TotalRequestsMatchedToMe || 0),
-      tone: "bg-white text-slate-900 border-slate-200",
+      tone: "bg-amber-50 border-amber-200 text-[#003d20]",
       note: "Leads where you were one of the matched providers",
     },
     {
-      title: "Responded By You",
+      // Renamed from "Responded By You" → "Chat Opened By You" to honestly
+      // reflect what the underlying metric measures: provider tapped Open
+      // Chat at least once on the lead. Backed by the same
+      // TotalRequestsRespondedByMe value (provider_task_matches rows where
+      // match_status ∈ {"responded","accepted"}). Query logic unchanged.
+      title: "Chat Opened By You",
       value: Number(metrics.TotalRequestsRespondedByMe || 0),
-      tone: "bg-emerald-50 text-emerald-900 border-emerald-200",
-      note: `Response rate ${responseRate}%`,
-    },
-    {
-      title: "Accepted By You",
-      value: Number(metrics.TotalRequestsAcceptedByMe || 0),
-      tone: "bg-sky-50 text-sky-900 border-sky-200",
-      note: `Acceptance rate ${acceptanceRate}%`,
-    },
-    {
-      title: "Completed By You",
-      value: Number(metrics.TotalRequestsCompletedByMe || 0),
-      tone: "bg-amber-50 text-amber-900 border-amber-200",
-      note: "Completed jobs assigned to your provider ID",
+      tone: "bg-emerald-50 border-emerald-200 text-[#003d20]",
+      note: `Chat-open rate ${responseRate}%`,
     },
   ];
 
@@ -842,13 +1047,33 @@ function ProviderDashboardInner() {
 
   return (
     <main className="min-h-screen bg-[linear-gradient(180deg,#f8fafc_0%,#eef6ff_100%)] px-4 py-8">
+      {/*
+        Floating bell — fixed to the viewport, aligned to the content area's
+        right edge via the inner max-w-6xl track. Pointer events pass through
+        the wrapper so the page stays interactive everywhere except the bell.
+        z-40 keeps it above content cards but below the coachmark (z-[80]).
+      */}
+      <div className="pointer-events-none fixed inset-x-0 top-3 z-40 md:top-5">
+        <div className="pointer-events-none mx-auto flex w-full max-w-6xl justify-end px-4 md:px-6">
+          <div className="pointer-events-auto">
+            <ProviderNotificationBell
+              notifications={providerNotifications}
+              unreadCount={providerUnreadCount}
+            />
+          </div>
+        </div>
+      </div>
+
       <div className="mx-auto w-full max-w-6xl space-y-6">
         {alreadyRegisteredNotice ? (
           <div className="rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-800">
             You are already registered. You can update your details from dashboard.
           </div>
         ) : null}
-        <section className="overflow-hidden rounded-[30px] border border-slate-200 bg-white shadow-sm">
+        <section
+          data-provider-tour="profile"
+          className="overflow-hidden rounded-[30px] border border-slate-200 bg-white shadow-sm"
+        >
           <div className="grid gap-6 px-6 py-7 lg:grid-cols-[minmax(0,1fr)_240px] lg:px-8">
             <div className="space-y-4">
               <p className="text-xs font-semibold uppercase tracking-[0.22em] text-sky-700">
@@ -858,9 +1083,8 @@ function ProviderDashboardInner() {
                 <h1 className="text-3xl font-semibold tracking-tight text-slate-900">
                   {profile.ProviderName}
                 </h1>
-                <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
-                  See where demand is building in your services, how often leads match to you,
-                  and whether your current areas are strong opportunity zones.
+                <p className="mt-2 text-sm font-medium text-slate-500">
+                  Your provider dashboard is ready.
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-3">
@@ -882,18 +1106,6 @@ function ProviderDashboardInner() {
               {profile.Phone ? (
                 <p className="text-sm text-slate-500">Phone: {profile.Phone}</p>
               ) : null}
-              <p className="text-sm text-slate-600">{verificationMessage}</p>
-              {profile && (
-                <div className="mt-4 rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-800">
-                  <p className="font-semibold">What happens next?</p>
-                  <p className="mt-1">
-                    When a customer posts a task in your area, you will receive a WhatsApp notification and can respond instantly.
-                  </p>
-                  <p className="mt-1">
-                    Make sure your services and areas are updated to receive relevant leads.
-                  </p>
-                </div>
-              )}
             </div>
             <div className="flex flex-col lg:items-end">
               <Link
@@ -904,6 +1116,30 @@ function ProviderDashboardInner() {
               </Link>
             </div>
           </div>
+        </section>
+
+        <section
+          aria-label="Open requests waiting"
+          data-testid="open-requests-strip"
+          data-provider-tour="open-requests"
+          className="flex flex-row items-center justify-between gap-3 rounded-2xl border border-orange-200 bg-orange-50 px-4 py-3 sm:gap-4 sm:px-5 sm:py-4"
+        >
+          <p className="min-w-0 flex-1 text-sm font-medium leading-snug text-[#003d20] sm:text-base">
+            {openRequestsWaitingCount > 0 ? (
+              <>
+                Open Requests Waiting{" "}
+                <span className="font-bold">· {openRequestsWaitingCount}</span>
+              </>
+            ) : (
+              "No new requests right now — we’ll notify you."
+            )}
+          </p>
+          <Link
+            href="/provider/my-jobs"
+            className="inline-flex shrink-0 items-center justify-center rounded-full bg-[#003d20] px-4 py-2 text-xs font-bold text-white shadow-sm transition duration-200 hover:bg-[#002a16] hover:shadow-md sm:text-sm"
+          >
+            View My Jobs
+          </Link>
         </section>
 
         {!verified ? (
@@ -921,6 +1157,7 @@ function ProviderDashboardInner() {
 
         <section
           aria-labelledby="provider-metrics-heading"
+          data-provider-tour="metrics"
           className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm"
         >
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -965,7 +1202,7 @@ function ProviderDashboardInner() {
             </div>
           </div>
           <div
-            className={`mt-5 grid gap-4 transition-opacity sm:grid-cols-2 xl:grid-cols-5 ${
+            className={`mt-5 grid gap-4 transition-opacity sm:grid-cols-3 ${
               metricsLoading ? "opacity-60" : "opacity-100"
             }`}
             aria-busy={metricsLoading}
@@ -986,239 +1223,19 @@ function ProviderDashboardInner() {
           </div>
         </section>
 
-        <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
-          <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-            <div>
-              <h2 className="text-xl font-semibold text-slate-900">My Demand Insights</h2>
-              <p className="mt-1 text-sm text-slate-500">
-                Quick signals to help you decide where to stay active and where to expand.
-              </p>
-            </div>
-            <div className="rounded-xl bg-slate-50 px-4 py-3 text-sm text-slate-600">
-              Response rate: <span className="font-semibold text-slate-900">{responseRate}%</span>
-            </div>
-          </div>
-          <div className="mt-5 grid gap-4 lg:grid-cols-3">
-            {insightLines.map((line) => (
-              <div
-                key={line}
-                className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-4 text-sm leading-6 text-slate-700"
-              >
-                {line}
-              </div>
-            ))}
-          </div>
-        </section>
+        {/*
+          TODO: Provider BI sections removed from MVP dashboard until demand
+          intelligence data is normalized and time-scoped.
+          Removed UI: My Demand Insights, City Demand by Service Category,
+          Area Demand Heat Table, My Selected Areas Performance.
+          Backend aggregation (analytics.AreaDemand, SelectedAreaDemand,
+          CategoryDemandByRange) is still emitted by
+          /api/provider/dashboard-profile and remains untouched. Re-render
+          these sections here once case-normalization and month-wise scoping
+          ship per the dashboard data-flow audit.
+        */}
 
-        <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-            <div>
-              <h2 className="text-xl font-semibold text-slate-900">City Demand by Service Category</h2>
-              <p className="mt-1 text-sm text-slate-500">
-                See which services are getting the most customer requests, then invite other workers to join and respond to demand.
-              </p>
-              <p className="mt-2 text-sm text-slate-600">Track live service demand across the city.</p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {CATEGORY_DEMAND_RANGE_OPTIONS.map((option) => (
-                <button
-                  key={option.key}
-                  type="button"
-                  onClick={() => {
-                    setCategoryDemandRange(option.key);
-                    setShareFeedback("");
-                  }}
-                  className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
-                    categoryDemandRange === option.key
-                      ? "border-slate-900 bg-slate-900 text-white"
-                      : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50"
-                  }`}
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="mt-5 grid gap-4 lg:grid-cols-2">
-            {matrixInsightLines.map((line) => (
-              <div
-                key={line}
-                className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-4 text-sm leading-6 text-slate-700"
-              >
-                {line}
-              </div>
-            ))}
-          </div>
-
-          {shareFeedback ? (
-            <div className="mt-4 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-700">
-              {shareFeedback}
-            </div>
-          ) : null}
-
-          {categoryDemand.length ? (
-            <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              {categoryDemand.map((item) => {
-                const count = Number(item.RequestCount || 0);
-                const level = getDemandLevel(count, maxCategoryDemandCount);
-                return (
-                  <article
-                    key={item.CategoryName}
-                    className="rounded-[24px] border border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#f8fafc_100%)] p-5 shadow-sm"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <h3 className="text-lg font-semibold text-slate-900">{item.CategoryName}</h3>
-                        <p className="mt-2 text-2xl font-bold text-slate-900">
-                          {count} <span className="text-sm font-medium text-slate-500">Requests</span>
-                        </p>
-                      </div>
-                      <span
-                        className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${getDemandBadgeClass(
-                          level
-                        )}`}
-                      >
-                        {level} Demand
-                      </span>
-                    </div>
-                    <div className="mt-5 flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        onClick={() => void handleCopyInvite(item)}
-                        className="inline-flex rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
-                      >
-                        Copy Invite
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleWhatsAppShare(item)}
-                        className="inline-flex rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700 transition hover:border-emerald-300 hover:bg-emerald-100"
-                      >
-                        WhatsApp Share
-                      </button>
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="mt-6 rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
-              No category demand data yet.
-            </div>
-          )}
-
-          <div className="mt-6 rounded-[24px] border border-slate-200 bg-slate-50/70 px-5 py-5">
-            <p className="text-sm font-semibold text-slate-900">
-              Know someone who provides these services?
-            </p>
-            <p className="mt-1 text-sm leading-6 text-slate-600">
-              Invite them to join Kaun Karega and start receiving customer work requests.
-            </p>
-            <p className="mt-4 text-sm font-semibold text-slate-900">
-              क्या आप किसी ऐसे व्यक्ति को जानते हैं जो ये काम करता है?
-            </p>
-            <p className="mt-1 text-sm leading-6 text-slate-600">
-              उसे Kaun Karega से जोड़ें ताकि वह ग्राहकों की रिक्वेस्ट देखकर काम प्राप्त कर सके।
-            </p>
-          </div>
-        </section>
-
-        <div className="grid gap-6 xl:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
-          <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <h2 className="text-xl font-semibold text-slate-900">Area Demand Heat Table</h2>
-                <p className="mt-1 text-sm text-slate-500">
-                  Demand by area for your selected service categories.
-                </p>
-              </div>
-            </div>
-            {areaDemand.length ? (
-              <div className="mt-5 overflow-x-auto">
-                <table className="min-w-full text-left">
-                  <thead className="bg-slate-50 text-xs uppercase text-slate-500">
-                    <tr>
-                      <th className="px-4 py-3 font-semibold">Area</th>
-                      <th className="px-4 py-3 font-semibold">Request Count</th>
-                      <th className="px-4 py-3 font-semibold">Demand Level</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 text-sm text-slate-800">
-                    {areaDemand.map((item) => {
-                      const level = getDemandLevel(Number(item.RequestCount || 0), maxDemandCount);
-                      return (
-                        <tr key={item.AreaName}>
-                          <td className="px-4 py-3 font-medium text-slate-900">{item.AreaName}</td>
-                          <td className="px-4 py-3">{Number(item.RequestCount || 0)}</td>
-                          <td className="px-4 py-3">
-                            <span
-                              className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${getDemandBadgeClass(
-                                level
-                              )}`}
-                            >
-                              {level}
-                            </span>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <div className="mt-5 rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
-                No demand data yet for your selected services.
-              </div>
-            )}
-          </section>
-
-          <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
-            <h2 className="text-xl font-semibold text-slate-900">My Selected Areas Performance</h2>
-            <p className="mt-1 text-sm text-slate-500">
-              Compare your current zones against actual request volume.
-            </p>
-            {selectedAreaDemand.length ? (
-              <div className="mt-5 space-y-3">
-                {selectedAreaDemand.map((item) => {
-                  const level = getDemandLevel(
-                    Number(item.RequestCount || 0),
-                    selectedMaxDemandCount || maxDemandCount
-                  );
-                  return (
-                    <div
-                      key={item.AreaName}
-                      className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-4"
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="font-semibold text-slate-900">{item.AreaName}</p>
-                          <p className="mt-1 text-sm text-slate-500">
-                            {Number(item.RequestCount || 0)} request
-                            {Number(item.RequestCount || 0) === 1 ? "" : "s"} in your services
-                          </p>
-                        </div>
-                        <span
-                          className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${getDemandBadgeClass(
-                            level
-                          )}`}
-                        >
-                          {level}
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="mt-5 rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
-                No selected area data yet. Add service areas to start comparing demand.
-              </div>
-            )}
-          </section>
-        </div>
-
-        <section className="space-y-6">
+        <section data-provider-tour="services" className="space-y-6">
             <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
               <div className="flex items-center justify-between gap-3">
                 <div>
@@ -1261,6 +1278,13 @@ function ProviderDashboardInner() {
                   <p className="text-sm text-slate-500">No services added yet.</p>
                 )}
               </div>
+
+              {profile?.ProviderID && approvedServices[0]?.Category ? (
+                <ProviderAliasSubmitter
+                  providerId={profile.ProviderID}
+                  canonicalCategory={approvedServices[0].Category}
+                />
+              ) : null}
             </div>
 
             <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
@@ -1438,6 +1462,7 @@ function ProviderDashboardInner() {
         toasts={toasts}
         onDismiss={(id) => setToasts((current) => current.filter((toast) => toast.id !== id))}
       />
+      <ProviderDashboardCoachmark />
     </main>
   );
 }
