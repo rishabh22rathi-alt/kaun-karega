@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { ChevronLeft, Send } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { getAuthSession } from "@/lib/auth";
@@ -14,6 +15,11 @@ type Thread = {
   ProviderID: string;
   LastMessageAt?: string;
   Status?: string;
+  // Surfaced in the new compact header as the secondary line:
+  //   "<Category> · <Area>" (with display-label fallback when both empty).
+  // The chat_get_messages payload already returns these on ChatThreadPayload.
+  Category?: string;
+  Area?: string;
 };
 
 type ChatMessage = {
@@ -76,11 +82,6 @@ function formatMessageTimestamp(value: string): string {
     day: "2-digit",
     month: "short",
   })}, ${timeLabel}`;
-}
-
-function formatHeaderTimestamp(value?: string): string {
-  if (!value) return "No activity yet";
-  return formatMessageTimestamp(value);
 }
 
 function getCounterpartyLabel(actorType: "user" | "provider"): string {
@@ -401,210 +402,216 @@ export default function ChatThreadPage() {
 
   const isClosed = String(thread.Status || "").trim().toLowerCase() === "closed";
   const counterpartyLabel = getCounterpartyLabel(actorType);
-  const headerTitle = actorType === "provider" ? "Customer Conversation" : "Provider Conversation";
-  const headerSubtitle =
-    actorType === "provider"
-      ? "Respond quickly and keep the customer updated here."
-      : "Use this chat to confirm details and coordinate the service.";
+  const titleLine =
+    actorType === "provider" ? "You and the customer" : "You and the provider";
+  const subtitleLine =
+    [String(thread.Category || "").trim(), String(thread.Area || "").trim()]
+      .filter(Boolean)
+      .join(" · ") || getTaskDisplayLabel(thread, thread.TaskID);
+  const avatarInitial = actorType === "provider" ? "C" : "P";
+  const sendButtonReady = Boolean(trimmedInput) && !sending && !isClosed;
+  const sendButtonDisabled = sending || isClosed || !trimmedInput;
 
   return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_top,#e0f2fe,transparent_35%),linear-gradient(180deg,#f8fbff_0%,#eef4f8_100%)] px-4 py-6 sm:py-8">
-      <div className="mx-auto max-w-4xl space-y-4">
-        <div className="overflow-hidden rounded-[28px] border border-slate-200/80 bg-white/95 shadow-[0_20px_60px_rgba(15,23,42,0.08)] backdrop-blur">
-          <div className="border-b border-slate-200 bg-[linear-gradient(135deg,#0f172a_0%,#1d4ed8_100%)] px-4 py-4 text-white sm:px-6 sm:py-5">
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-sky-200">
-                  {actorType === "provider" ? "Provider Chat" : "User Chat"}
-                </p>
-                <h1 className="mt-1 text-xl font-semibold sm:mt-2 sm:text-2xl">{headerTitle}</h1>
-                <p className="mt-1 text-sm text-sky-100/90">{headerSubtitle}</p>
-              </div>
-              <div className="rounded-2xl border border-white/15 bg-white/10 px-4 py-3 text-sm text-sky-50">
-                <p className="font-medium">Latest activity</p>
-                <p className="mt-1 text-sm text-sky-100">{formatHeaderTimestamp(thread.LastMessageAt)}</p>
-              </div>
-            </div>
-            <div className="mt-4 flex flex-wrap gap-2 text-xs text-sky-100/90">
-              <span className="rounded-full border border-white/15 bg-white/10 px-3 py-1">
-                Status: {thread.Status || "active"}
-              </span>
-              <span className="rounded-full border border-white/15 bg-white/10 px-3 py-1">
-                Viewing as: {actorType === "provider" ? "Provider" : "User"}
-              </span>
-              <span className="rounded-full border border-white/15 bg-white/10 px-3 py-1">
-                {getTaskDisplayLabel(thread, thread.TaskID)}
-              </span>
-              <span className="hidden rounded-full border border-white/15 bg-white/10 px-3 py-1 md:inline">
-                Thread ID: {thread.ThreadID}
-              </span>
-            </div>
-          </div>
-
-          <div className="border-b border-slate-200 bg-slate-50/70 px-5 py-3 text-sm text-slate-600 sm:px-6">
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-              <span>
-                <span className="font-semibold text-slate-900">Other side:</span> {counterpartyLabel}
-              </span>
-              {thread.ProviderID ? (
-                <span>
-                  <span className="font-semibold text-slate-900">Provider ID:</span> {thread.ProviderID}
-                </span>
-              ) : null}
-              {thread.UserPhone ? (
-                <span>
-                  <span className="font-semibold text-slate-900">User:</span> ending in{" "}
-                  {thread.UserPhone.slice(-4)}
-                </span>
-              ) : null}
-            </div>
-          </div>
-
-          {isClosed ? (
-            <div className="border-b border-amber-200 bg-amber-50 px-5 py-3 text-sm font-medium text-amber-800 sm:px-6">
-              This chat is closed. You can still review the conversation history.
-            </div>
-          ) : null}
-
-          {error ? (
-            <div className="border-b border-rose-200 bg-rose-50 px-5 py-3 text-sm text-rose-700 sm:px-6">
-              {error}
-            </div>
-          ) : null}
+    <main className="flex h-[100dvh] flex-col bg-slate-50">
+      {/* Compact branded header — replaces the prior gradient hero block.
+          Single row, ~56-64px tall, no admin metadata. Closed-thread state
+          collapses to a small chip on the right; error state renders as a
+          slim strip under the header (below). */}
+      <header className="flex h-14 shrink-0 items-center gap-3 bg-[#003d20] px-3 text-white sm:h-16 sm:px-4">
+        <Link
+          href={backHref}
+          aria-label="Back"
+          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-white/90 transition hover:bg-white/10"
+        >
+          <ChevronLeft className="h-5 w-5" />
+        </Link>
+        <div
+          aria-hidden="true"
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-orange-100 text-sm font-bold text-[#003d20]"
+        >
+          {avatarInitial}
         </div>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-semibold text-white sm:text-base">
+            {titleLine}
+          </p>
+          <p className="truncate text-xs text-white/70 sm:text-sm">{subtitleLine}</p>
+        </div>
+        {isClosed ? (
+          <span className="ml-auto shrink-0 rounded-full bg-amber-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-amber-900">
+            Closed
+          </span>
+        ) : null}
+      </header>
 
-        <div className="overflow-hidden rounded-[28px] border border-slate-200/80 bg-white/95 shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
-          <div
-            ref={scrollRef}
-            onScroll={handleScrollContainerScroll}
-            className="h-[62dvh] space-y-4 overflow-y-auto bg-[linear-gradient(180deg,#ffffff_0%,#f8fafc_100%)] px-4 py-5 sm:px-6"
-          >
-            {messages.length === 0 ? (
-              <div className="flex h-full min-h-[280px] items-center justify-center">
-                <div className="max-w-sm rounded-3xl border border-dashed border-slate-300 bg-slate-50 px-6 py-8 text-center">
-                  <p className="text-base font-semibold text-slate-900">No messages yet</p>
-                  <p className="mt-2 text-sm leading-6 text-slate-600">
-                    Start the conversation to confirm details, timing, and anything the other side
-                    should know before the service.
-                  </p>
-                </div>
+      {/* Slim error strip — appears only when send/load surfaced an error. */}
+      {error ? (
+        <div className="shrink-0 border-b border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700 sm:px-4">
+          {error}
+        </div>
+      ) : null}
+
+      {/* Messages region — the only scrollable surface. flex-1 + min-h-0 lets
+          this child shrink below its content size and become the scroll
+          container; the header above and composer below stay pinned. */}
+      <div
+        ref={scrollRef}
+        onScroll={handleScrollContainerScroll}
+        className="flex-1 min-h-0 overflow-y-auto bg-slate-50 px-3 py-3 sm:px-4"
+      >
+        <div className="mx-auto w-full max-w-3xl space-y-3">
+          {messages.length === 0 ? (
+            <div className="flex min-h-[40vh] items-center justify-center">
+              <div className="max-w-sm rounded-3xl border border-dashed border-slate-300 bg-white px-6 py-8 text-center">
+                <p className="text-base font-semibold text-slate-900">
+                  No messages yet
+                </p>
+                <p className="mt-2 text-sm leading-6 text-slate-600">
+                  Start the conversation to confirm details, timing, and anything the
+                  other side should know before the service.
+                </p>
               </div>
-            ) : (
-              messages.map((message) => {
-                const senderType = String(message.SenderType || "").trim().toLowerCase();
-                const isOwnMessage =
-                  (actorType === "provider" && senderType === "provider") ||
-                  (actorType === "user" && senderType === "user");
-                const senderLabel = isOwnMessage ? "You" : counterpartyLabel;
+            </div>
+          ) : (
+            messages.map((message) => {
+              const senderType = String(message.SenderType || "").trim().toLowerCase();
+              const isOwnMessage =
+                (actorType === "provider" && senderType === "provider") ||
+                (actorType === "user" && senderType === "user");
+              const senderLabel = isOwnMessage ? "You" : counterpartyLabel;
 
-                return (
+              return (
+                <div
+                  key={message.MessageID}
+                  className={`flex ${isOwnMessage ? "justify-end" : "justify-start"}`}
+                >
                   <div
-                    key={message.MessageID}
-                    className={`flex ${isOwnMessage ? "justify-end" : "justify-start"}`}
+                    className={`max-w-[85%] rounded-2xl px-4 py-2.5 shadow-sm sm:max-w-[70%] ${
+                      isOwnMessage
+                        ? "rounded-br-md bg-[#003d20] text-white"
+                        : "rounded-bl-md border border-slate-200 bg-white text-slate-900"
+                    }`}
                   >
-                    <div
-                      className={`max-w-[85%] rounded-[22px] px-4 py-3 shadow-sm sm:max-w-[75%] ${
-                        isOwnMessage
-                          ? "rounded-br-md bg-[linear-gradient(135deg,#0284c7_0%,#2563eb_100%)] text-white"
-                          : "rounded-bl-md border border-slate-200 bg-white text-slate-900"
-                      }`}
-                    >
-                      <div className="flex items-center gap-2">
-                        <p
-                          className={`text-[11px] font-semibold uppercase tracking-[0.2em] ${
-                            isOwnMessage ? "text-sky-100/90" : "text-slate-500"
-                          }`}
-                        >
-                          {senderLabel}
-                        </p>
-                        <span
-                          className={`text-[11px] ${
-                            isOwnMessage ? "text-sky-100/80" : "text-slate-400"
-                          }`}
-                        >
-                          {formatMessageTimestamp(message.CreatedAt)}
-                        </span>
-                      </div>
+                    <div className="flex items-center gap-2">
                       <p
-                        className={`mt-2 whitespace-pre-wrap text-sm leading-6 ${
-                          isOwnMessage ? "text-white" : "text-slate-800"
+                        className={`text-[10px] font-semibold uppercase tracking-[0.18em] ${
+                          isOwnMessage ? "text-white/80" : "text-slate-500"
                         }`}
                       >
-                        {message.MessageText}
+                        {senderLabel}
                       </p>
+                      <span
+                        className={`text-[10px] ${
+                          isOwnMessage ? "text-white/70" : "text-slate-400"
+                        }`}
+                      >
+                        {formatMessageTimestamp(message.CreatedAt)}
+                      </span>
                     </div>
+                    <p
+                      className={`mt-1 whitespace-pre-wrap text-sm leading-6 ${
+                        isOwnMessage ? "text-white" : "text-slate-800"
+                      }`}
+                    >
+                      {message.MessageText}
+                    </p>
                   </div>
-                );
-              })
-            )}
-          </div>
-
-          <div className="border-t border-slate-200 bg-white px-4 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:px-6">
-            <div className="mb-3">
-              <div className="mb-2 flex items-center justify-between gap-3">
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
-                  Quick Replies
-                </p>
-                <p className="text-xs text-slate-400">Tap to send instantly</p>
-              </div>
-              <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-2">
-                {quickReplies.map((reply) => (
-                  <button
-                    key={reply}
-                    type="button"
-                    onClick={() => void handleQuickReply(reply)}
-                    disabled={sending || isClosed}
-                    className="shrink-0 rounded-full border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-700 transition hover:border-sky-300 hover:bg-sky-50 hover:text-sky-700 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {reply}
-                  </button>
-                ))}
-                <button
-                  type="button"
-                  onClick={() => void handleQuickReply(buildSharePhoneReply(actorPhone))}
-                  disabled={sending || isClosed || !actorPhone}
-                  className="shrink-0 rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  Share my phone number
-                </button>
-              </div>
-            </div>
-            <div className="flex items-end gap-2 sm:gap-3">
-              <textarea
-                value={input}
-                onChange={(event) => setInput(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey) {
-                    event.preventDefault();
-                    void handleSend();
-                  }
-                }}
-                disabled={sending || isClosed}
-                placeholder={
-                  isClosed
-                    ? "This conversation is closed"
-                    : `Message ${counterpartyLabel.toLowerCase()}`
-                }
-                rows={3}
-                className="min-h-[84px] flex-1 rounded-2xl border border-slate-300 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-sky-500 focus:bg-white"
-              />
-              <div className="flex flex-col items-end gap-2">
-                <p className="hidden text-xs text-slate-500 sm:block">
-                  {isClosed ? "Closed conversation" : "Press Enter to send, Shift+Enter for a new line"}
-                </p>
-                <button
-                  type="button"
-                  onClick={() => void handleSend()}
-                  disabled={sending || isClosed || !trimmedInput}
-                  className="inline-flex min-w-[88px] items-center justify-center rounded-2xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300 sm:min-w-28"
-                >
-                  {sending ? "Sending..." : "Send"}
-                </button>
-              </div>
-            </div>
-          </div>
+                </div>
+              );
+            })
+          )}
         </div>
       </div>
+
+      {/* Composer dock — pinned at bottom by flex column. shrink-0 keeps it
+          visible above the soft keyboard; safe-area inset prevents the home
+          indicator from overlapping the send button on iOS. */}
+      <footer className="shrink-0 border-t border-slate-200 bg-white">
+        <div className="mx-auto w-full max-w-3xl px-3 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:px-4">
+          {/* Quick replies — single horizontal row, no header. Brand-tinted
+              chips replace the slate/sky styling. */}
+          <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-2">
+            {quickReplies.map((reply) => (
+              <button
+                key={reply}
+                type="button"
+                onClick={() => void handleQuickReply(reply)}
+                disabled={sending || isClosed}
+                className="shrink-0 rounded-full border border-[#003d20]/20 bg-[#003d20]/5 px-3 py-1.5 text-xs font-medium text-[#003d20] transition hover:border-[#003d20]/40 hover:bg-[#003d20]/10 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {reply}
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={() => void handleQuickReply(buildSharePhoneReply(actorPhone))}
+              disabled={sending || isClosed || !actorPhone}
+              className="shrink-0 rounded-full border border-[#003d20]/20 bg-white px-3 py-1.5 text-xs font-semibold text-[#003d20] transition hover:border-[#003d20]/40 hover:bg-[#003d20]/10 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Share my phone number
+            </button>
+          </div>
+
+          {/* Single-line textarea + circular send button. text-base (16px)
+              keeps iOS Safari from auto-zooming the input on focus. The
+              textarea grows organically up to max-h-[120px]. */}
+          <div className="flex items-end gap-2">
+            <textarea
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  void handleSend();
+                }
+              }}
+              disabled={sending || isClosed}
+              placeholder={
+                isClosed
+                  ? "This conversation is closed"
+                  : `Message ${counterpartyLabel.toLowerCase()}`
+              }
+              rows={1}
+              className="min-h-[44px] max-h-[120px] flex-1 resize-none rounded-2xl border border-slate-300 bg-slate-50 px-4 py-2.5 text-base text-slate-900 outline-none transition focus:border-[#003d20] focus:bg-white"
+            />
+            {/*
+              Send button colour states (per approved design):
+              - empty / closed / sending → disabled, slate-300
+              - has trimmed text + idle  → orange (ready-to-send highlight)
+              - has trimmed text + sending → forest green with spinner
+            */}
+            <button
+              type="button"
+              onClick={() => void handleSend()}
+              disabled={sendButtonDisabled}
+              aria-label={sending ? "Sending message" : "Send message"}
+              className={`inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-white transition disabled:cursor-not-allowed disabled:bg-slate-300 ${
+                sendButtonReady
+                  ? "bg-[#f97316] hover:bg-[#ea670e]"
+                  : "bg-[#003d20] hover:bg-[#00542b]"
+              }`}
+            >
+              {sending ? (
+                <svg
+                  className="h-4 w-4 animate-spin"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                </svg>
+              ) : (
+                <Send className="h-5 w-5" />
+              )}
+            </button>
+          </div>
+        </div>
+      </footer>
     </main>
   );
 }
