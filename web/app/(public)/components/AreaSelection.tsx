@@ -53,6 +53,11 @@ export default function AreaSelection({
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [showAllMode, setShowAllMode] = useState(false);
   const [inputError, setInputError] = useState("");
+  // Original user input that differs (case/spelling) from the canonical
+  // area finally selected. Shown beneath the "Selected area" chip so the
+  // user sees the canonical their request will use. Cleared on every
+  // direct (chip / suggestion) selection.
+  const [aliasInput, setAliasInput] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
   const inputShellRef = useRef<HTMLDivElement | null>(null);
   const dropdownRef = useRef<HTMLDivElement | null>(null);
@@ -151,6 +156,7 @@ export default function AreaSelection({
     setShowSuggestions(false);
     setShowAllMode(false);
     setInputError("");
+    setAliasInput("");
     onSelect(normalized);
   };
 
@@ -217,6 +223,15 @@ export default function AreaSelection({
       setShowSuggestions(true);
       return;
     }
+    // Track the user's original input only when it differs from the
+    // canonical we resolved to (case / spacing variations). Identical
+    // values clear the alias hint so the confirmation card stays clean.
+    const typedTrimmed = typedArea.trim().replace(/\s+/g, " ");
+    setAliasInput(
+      typedTrimmed && typedTrimmed.toLowerCase() !== matchedKnownArea.toLowerCase()
+        ? typedTrimmed
+        : ""
+    );
     setTypedArea("");
     setShowSuggestions(false);
     setShowAllMode(false);
@@ -241,6 +256,7 @@ export default function AreaSelection({
     setShowSuggestions(false);
     setShowAllMode(false);
     setInputError("");
+    setAliasInput("");
     inputRef.current?.blur();
     onSelect(normalized);
   };
@@ -396,6 +412,32 @@ export default function AreaSelection({
           ) : null}
         </div>
       )}
+
+      {/* Selection confirmation — visible whenever an area is chosen,
+          regardless of source (preset chip, last-used, dropdown
+          suggestion, or typed-and-confirmed). The matched-to line shows
+          only when the user's original input differs from the canonical
+          resolved area. Mobile-clean: stacks vertically, truncates long
+          area names. */}
+      {selectedArea ? (
+        <div
+          className="mt-3 flex flex-col gap-1 rounded-2xl border border-[#1B5E20] bg-[#1B5E20]/10 px-3 py-2 sm:flex-row sm:items-center sm:gap-2"
+          aria-live="polite"
+        >
+          <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-[#1B5E20]/80 sm:text-xs">
+            Selected area
+          </span>
+          <span className="min-w-0 truncate text-sm font-bold text-[#1B5E20] sm:text-base">
+            {selectedArea}
+          </span>
+          {aliasInput &&
+          aliasInput.toLowerCase() !== selectedArea.toLowerCase() ? (
+            <span className="min-w-0 truncate text-[11px] text-[#1B5E20]/80 sm:ml-auto sm:text-xs">
+              Matched from “{aliasInput}”
+            </span>
+          ) : null}
+        </div>
+      ) : null}
 
       {errorMessage ? (
         <p className="mt-2 text-xs text-red-600">{errorMessage}</p>
