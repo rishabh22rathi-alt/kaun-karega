@@ -8,7 +8,7 @@ import AreaSelection, {
 } from "@/app/(public)/components/AreaSelection";
 import WhenNeedIt from "@/app/(public)/components/WhenNeedIt";
 import FirstVisitCoachmark from "@/components/FirstVisitCoachmark";
-import { getAuthSession, setAuthSession } from "@/lib/auth";
+import { getAuthSession } from "@/lib/auth";
 
 const MASTER_AREAS = [
   "Sardarpura",
@@ -1151,8 +1151,9 @@ const submitResolvedRequest = async (resolution: CategoryResolution) => {
        throw new Error(data?.error || "Invalid OTP");
      }
      setShowOtpModal(false);
-     if (data?.phone && data?.token) {
-       setAuthSession(data.phone, data.token);
+     if (data?.phone) {
+       // Session cookie is set server-side by /api/verify-otp via Set-Cookie
+       // (HttpOnly + signed). Client JS no longer writes the session cookie.
        setPhone(data.phone);
      }
      // Mirror admin status from server response — sidebar reads this

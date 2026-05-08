@@ -9,13 +9,13 @@ import { getAuthSession } from "@/lib/auth";
  *
  * /report-issue — requires any valid logged-in session (user or provider).
  */
-export function middleware(request: NextRequest) {
+export async function middleware(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
   const cookieHeader = request.headers.get("cookie") ?? "";
 
   // Guard /report-issue — any authenticated user is allowed
   if (pathname === "/report-issue") {
-    const session = getAuthSession({ cookie: cookieHeader });
+    const session = await getAuthSession({ cookie: cookieHeader });
     if (!session?.phone) {
       const loginUrl = new URL("/login", request.url);
       loginUrl.searchParams.set("next", `/report-issue`);
@@ -24,12 +24,14 @@ export function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  // Guard /admin/* — requires valid session + admin cookie
+  // Guard /admin/* — requires a verified signed session AND the kk_admin=1
+  // UI cookie. The signed session is the actual security gate; kk_admin is
+  // a UI hint and is also re-verified by API routes via requireAdminSession.
   if (!pathname.startsWith("/admin") || pathname === "/admin/login") {
     return NextResponse.next();
   }
 
-  const session = getAuthSession({ cookie: cookieHeader });
+  const session = await getAuthSession({ cookie: cookieHeader });
   const adminCookie = request.cookies.get("kk_admin")?.value;
 
   if (!session?.phone || adminCookie !== "1") {

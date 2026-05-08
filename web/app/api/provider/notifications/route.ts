@@ -24,7 +24,7 @@ function normalizePhone10(value: string): string {
 
 export async function GET(request: Request) {
   const cookieHeader = request.headers.get("cookie") || "";
-  const session = getAuthSession({ cookie: cookieHeader });
+  const session = await getAuthSession({ cookie: cookieHeader });
   const phone = normalizePhone10(String(session?.phone || ""));
   if (!session || phone.length !== 10) {
     return NextResponse.json(

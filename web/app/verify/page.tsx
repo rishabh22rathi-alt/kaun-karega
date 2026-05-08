@@ -2,7 +2,6 @@
 
 import { Suspense, useEffect, useRef, useState, KeyboardEvent, ClipboardEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { setAuthSession } from "@/lib/auth";
 import { SIDEBAR_TOGGLE_EVENT } from "@/components/sidebarEvents";
 
 const DEFAULT_NEXT = "/";
@@ -174,8 +173,9 @@ function VerifyPageContent() {
     const data = await res.json();
 
     if (data.ok === true) {
-      const displayPhone = normalized.slice(-10);
-      setAuthSession(displayPhone);
+      // Session cookie is now set server-side by /api/verify-otp via
+      // Set-Cookie (HttpOnly + signed). Client JS no longer writes the
+      // session cookie — that prevented forgery.
       // Mirror admin status from server response — sidebar reads this
       if (data.isAdmin === true) {
         window.localStorage.setItem(

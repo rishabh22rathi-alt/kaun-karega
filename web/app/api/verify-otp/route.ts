@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { adminSupabase } from "@/lib/supabase/admin";
-import { setAuthSession } from "@/lib/auth";
+import { setAuthSessionCookie } from "@/lib/auth";
 import { checkAdminByPhone } from "@/lib/adminAuth";
 
 export const runtime = "nodejs";
@@ -99,8 +99,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: false, error: "Profile update failed" }, { status: 500 });
   }
 
-  const token = crypto.randomUUID();
-
   // Admin check — non-blocking; failure never breaks the login flow
   let adminInfo: {
     isAdmin: boolean;
@@ -125,21 +123,34 @@ export async function POST(request: Request) {
   const response = NextResponse.json({
     ok: true,
     phone: verifiedPhone,
-    token,
     message: "Verified",
     ...adminInfo,
   });
 
-  setAuthSession(verifiedPhone, token, {
-    setCookie: (name, value, options) => response.cookies.set(name, value, options),
+  const cookieSet = await setAuthSessionCookie(response, {
+    phone: verifiedPhone,
+    verified: true,
+    createdAt: Date.now(),
   });
+  if (!cookieSet) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error:
+          "Server misconfigured: AUTH_SESSION_SECRET is missing. Cannot establish session.",
+      },
+      { status: 500 }
+    );
+  }
 
-  // kk_admin cookie enables server-side middleware protection for /admin/* routes
+  // kk_admin is a UI-only hint (sidebar, /admin redirect convenience). All
+  // admin API routes still re-verify via requireAdminSession against the
+  // admins table — this cookie alone never grants admin access.
   if (adminInfo.isAdmin) {
     response.cookies.set("kk_admin", "1", {
       maxAge: 30 * 24 * 60 * 60,
       path: "/",
-      sameSite: "lax",
+      sameSite: "strict",
       secure: process.env.NODE_ENV === "production",
     });
   } else {

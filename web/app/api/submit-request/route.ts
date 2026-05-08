@@ -70,7 +70,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const session = getAuthSession({
+    const session = await getAuthSession({
       cookie: request.headers.get("cookie") ?? "",
     });
     if (!session) {

@@ -20,7 +20,7 @@ export default async function OpenChatPage() {
     .getAll()
     .map((cookie) => `${cookie.name}=${cookie.value}`)
     .join("; ");
-  const session = getAuthSession({ cookie: cookieHeader });
+  const session = await getAuthSession({ cookie: cookieHeader });
   const sessionPhone = normalizePhone10(String(session?.phone || ""));
 
   if (!sessionPhone) {

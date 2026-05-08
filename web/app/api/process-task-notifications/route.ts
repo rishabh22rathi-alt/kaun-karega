@@ -24,7 +24,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: false, error: "TaskID required" }, { status: 400 });
     }
 
-    const session = getAuthSession({
+    const session = await getAuthSession({
       cookie: request.headers.get("cookie") ?? "",
     });
     if (!session) {

@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { adminSupabase } from "@/lib/supabase/admin";
+import { setAuthSessionCookie } from "@/lib/auth";
+import { checkAdminByPhone } from "@/lib/adminAuth";
 
 export const runtime = "nodejs";
 
@@ -51,5 +53,42 @@ export async function POST(request: Request) {
     return NextResponse.json({ success: false, error: "Profile update failed" }, { status: 500 });
   }
 
-  return NextResponse.json({ success: true, phone });
+  // Mirror /api/verify-otp: establish the signed session cookie so callers of
+  // either route end up with the same trusted server-set session, never a
+  // forgeable client-set cookie.
+  let isAdmin = false;
+  try {
+    const adminResult = await checkAdminByPhone(phone);
+    if (adminResult.ok) isAdmin = true;
+  } catch {
+    isAdmin = false;
+  }
+
+  const response = NextResponse.json({ success: true, phone, isAdmin });
+  const cookieSet = await setAuthSessionCookie(response, {
+    phone,
+    verified: true,
+    createdAt: Date.now(),
+  });
+  if (!cookieSet) {
+    return NextResponse.json(
+      {
+        success: false,
+        error:
+          "Server misconfigured: AUTH_SESSION_SECRET is missing. Cannot establish session.",
+      },
+      { status: 500 }
+    );
+  }
+  if (isAdmin) {
+    response.cookies.set("kk_admin", "1", {
+      maxAge: 30 * 24 * 60 * 60,
+      path: "/",
+      sameSite: "strict",
+      secure: process.env.NODE_ENV === "production",
+    });
+  } else {
+    response.cookies.set("kk_admin", "", { maxAge: 0, path: "/" });
+  }
+  return response;
 }

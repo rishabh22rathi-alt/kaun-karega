@@ -21,7 +21,7 @@ async function getReporterRoleAndName(phone: string) {
 
 export async function POST(request: Request) {
   try {
-    const session = getAuthSession({
+    const session = await getAuthSession({
       cookie: request.headers.get("cookie") ?? "",
     });
 

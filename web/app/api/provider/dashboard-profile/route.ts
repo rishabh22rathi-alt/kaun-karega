@@ -830,7 +830,7 @@ function buildRecentMatchedRequests(
 export async function GET(request: NextRequest) {
   const cookieHeader = request.headers.get("cookie") || "";
   const cookieNames = request.cookies.getAll().map((cookie) => cookie.name);
-  const session = getAuthSession({ cookie: cookieHeader });
+  const session = await getAuthSession({ cookie: cookieHeader });
   const rawSessionPhone = String(session?.phone || "");
   const normalizedPhone = normalizePhone10(rawSessionPhone);
 

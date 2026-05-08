@@ -23,7 +23,7 @@ import {
   SIDEBAR_STATE_EVENT,
   SIDEBAR_TOGGLE_EVENT,
 } from "./sidebarEvents";
-import { clearAuthSession, getAuthSession } from "@/lib/auth";
+import { clearAuthSession, getAuthSession, type AuthSession } from "@/lib/auth";
 import { isProviderVerifiedBadge } from "@/lib/providerPresentation";
 import { fetchProviderDashboardProfile } from "@/lib/providerDashboardProfile";
 
@@ -102,9 +102,7 @@ export default function Sidebar() {
   const [isCollapsed, setIsCollapsed] = useState(true);
   const [isMobile, setIsMobile] = useState(false);
   const [showProviderConfirm, setShowProviderConfirm] = useState(false);
-  const [session, setSession] = useState<ReturnType<typeof getAuthSession>>(
-    null
-  );
+  const [session, setSession] = useState<AuthSession | null>(null);
   const [providerProfile, setProviderProfile] = useState<ProviderProfile | null>(
     null
   );
@@ -446,8 +444,11 @@ export default function Sidebar() {
     };
   }, [isCollapsed, shouldHide, isOpen, isLoggedIn, isMobile]);
 
-  const handleLogout = () => {
-    clearAuthSession();
+  const handleLogout = async () => {
+    // The signed kk_auth_session cookie is HttpOnly — only the server can
+    // clear it. await /api/auth/logout (via clearAuthSession) before
+    // redirecting so the next navigation does not still carry a valid
+    // server-trusted cookie.
     setSession(null);
     setProviderProfile(null);
     setIsAdmin(false);
@@ -461,6 +462,7 @@ export default function Sidebar() {
         detail: { type: "auth-updated" },
       })
     );
+    await clearAuthSession();
     router.push("/");
   };
 

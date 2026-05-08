@@ -123,10 +123,21 @@ export default function AdminLayoutClient({
     return () => mediaQuery.removeEventListener("change", handleChange);
   }, []);
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
     localStorage.removeItem("kk_admin_session");
-    document.cookie = "kk_auth_session=; Max-Age=0; Path=/; SameSite=Lax";
-    document.cookie = "kk_admin=; Max-Age=0; Path=/; SameSite=Lax";
+    // The signed kk_auth_session cookie is HttpOnly and cannot be cleared
+    // from JS — call the server logout endpoint, which clears all auth
+    // cookies via Set-Cookie. We still clear localStorage and the UI hint
+    // first so the UI flips to logged-out immediately.
+    try {
+      await fetch("/api/auth/logout", {
+        method: "POST",
+        credentials: "same-origin",
+      });
+    } catch {
+      // Network failure is acceptable — server cookie will expire on its
+      // own maxAge. Continue with the redirect either way.
+    }
     redirectToLogin();
   };
 

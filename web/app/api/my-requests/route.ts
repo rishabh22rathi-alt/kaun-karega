@@ -9,7 +9,7 @@ function normalizePhone10(value: string): string {
 
 export async function GET(request: Request) {
   try {
-    const session = getAuthSession({
+    const session = await getAuthSession({
       cookie: request.headers.get("cookie") ?? "",
     });
 

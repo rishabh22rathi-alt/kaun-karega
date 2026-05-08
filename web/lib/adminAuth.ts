@@ -34,7 +34,7 @@ export async function requireAdminSession(
   request: Request
 ): Promise<{ ok: true; admin: import("./admin/adminVerifier").AdminSession } | { ok: false }> {
   const cookieHeader = request.headers.get("cookie") ?? "";
-  const session = getAuthSession({ cookie: cookieHeader });
+  const session = await getAuthSession({ cookie: cookieHeader });
   if (!session?.phone) return { ok: false };
   return checkAdminByPhone(session.phone);
 }

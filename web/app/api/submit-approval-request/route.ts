@@ -35,7 +35,7 @@ export async function POST(request: Request) {
     let details = (body?.details ?? body?.description ?? "").toString().trim();
     if (!details) details = "-";
 
-    const session = getAuthSession({
+    const session = await getAuthSession({
       cookie: request.headers.get("cookie") ?? "",
     });
     if (!session) {

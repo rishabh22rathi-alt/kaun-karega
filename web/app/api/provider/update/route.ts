@@ -31,7 +31,7 @@ function sanitizeStringArray(value: unknown): string[] {
 }
 
 export async function POST(request: Request) {
-  const session = getAuthSession({ cookie: request.headers.get("cookie") ?? "" });
+  const session = await getAuthSession({ cookie: request.headers.get("cookie") ?? "" });
   const sessionPhone = normalizePhone10(String(session?.phone || ""));
   if (!session || !sessionPhone) {
     return NextResponse.json(

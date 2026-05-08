@@ -34,7 +34,7 @@ async function resolveProviderIdFromCookies(
   request: Request
 ): Promise<{ providerId: string; error?: { code: string; status: number } }> {
   const cookieHeader = request.headers.get("cookie") || "";
-  const session = getAuthSession({ cookie: cookieHeader });
+  const session = await getAuthSession({ cookie: cookieHeader });
   const phone = normalizePhone10(String(session?.phone || ""));
   if (!session || phone.length !== 10) {
     return { providerId: "", error: { code: "AUTH_REQUIRED", status: 401 } };
