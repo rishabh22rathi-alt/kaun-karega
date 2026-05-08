@@ -105,6 +105,14 @@ type ChatThreadPayload = {
   UserPhone: string;
   ProviderID: string;
   ProviderPhone: string;
+  // Provider identity hydrated from `providers` row (full_name + verified).
+  // Surfaced only to authorized chat participants — every helper that
+  // builds this payload runs the A2 access gate first, so ProviderName
+  // and ProviderVerified follow the same exposure scope as ProviderPhone
+  // (already in the payload). Empty string when the provider row is
+  // missing.
+  ProviderName: string;
+  ProviderVerified: "yes" | "no" | "";
   Category: string;
   Area: string;
   Status: string;
@@ -782,14 +790,44 @@ async function getChatMessageRows(threadId: string): Promise<ChatMessageRow[]> {
   return (data ?? []) as ChatMessageRow[];
 }
 
+/**
+ * Look up the provider's display fields for the chat header.
+ * Soft-fail: any error returns empty strings so the chat thread continues
+ * to render with a fallback "Service Provider" label.
+ */
+async function getProviderHeaderFields(
+  providerId: string
+): Promise<{ name: string; verified: "yes" | "no" | "" }> {
+  if (!providerId) return { name: "", verified: "" };
+  const { data, error } = await adminSupabase
+    .from("providers")
+    .select("full_name, verified")
+    .eq("provider_id", providerId)
+    .maybeSingle();
+  if (error || !data) return { name: "", verified: "" };
+  const verifiedRaw = String(data.verified || "").trim().toLowerCase();
+  const verified: "yes" | "no" | "" =
+    verifiedRaw === "yes" ? "yes" : verifiedRaw === "no" ? "no" : "";
+  return { name: trimString(data.full_name), verified };
+}
+
 async function mapThreadRow(row: ChatThreadRow): Promise<ChatThreadPayload> {
+  const providerId = trimString(row.provider_id);
+  // Run independent lookups in parallel so the header hydration adds a
+  // single round-trip's worth of latency rather than serial.
+  const [displayId, providerHeader] = await Promise.all([
+    getTaskDisplayId(trimString(row.task_id)),
+    getProviderHeaderFields(providerId),
+  ]);
   return {
     ThreadID: trimString(row.thread_id),
     TaskID: trimString(row.task_id),
-    DisplayID: await getTaskDisplayId(trimString(row.task_id)),
+    DisplayID: displayId,
     UserPhone: normalizePhone10(row.user_phone),
-    ProviderID: trimString(row.provider_id),
+    ProviderID: providerId,
     ProviderPhone: normalizePhone10(row.provider_phone),
+    ProviderName: providerHeader.name,
+    ProviderVerified: providerHeader.verified,
     Category: trimString(row.category),
     Area: trimString(row.area),
     Status: trimString(row.status),

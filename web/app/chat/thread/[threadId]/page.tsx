@@ -1,11 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { ChevronLeft, Send } from "lucide-react";
+import { BadgeCheck, ChevronLeft, Phone, Send } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { getAuthSession } from "@/lib/auth";
-import { getTaskDisplayLabel } from "@/lib/taskDisplay";
 
 type Thread = {
   ThreadID: string;
@@ -13,6 +12,12 @@ type Thread = {
   DisplayID?: string;
   UserPhone: string;
   ProviderID: string;
+  ProviderPhone?: string;
+  // Hydrated server-side from `providers` row by mapThreadRow. Only sent
+  // to authorized participants (the A2 access gate runs before the payload
+  // is built). Empty when the provider row is missing.
+  ProviderName?: string;
+  ProviderVerified?: "yes" | "no" | "";
   LastMessageAt?: string;
   Status?: string;
   // Surfaced in the new compact header as the secondary line:
@@ -402,23 +407,37 @@ export default function ChatThreadPage() {
 
   const isClosed = String(thread.Status || "").trim().toLowerCase() === "closed";
   const counterpartyLabel = getCounterpartyLabel(actorType);
+  // Header identity. When the user is the actor, surface the provider's
+  // name / phone / verified status. When the actor is the provider, the
+  // counterparty is the customer — we don't have a name for that side, so
+  // we fall back to "Customer".
+  const providerName = String(thread.ProviderName || "").trim();
+  const providerPhone = String(thread.ProviderPhone || "").replace(/\D/g, "").slice(-10);
+  const providerVerified = thread.ProviderVerified === "yes";
   const titleLine =
-    actorType === "provider" ? "You and the customer" : "You and the provider";
+    actorType === "provider"
+      ? "Customer"
+      : providerName || "Service Provider";
   const subtitleLine =
     [String(thread.Category || "").trim(), String(thread.Area || "").trim()]
       .filter(Boolean)
-      .join(" · ") || getTaskDisplayLabel(thread, thread.TaskID);
-  const avatarInitial = actorType === "provider" ? "C" : "P";
+      .join(" · ");
+  const avatarInitial =
+    actorType === "provider"
+      ? "C"
+      : (providerName ? providerName.trim().charAt(0).toUpperCase() : "P") || "P";
   const sendButtonReady = Boolean(trimmedInput) && !sending && !isClosed;
   const sendButtonDisabled = sending || isClosed || !trimmedInput;
 
   return (
     <main className="flex h-[100dvh] flex-col bg-slate-50">
-      {/* Compact branded header — replaces the prior gradient hero block.
-          Single row, ~56-64px tall, no admin metadata. Closed-thread state
-          collapses to a small chip on the right; error state renders as a
-          slim strip under the header (below). */}
-      <header className="flex h-14 shrink-0 items-center gap-3 bg-[#003d20] px-3 text-white sm:h-16 sm:px-4">
+      {/* Compact branded header — single row, ~56-64px tall on the chrome
+          line. The body block can run two short text lines (title +
+          category/area) plus an inline metadata strip (phone + verified
+          chip) when the actor is a user viewing a provider thread. All
+          text uses `truncate`/`flex min-w-0` so a long provider name
+          collapses gracefully on narrow viewports. */}
+      <header className="flex shrink-0 items-center gap-3 bg-[#003d20] px-3 py-2.5 text-white sm:px-4 sm:py-3">
         <Link
           href={backHref}
           aria-label="Back"
@@ -428,18 +447,47 @@ export default function ChatThreadPage() {
         </Link>
         <div
           aria-hidden="true"
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-orange-100 text-sm font-bold text-[#003d20]"
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-orange-100 text-base font-bold text-[#003d20]"
         >
           {avatarInitial}
         </div>
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-semibold text-white sm:text-base">
+          <p className="truncate text-sm font-semibold uppercase tracking-wide text-white sm:text-base">
             {titleLine}
           </p>
-          <p className="truncate text-xs text-white/70 sm:text-sm">{subtitleLine}</p>
+          {subtitleLine ? (
+            <p className="truncate text-xs text-white/80 sm:text-sm">
+              {subtitleLine}
+            </p>
+          ) : null}
+          {/* Identity metadata strip — phone + verified chip — only when
+              the actor is a user (provider-side actor sees a generic
+              "Customer" header with no PII to surface). The phone line
+              renders only when the server returned a 10-digit value;
+              that field is gated by the same A2 access check that
+              controls the rest of the payload. */}
+          {actorType === "user" && (providerPhone || providerVerified) ? (
+            <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-white/80 sm:text-xs">
+              {providerPhone ? (
+                <a
+                  href={`tel:${providerPhone}`}
+                  className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2 py-0.5 font-medium transition hover:bg-white/20"
+                >
+                  <Phone className="h-3 w-3" aria-hidden="true" />
+                  <span className="font-mono">{providerPhone}</span>
+                </a>
+              ) : null}
+              {providerVerified ? (
+                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/20 px-2 py-0.5 font-medium text-emerald-100">
+                  <BadgeCheck className="h-3 w-3" aria-hidden="true" />
+                  Verified
+                </span>
+              ) : null}
+            </div>
+          ) : null}
         </div>
         {isClosed ? (
-          <span className="ml-auto shrink-0 rounded-full bg-amber-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-amber-900">
+          <span className="ml-auto shrink-0 self-start rounded-full bg-amber-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-amber-900">
             Closed
           </span>
         ) : null}
