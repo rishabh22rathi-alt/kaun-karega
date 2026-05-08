@@ -282,24 +282,55 @@ export function getAuthSession(options?: {
   if (typeof document === "undefined") return null;
   const raw = readCookie(COOKIE_USER_HINT, document.cookie);
   if (!raw) return null;
-  try {
-    const decoded = decodeURIComponent(raw);
-    const parsed = JSON.parse(decoded) as Partial<AuthSession>;
-    if (
-      typeof parsed.phone !== "string" ||
-      parsed.verified !== true ||
-      typeof parsed.createdAt !== "number"
-    ) {
-      return null;
+  return parseUserHintCookie(raw);
+}
+
+/**
+ * Parse the `kk_session_user` companion cookie. Handles three on-the-wire
+ * shapes so a stale cookie from any earlier server build still hydrates:
+ *   1. Plain JSON (server now writes this; Next.js URL-encodes once at
+ *      `Set-Cookie` time, browser auto-decodes when exposing on
+ *      `document.cookie`, so we receive plain JSON here).
+ *   2. URL-encoded JSON (some Next.js versions surface the encoded form
+ *      via `document.cookie`).
+ *   3. Double-URL-encoded JSON (cookies issued before this fix, when the
+ *      server pre-encoded and Next.js encoded again).
+ * Bounded attempts; never throws.
+ */
+function parseUserHintCookie(raw: string): AuthSession | null {
+  const candidates: string[] = [];
+  candidates.push(raw);
+  for (let i = 0; i < 2; i += 1) {
+    const last = candidates[candidates.length - 1];
+    let next: string;
+    try {
+      next = decodeURIComponent(last);
+    } catch {
+      break;
     }
-    return {
-      phone: parsed.phone,
-      verified: true,
-      createdAt: parsed.createdAt,
-    };
-  } catch {
-    return null;
+    if (next === last) break;
+    candidates.push(next);
   }
+  for (const candidate of candidates) {
+    if (!candidate || candidate[0] !== "{") continue;
+    try {
+      const parsed = JSON.parse(candidate) as Partial<AuthSession>;
+      if (
+        typeof parsed.phone === "string" &&
+        parsed.verified === true &&
+        typeof parsed.createdAt === "number"
+      ) {
+        return {
+          phone: parsed.phone,
+          verified: true,
+          createdAt: parsed.createdAt,
+        };
+      }
+    } catch {
+      // try next candidate
+    }
+  }
+  return null;
 }
 
 // ─── Public API: server-side cookie writers ──────────────────────────────────
@@ -348,9 +379,13 @@ export async function setAuthSessionCookie(
     set: (name: string, value: string, options: CookieAttributes) => void;
   };
   cookies.set(COOKIE_AUTH, signed, authCookieAttributes(true));
+  // Pass plain JSON. NextResponse.cookies.set / RequestCookies.set already
+  // URL-encode the value when serializing the Set-Cookie header — pre-
+  // encoding here caused double-encoding, which broke the browser
+  // parseUserHintCookie path and left the Sidebar stuck on "Guest".
   cookies.set(
     COOKIE_USER_HINT,
-    encodeURIComponent(JSON.stringify(session)),
+    JSON.stringify(session),
     authCookieAttributes(false)
   );
   return true;
