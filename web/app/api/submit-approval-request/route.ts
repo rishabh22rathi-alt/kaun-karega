@@ -2,6 +2,10 @@ import { NextResponse } from "next/server";
 import { getAuthSession } from "@/lib/auth";
 import { adminSupabase } from "@/lib/supabase/admin";
 
+function normalizePhone10(value: unknown): string {
+  return String(value || "").replace(/\D/g, "").slice(-10);
+}
+
 function normalizeDateOnly(value: string) {
   const raw = String(value || "").trim();
   if (!raw) return "";
@@ -52,6 +56,9 @@ export async function POST(request: Request) {
     // 1. Save the user-visible task with pending_category_review status so it
     //    surfaces in the user's dashboard (my-requests) and admin task views.
     const taskId = `TK-${Date.now()}`;
+    // Canonical storage: tasks.phone holds the last 10 digits only — see
+    // /api/submit-request for the same normalization rationale.
+    const ownerPhone10 = normalizePhone10(session.phone);
     const { data: taskData, error: taskError } = await adminSupabase
       .from("tasks")
       .insert({
@@ -59,7 +66,7 @@ export async function POST(request: Request) {
         category: rawCategoryInput,
         area,
         details,
-        phone: session.phone,
+        phone: ownerPhone10,
         selected_timeframe: selectedTimeframe,
         service_date: normalizedServiceDate || null,
         time_slot: timeSlot || null,

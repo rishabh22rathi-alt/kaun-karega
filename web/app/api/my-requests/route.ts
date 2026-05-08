@@ -22,10 +22,15 @@ export async function GET(request: Request) {
 
     const normalizedPhone = normalizePhone10(session.phone);
     const supabase = await createClient();
+    // Canonical storage is the 10-digit form (post phone-normalization
+    // fix). During the migration window — until the SQL repair script
+    // runs — older rows may still carry `91XXXXXXXXXX`. Match both
+    // shapes so My Requests reflects every task the user owns.
+    const phone12 = `91${normalizedPhone}`;
     const { data: tasks, error } = await supabase
       .from("tasks")
       .select("task_id, display_id, category, area, details, status, created_at")
-      .eq("phone", normalizedPhone)
+      .or(`phone.eq.${normalizedPhone},phone.eq.${phone12}`)
       .order("created_at", { ascending: false });
 
     if (error) {

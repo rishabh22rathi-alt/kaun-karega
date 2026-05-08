@@ -8,6 +8,10 @@ import { createClient } from "@/lib/supabase/server";
 // matching downstream.
 import { resolveCategoryAliasDetailed } from "@/lib/categoryAliases";
 
+function normalizePhone10(value: unknown): string {
+  return String(value || "").replace(/\D/g, "").slice(-10);
+}
+
 function getTodayDateInKolkata() {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Kolkata",
@@ -131,6 +135,12 @@ export async function POST(request: Request) {
 
     const taskId = `TK-${Date.now()}`;
     const insertStartedMs = Date.now();
+    // Canonical storage: tasks.phone holds the last 10 digits only.
+    // session.phone is the verified `91XXXXXXXXXX` form from the signed
+    // cookie — strip the country prefix here so equality filters in
+    // /api/my-requests, ownership checks in /api/process-task-notifications,
+    // and chat thread joins all line up against the 10-digit value.
+    const ownerPhone10 = normalizePhone10(session.phone);
     const { data, error } = await supabase
       .from("tasks")
       .insert({
@@ -138,7 +148,7 @@ export async function POST(request: Request) {
         category: canonicalCategory,
         area,
         details,
-        phone: session.phone,
+        phone: ownerPhone10,
         selected_timeframe: selectedTimeframe,
         service_date: normalizedServiceDate || null,
         time_slot: timeSlot || null,
