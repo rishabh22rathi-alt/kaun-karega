@@ -3,7 +3,10 @@ import { getAuthSession } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 // CHANGE: import alias resolver so submitted task category is normalized
 // (e.g. "lohar" → "welder") before the categories-table canonicalization.
-import { resolveCategoryAlias } from "@/lib/categoryAliases";
+// Detail-aware variant lets us also persist the original alias the user
+// typed (e.g. "dentist") into tasks.work_tag for specialization-aware
+// matching downstream.
+import { resolveCategoryAliasDetailed } from "@/lib/categoryAliases";
 
 function getTodayDateInKolkata() {
   return new Intl.DateTimeFormat("en-CA", {
@@ -36,7 +39,12 @@ export async function POST(request: Request) {
     // CHANGE: resolve user-typed alias to canonical category before persisting.
     // The downstream categories-table lookup will further canonicalize casing.
     const rawCategory = typeof body?.category === "string" ? body.category.trim() : "";
-    const category = await resolveCategoryAlias(rawCategory);
+    // Detail-aware resolve: capture the alias the user actually typed so we
+    // can persist it on tasks.work_tag for specialization-aware matching.
+    // matchedAlias is null when the user typed a canonical directly or an
+    // unknown term — both fall back to the existing broad-matching path.
+    const { canonical: category, matchedAlias } =
+      await resolveCategoryAliasDetailed(rawCategory);
     const area = typeof body?.area === "string" ? body.area.trim() : "";
     const selectedTimeframe =
       typeof body?.time === "string"
@@ -134,6 +142,11 @@ export async function POST(request: Request) {
         selected_timeframe: selectedTimeframe,
         service_date: normalizedServiceDate || null,
         time_slot: timeSlot || null,
+        // Original alias the user typed when it resolved to a different
+        // canonical (e.g. "dentist" -> doctor). Null when user typed the
+        // canonical directly or an unknown term — broad matching handles
+        // those. See migration 20260512100000_tasks_work_tag.sql.
+        work_tag: matchedAlias,
         status: "submitted",
       })
       .select("display_id")

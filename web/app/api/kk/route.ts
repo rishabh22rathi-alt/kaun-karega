@@ -1750,6 +1750,114 @@ export async function POST(request: NextRequest) {
         );
       }
 
+      // Persist provider_work_terms — best-effort, non-fatal. The frontend
+      // sends `workTags: JSON.stringify({"hobby classes":["dance teacher"]})`
+      // when the provider picked an alias chip during registration. We only
+      // accept rows whose canonical key matches a category the provider
+      // actually registered for, so a tampered payload cannot claim work
+      // terms under a category they don't offer. Duplicates are tolerated:
+      // the unique index uq_provider_work_terms_provider_alias_lower will
+      // reject 23505 and Promise.allSettled keeps the registration moving.
+      // Falls through silently when workTags is missing/invalid so existing
+      // canonical-only registrations behave exactly like today.
+      let workTagsParsed: Record<string, string[]> = {};
+      const rawWorkTags = (body as { workTags?: unknown }).workTags;
+      if (rawWorkTags !== undefined && rawWorkTags !== null) {
+        try {
+          const obj =
+            typeof rawWorkTags === "string"
+              ? JSON.parse(rawWorkTags)
+              : rawWorkTags;
+          if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+            for (const [key, val] of Object.entries(obj)) {
+              if (!Array.isArray(val)) continue;
+              const trimmedKey = String(key || "").trim();
+              if (!trimmedKey) continue;
+              const tags = val
+                .map((v) => String(v ?? "").trim())
+                .filter(Boolean);
+              if (tags.length > 0) workTagsParsed[trimmedKey] = tags;
+            }
+          }
+        } catch (parseErr) {
+          console.warn(
+            "[provider_register] workTags payload parse failed; skipping work-term persistence",
+            parseErr instanceof Error ? parseErr.message : parseErr
+          );
+          workTagsParsed = {};
+        }
+      }
+
+      if (Object.keys(workTagsParsed).length > 0) {
+        const offeredCanonicalsLower = new Map<string, string>();
+        for (const c of categories) {
+          const trimmed = String(c || "").trim();
+          if (!trimmed) continue;
+          offeredCanonicalsLower.set(trimmed.toLowerCase(), trimmed);
+        }
+
+        const workTermRows: Array<{
+          provider_id: string;
+          alias: string;
+          canonical_category: string;
+        }> = [];
+        const seenAliasKeys = new Set<string>();
+        for (const [canonicalKey, aliases] of Object.entries(workTagsParsed)) {
+          const offeredCanonical = offeredCanonicalsLower.get(
+            canonicalKey.trim().toLowerCase()
+          );
+          if (!offeredCanonical) continue; // payload claims a category not registered
+          for (const alias of aliases) {
+            const dedupKey = `${alias.toLowerCase()}@@${offeredCanonical.toLowerCase()}`;
+            if (seenAliasKeys.has(dedupKey)) continue;
+            seenAliasKeys.add(dedupKey);
+            workTermRows.push({
+              provider_id: providerId,
+              alias,
+              canonical_category: offeredCanonical,
+            });
+          }
+        }
+
+        if (workTermRows.length > 0) {
+          const results = await Promise.allSettled(
+            workTermRows.map((row) =>
+              supabase.from("provider_work_terms").insert(row)
+            )
+          );
+          for (let i = 0; i < results.length; i += 1) {
+            const r = results[i];
+            if (r.status === "rejected") {
+              console.warn(
+                "[provider_register] provider_work_terms insert rejected",
+                {
+                  alias: workTermRows[i].alias,
+                  canonical: workTermRows[i].canonical_category,
+                  reason:
+                    r.reason instanceof Error ? r.reason.message : r.reason,
+                }
+              );
+            } else if (r.value && (r.value as { error?: { code?: string; message?: string } }).error) {
+              const insertErr = (r.value as {
+                error?: { code?: string; message?: string };
+              }).error!;
+              // 23505 = unique_violation — expected on retry/dup, ignore.
+              if (insertErr.code !== "23505") {
+                console.warn(
+                  "[provider_register] provider_work_terms insert error",
+                  {
+                    alias: workTermRows[i].alias,
+                    canonical: workTermRows[i].canonical_category,
+                    code: insertErr.code,
+                    message: insertErr.message,
+                  }
+                );
+              }
+            }
+          }
+        }
+      }
+
       // Queue unmapped (custom) areas for admin review — non-fatal
       if (pendingNewAreas.length > 0) {
         await Promise.allSettled(

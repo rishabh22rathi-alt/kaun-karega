@@ -38,10 +38,13 @@ export async function POST(request: Request) {
 
     const supabase = await createClient();
 
-    // 1. Load the task
+    // 1. Load the task. work_tag is the original alias the user typed when
+    // it resolved to a different canonical (e.g. "dentist" -> doctor). Null
+    // for canonical / unknown / pre-migration rows — broad matching path
+    // handles those exactly like today.
     const { data: task, error: taskError } = await supabase
       .from("tasks")
-      .select("task_id, display_id, category, area, selected_timeframe")
+      .select("task_id, display_id, category, area, selected_timeframe, work_tag")
       .eq("task_id", taskId)
       .single();
 
@@ -82,6 +85,8 @@ export async function POST(request: Request) {
         matchedProviders: 0,
         attemptedSends: 0,
         failedSends: 0,
+        matchTier: "category",
+        usedFallback: false,
       });
     }
 
@@ -108,7 +113,57 @@ export async function POST(request: Request) {
     const areaIds = new Set(
       (areaRows ?? []).map((r) => String(r.provider_id).trim()).filter(Boolean)
     );
-    const matchedIds = [...serviceIds].filter((id) => areaIds.has(id));
+    const broadMatched = [...serviceIds].filter((id) => areaIds.has(id));
+
+    // Optional third-axis filter: providers who have claimed task.work_tag
+    // under the same canonical category in provider_work_terms. Fail-open
+    // on lookup error so a transient DB blip never starves notification
+    // fan-out.
+    const taskWorkTag = String(task.work_tag || "").trim();
+    let workTermIds: Set<string> | null = null;
+    if (taskWorkTag) {
+      const { data: workTermRows, error: workTermsError } = await supabase
+        .from("provider_work_terms")
+        .select("provider_id")
+        .ilike("alias", taskWorkTag)
+        .ilike("canonical_category", canonicalCategory)
+        .limit(5000);
+      if (workTermsError) {
+        console.warn(
+          "[process-task-notifications] provider_work_terms lookup failed; falling back to broad",
+          workTermsError.message || workTermsError
+        );
+      } else {
+        workTermIds = new Set(
+          (workTermRows ?? [])
+            .map((row) => String(row.provider_id || "").trim())
+            .filter(Boolean)
+        );
+      }
+    }
+
+    let matchedIds: string[];
+    let matchTier: "work_tag" | "category_fallback" | "category";
+    if (taskWorkTag && workTermIds !== null) {
+      const exact = broadMatched.filter((id) => workTermIds!.has(id));
+      if (exact.length > 0) {
+        matchedIds = exact;
+        matchTier = "work_tag";
+      } else {
+        matchedIds = broadMatched;
+        matchTier = "category_fallback";
+        console.warn(
+          `[process-task-notifications] work_tag "${taskWorkTag}" had no providers under "${canonicalCategory}" in "${task.area}"; fell back to broad canonical — ${broadMatched.length} candidate provider(s)`
+        );
+      }
+    } else if (taskWorkTag) {
+      matchedIds = broadMatched;
+      matchTier = "category_fallback";
+    } else {
+      matchedIds = broadMatched;
+      matchTier = "category";
+    }
+    const usedFallback = matchTier === "category_fallback";
 
     if (matchedIds.length === 0) {
       await supabase
@@ -116,7 +171,14 @@ export async function POST(request: Request) {
         .update({ status: "no_providers_matched" })
         .eq("task_id", taskId);
 
-      return NextResponse.json({ ok: true, matchedProviders: 0, attemptedSends: 0, failedSends: 0 });
+      return NextResponse.json({
+        ok: true,
+        matchedProviders: 0,
+        attemptedSends: 0,
+        failedSends: 0,
+        matchTier,
+        usedFallback,
+      });
     }
 
     // 4. Load provider details
@@ -140,6 +202,8 @@ export async function POST(request: Request) {
         matchedProviders: 0,
         attemptedSends: 0,
         failedSends: 0,
+        matchTier,
+        usedFallback,
       });
     }
 
@@ -287,6 +351,12 @@ export async function POST(request: Request) {
               displayId: (task as { display_id?: unknown }).display_id ?? null,
               category: task.category,
               area: task.area,
+              // Additive fields. Older consumers ignore unknown keys; new
+              // surfaces (admin dashboards, analytics) can read these to
+              // distinguish a precise specialist match from a fallback.
+              workTag: taskWorkTag || null,
+              matchTier,
+              usedFallback,
             },
           }));
 
@@ -318,6 +388,9 @@ export async function POST(request: Request) {
       taskId,
       matchedCount: providerList.length,
       failedSends,
+      matchTier,
+      workTag: taskWorkTag || null,
+      usedFallback,
       totalElapsedMs: Date.now() - routeStartMs,
     });
 
@@ -326,6 +399,8 @@ export async function POST(request: Request) {
       matchedProviders: providerList.length,
       attemptedSends: providerList.length,
       failedSends,
+      matchTier,
+      usedFallback,
     });
 
   } catch (error) {

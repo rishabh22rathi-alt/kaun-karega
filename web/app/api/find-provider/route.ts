@@ -2,7 +2,10 @@ import { createClient } from "@/lib/supabase/server";
 import { canonicalizeProviderAreasToCanonicalNames } from "@/lib/admin/adminAreaMappings";
 // CHANGE: import alias resolver so user-typed variants ("lohar", "welding")
 // map to canonical category ("welder") before downstream matching.
-import { resolveCategoryAlias } from "@/lib/categoryAliases";
+// Detail-aware variant lets us pick up the alias the user typed (e.g.
+// "dentist" -> doctor) and use it as the work_tag filter against
+// provider_work_terms when no explicit workTag was passed.
+import { resolveCategoryAliasDetailed } from "@/lib/categoryAliases";
 
 const clean = (s: string) => (s || "").trim().replace(/\s+/g, " ");
 
@@ -26,11 +29,23 @@ async function handle(req: Request) {
 
   // CHANGE: resolve aliases (lohar → welder, etc.) before matching.
   // Falls through to the original cleaned input if no alias row matches.
+  // Detail-aware so the matched alias becomes the work_tag filter when
+  // the caller didn't pass one explicitly.
   const rawCategory = clean(
     (typeof body.category === "string" ? body.category : queryCategory) ||
       queryService
   );
-  const category = await resolveCategoryAlias(rawCategory);
+  const { canonical: category, matchedAlias } =
+    await resolveCategoryAliasDetailed(rawCategory);
+  // Explicit workTag from caller wins; otherwise the alias the resolver
+  // matched becomes the implicit specialization filter. Empty string =
+  // no specialization filter (broad category+area only, today's behaviour).
+  const explicitWorkTag = clean(
+    (typeof body.workTag === "string"
+      ? body.workTag
+      : url.searchParams.get("workTag") || "") || ""
+  );
+  const workTag = explicitWorkTag || matchedAlias || "";
   const area = clean(
     (typeof body.area === "string" ? body.area : queryArea) || ""
   );
@@ -46,6 +61,7 @@ async function handle(req: Request) {
 
   const inBody = {
     category,
+    workTag,
     area,
     taskId,
     userPhone,
@@ -90,6 +106,7 @@ async function handle(req: Request) {
           ok: true,
           count: 0,
           providers: [],
+          matchTier: "category",
           usedFallback: false,
         },
         { status: 200 }
@@ -133,9 +150,67 @@ async function handle(req: Request) {
         : []
     );
 
-    const allMatchedProviderIds = [...serviceProviderIds]
+    // Optional third-axis filter: providers who have claimed the requested
+    // alias under the same canonical category in provider_work_terms.
+    // Only fires when workTag is non-empty. Fail-open on lookup error: log
+    // and continue with broad two-way intersection so a transient DB blip
+    // never starves matching of results.
+    let workTermProviderIds: Set<string> | null = null;
+    if (workTag) {
+      const { data: workTermRows, error: workTermsError } = await supabase
+        .from("provider_work_terms")
+        .select("provider_id")
+        .ilike("alias", workTag)
+        .ilike("canonical_category", canonicalCategory)
+        .limit(5000);
+      if (workTermsError) {
+        console.warn(
+          "[find-provider] provider_work_terms lookup failed; falling back to broad",
+          workTermsError.message || workTermsError
+        );
+      } else {
+        workTermProviderIds = new Set(
+          (workTermRows ?? [])
+            .map((row) => String(row.provider_id || "").trim())
+            .filter(Boolean)
+        );
+      }
+    }
+
+    const broadMatched = [...serviceProviderIds]
       .filter((providerId) => areaProviderIds.has(providerId))
       .sort();
+
+    // Tier resolution:
+    //   - workTag + work_terms lookup ok + exact > 0 → "work_tag"
+    //   - workTag (lookup ok or errored) + exact = 0 → "category_fallback"
+    //   - no workTag → "category"
+    let allMatchedProviderIds: string[];
+    let matchTier: "work_tag" | "category_fallback" | "category";
+    let usedFallback: boolean;
+    if (workTag && workTermProviderIds !== null) {
+      const exactMatched = broadMatched.filter((id) =>
+        workTermProviderIds!.has(id)
+      );
+      if (exactMatched.length > 0) {
+        allMatchedProviderIds = exactMatched;
+        matchTier = "work_tag";
+        usedFallback = false;
+      } else {
+        allMatchedProviderIds = broadMatched;
+        matchTier = "category_fallback";
+        usedFallback = true;
+      }
+    } else if (workTag) {
+      // Lookup errored — best-effort fallback to broad.
+      allMatchedProviderIds = broadMatched;
+      matchTier = "category_fallback";
+      usedFallback = true;
+    } else {
+      allMatchedProviderIds = broadMatched;
+      matchTier = "category";
+      usedFallback = false;
+    }
 
     const matchedProviderIds = taskId
       ? allMatchedProviderIds
@@ -147,7 +222,8 @@ async function handle(req: Request) {
           ok: true,
           count: 0,
           providers: [],
-          usedFallback: false,
+          matchTier,
+          usedFallback,
         },
         { status: 200 }
       );
@@ -207,7 +283,8 @@ async function handle(req: Request) {
             error: matchesError.message,
             providers: providersList,
             count: providersList.length,
-            usedFallback: false,
+            matchTier,
+            usedFallback,
           },
           { status: 502 }
         );
@@ -219,7 +296,8 @@ async function handle(req: Request) {
         ok: true,
         count: providersList.length,
         providers: providersList,
-        usedFallback: false,
+        matchTier,
+        usedFallback,
       },
       { status: 200 }
     );
@@ -231,6 +309,7 @@ async function handle(req: Request) {
           error instanceof Error ? error.message : "Unable to fetch matched providers.",
         providers: [],
         count: 0,
+        matchTier: "category",
         usedFallback: false,
       },
       { status: 502 }
