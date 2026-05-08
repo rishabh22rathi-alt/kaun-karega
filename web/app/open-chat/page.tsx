@@ -2,7 +2,10 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { getAuthSession } from "@/lib/auth";
 import { getProviderByPhoneFromSupabase } from "@/lib/admin/adminProviderReads";
-import { getChatThreadsFromSupabase } from "@/lib/chat/chatPersistence";
+import {
+  getChatThreadsFromSupabase,
+  resolveAuthenticatedChatActor,
+} from "@/lib/chat/chatPersistence";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -38,11 +41,17 @@ export default async function OpenChatPage() {
     actorType = "user";
   }
 
+  // Re-resolve identity against the same cookie header — the helper now
+  // expects a session-bound actor instead of body-supplied phones.
+  const identityResult = await resolveAuthenticatedChatActor(cookieHeader);
+  if (!identityResult.ok) {
+    redirect(`/login?next=${encodeURIComponent("/open-chat")}`);
+  }
+
   try {
     const threadsPayload = await getChatThreadsFromSupabase(
-      actorType === "provider"
-        ? { ActorType: "provider", loggedInProviderPhone: sessionPhone }
-        : { ActorType: "user", UserPhone: sessionPhone }
+      { ActorType: actorType },
+      identityResult
     );
 
     if (threadsPayload.ok && Array.isArray(threadsPayload.threads)) {

@@ -60,6 +60,7 @@ import {
   getChatMessagesFromSupabase,
   getChatThreadsFromSupabase,
   markChatReadFromSupabase,
+  resolveAuthenticatedChatActor,
   sendChatMessageFromSupabase,
   updateChatThreadStatusFromSupabase,
   getNeedChatMessagesFromSupabase,
@@ -172,6 +173,32 @@ function extractAction(source: unknown): string {
 }
 
 const STANDARDIZED_ADMIN_ACTIONS = new Set([...ADMIN_ONLY_ACTIONS, "admin_verify", "get_admin_requests"]);
+
+/**
+ * Actions that require a verified user/provider session before executing.
+ * Identity is resolved via `resolveAuthenticatedChatActor` against the
+ * signed `kk_auth_session` cookie — body-supplied UserPhone / ProviderPhone
+ * are NOT trusted for authorization. Each handler receives the resolved
+ * `ChatSessionIdentity` and uses it for ownership checks.
+ */
+const REQUIRES_SESSION_ACTIONS = new Set([
+  "chat_create_or_get_thread",
+  "chat_get_threads",
+  "chat_get_messages",
+  "chat_mark_read",
+  "chat_send_message",
+  "need_chat_create_or_get_thread",
+  "need_chat_get_threads_for_need",
+  "need_chat_get_messages",
+  "need_chat_mark_read",
+  "need_chat_send_message",
+  // Need ownership actions — owner phone must come from the verified
+  // signed session, never from body.UserPhone / body.userPhone / body.phone.
+  "create_need",
+  "get_my_needs",
+  "mark_need_complete",
+  "close_need",
+]);
 
 function parseArrayLike(value: unknown): unknown[] {
   if (Array.isArray(value)) return value;
@@ -343,6 +370,25 @@ export async function POST(request: NextRequest) {
           NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 })
         );
       }
+    }
+
+    // Verified-session gate for chat / need-chat actions. Identity is
+    // bound to the signed `kk_auth_session` cookie and reused below for
+    // every handler that mutates or reads thread-side state. Body fields
+    // like UserPhone / ProviderPhone are NOT consulted for authorization.
+    let chatIdentity: import("@/lib/chat/chatPersistence").ChatSessionIdentity | null = null;
+    if (REQUIRES_SESSION_ACTIONS.has(action)) {
+      const cookieHeader = request.headers.get("cookie") ?? "";
+      const resolved = await resolveAuthenticatedChatActor(cookieHeader);
+      if (!resolved.ok) {
+        return withNoCache(
+          NextResponse.json(
+            { ok: false, error: resolved.error },
+            { status: resolved.status }
+          )
+        );
+      }
+      chatIdentity = resolved;
     }
     const body = normalizeProxyBody(rawBody);
     if (action === "get_areas") {
@@ -1022,16 +1068,13 @@ export async function POST(request: NextRequest) {
     }
     if (action === "mark_need_complete") {
       const needId = typeof body.NeedID === "string" ? body.NeedID.trim() : "";
-      const userPhone = normalizePhone10(body.UserPhone ?? body.userPhone ?? body.phone);
+      // Owner phone comes from the verified session — body.UserPhone /
+      // body.userPhone / body.phone are intentionally ignored for ownership.
+      const sessionPhone = chatIdentity!.sessionPhone;
 
       if (!needId) {
         return withNoCache(
           NextResponse.json({ ok: false, error: "NeedID required" }, { status: 400 })
-        );
-      }
-      if (!userPhone) {
-        return withNoCache(
-          NextResponse.json({ ok: false, error: "UserPhone required" }, { status: 400 })
         );
       }
 
@@ -1052,7 +1095,7 @@ export async function POST(request: NextRequest) {
           NextResponse.json({ ok: false, error: "Need not found" }, { status: 404 })
         );
       }
-      if (String(need.user_phone || "").trim() !== userPhone) {
+      if (normalizePhone10(need.user_phone) !== sessionPhone) {
         return withNoCache(
           NextResponse.json({ ok: false, error: "Need ownership mismatch" }, { status: 403 })
         );
@@ -1085,16 +1128,13 @@ export async function POST(request: NextRequest) {
     }
     if (action === "close_need") {
       const needId = typeof body.NeedID === "string" ? body.NeedID.trim() : "";
-      const userPhone = normalizePhone10(body.UserPhone ?? body.userPhone ?? body.phone);
+      // Owner phone comes from the verified session — body phone fields are
+      // intentionally ignored for ownership.
+      const sessionPhone = chatIdentity!.sessionPhone;
 
       if (!needId) {
         return withNoCache(
           NextResponse.json({ ok: false, error: "NeedID required" }, { status: 400 })
-        );
-      }
-      if (!userPhone) {
-        return withNoCache(
-          NextResponse.json({ ok: false, error: "UserPhone required" }, { status: 400 })
         );
       }
 
@@ -1115,7 +1155,7 @@ export async function POST(request: NextRequest) {
           NextResponse.json({ ok: false, error: "Need not found" }, { status: 404 })
         );
       }
-      if (String(need.user_phone || "").trim() !== userPhone) {
+      if (normalizePhone10(need.user_phone) !== sessionPhone) {
         return withNoCache(
           NextResponse.json({ ok: false, error: "Need ownership mismatch" }, { status: 403 })
         );
@@ -1148,7 +1188,10 @@ export async function POST(request: NextRequest) {
       );
     }
     if (action === "create_need") {
-      const userPhone = normalizePhone10(body.UserPhone ?? body.userPhone ?? body.phone);
+      // Owner phone always comes from the verified session — body's
+      // UserPhone / userPhone / phone fields are not consulted. This blocks
+      // creating needs on behalf of another user.
+      const userPhone = chatIdentity!.sessionPhone;
       const hasAnonymousChoice = body.IsAnonymous !== undefined || body.isAnonymous !== undefined;
       const isAnonymous = normalizeNeedBoolean(
         body.IsAnonymous !== undefined ? body.IsAnonymous : body.isAnonymous
@@ -1172,11 +1215,6 @@ export async function POST(request: NextRequest) {
         body.ValidDays !== undefined ? body.ValidDays : body.validDays
       );
 
-      if (!userPhone) {
-        return withNoCache(
-          NextResponse.json({ ok: false, error: "UserPhone required" }, { status: 400 })
-        );
-      }
       if (!hasAnonymousChoice) {
         return withNoCache(
           NextResponse.json({ ok: false, error: "IsAnonymous required" }, { status: 400 })
@@ -1375,14 +1413,10 @@ export async function POST(request: NextRequest) {
       );
     }
     if (action === "get_my_needs") {
-      const userPhone = typeof body.UserPhone === "string" ? body.UserPhone.trim() : "";
-      const normalizedPhone = normalizePhone10(userPhone);
-
-      if (!normalizedPhone) {
-        return withNoCache(
-          NextResponse.json({ ok: false, error: "UserPhone is required." }, { status: 400 })
-        );
-      }
+      // Filter is bound to the verified session phone — body.UserPhone is
+      // ignored so a logged-in caller cannot enumerate another user's
+      // needs by passing a different phone.
+      const normalizedPhone = chatIdentity!.sessionPhone;
 
       const supabase = await createClient();
       const { data, error } = await supabase
@@ -1431,23 +1465,23 @@ export async function POST(request: NextRequest) {
       );
     }
     if (action === "chat_create_or_get_thread") {
-      const result = await createOrGetChatThreadFromSupabase(body);
+      const result = await createOrGetChatThreadFromSupabase(body, chatIdentity!);
       return withNoCache(NextResponse.json(result));
     }
     if (action === "chat_get_threads") {
-      const result = await getChatThreadsFromSupabase(body);
+      const result = await getChatThreadsFromSupabase(body, chatIdentity!);
       return withNoCache(NextResponse.json(result));
     }
     if (action === "chat_get_messages") {
-      const result = await getChatMessagesFromSupabase(body);
+      const result = await getChatMessagesFromSupabase(body, chatIdentity!);
       return withNoCache(NextResponse.json(result));
     }
     if (action === "chat_mark_read") {
-      const result = await markChatReadFromSupabase(body);
+      const result = await markChatReadFromSupabase(body, chatIdentity!);
       return withNoCache(NextResponse.json(result));
     }
     if (action === "chat_send_message") {
-      const result = await sendChatMessageFromSupabase(body);
+      const result = await sendChatMessageFromSupabase(body, chatIdentity!);
       return withNoCache(NextResponse.json(result));
     }
     if (action === "admin_list_chat_threads" || action === "get_admin_chat_threads") {
@@ -1512,33 +1546,23 @@ export async function POST(request: NextRequest) {
     }
     if (action === "need_chat_create_or_get_thread") {
       const needId = typeof body.NeedID === "string" ? body.NeedID.trim() : "";
-      const responderPhone =
-        typeof body.ResponderPhone === "string"
-          ? body.ResponderPhone.trim()
-          : typeof body.UserPhone === "string"
-            ? body.UserPhone.trim()
-            : "";
-      const result = await createOrGetNeedChatThreadFromSupabase(needId, responderPhone);
+      // Responder identity comes from the verified session — body's
+      // ResponderPhone / UserPhone are intentionally ignored for auth.
+      const result = await createOrGetNeedChatThreadFromSupabase(needId, chatIdentity!);
       return withNoCache(
         NextResponse.json(result, { status: result.ok ? 200 : 500 })
       );
     }
     if (action === "need_chat_get_threads_for_need") {
       const needId = typeof body.NeedID === "string" ? body.NeedID.trim() : "";
-      const userPhone = typeof body.UserPhone === "string" ? body.UserPhone.trim() : "";
 
       if (!needId) {
         return withNoCache(
           NextResponse.json({ ok: false, error: "NeedID is required." }, { status: 400 })
         );
       }
-      if (!userPhone) {
-        return withNoCache(
-          NextResponse.json({ ok: false, error: "UserPhone is required." }, { status: 400 })
-        );
-      }
 
-      const threads = await getNeedChatThreadsForNeedFromSupabase(needId, userPhone);
+      const threads = await getNeedChatThreadsForNeedFromSupabase(needId, chatIdentity!);
       return withNoCache(
         NextResponse.json({
           ok: true,
@@ -1559,15 +1583,15 @@ export async function POST(request: NextRequest) {
       );
     }
     if (action === "need_chat_get_messages") {
-      const result = await getNeedChatMessagesFromSupabase(body);
+      const result = await getNeedChatMessagesFromSupabase(body, chatIdentity!);
       return withNoCache(NextResponse.json(result, { status: result.ok ? 200 : 500 }));
     }
     if (action === "need_chat_mark_read") {
-      const result = await markNeedChatReadFromSupabase(body);
+      const result = await markNeedChatReadFromSupabase(body, chatIdentity!);
       return withNoCache(NextResponse.json(result, { status: result.ok ? 200 : 500 }));
     }
     if (action === "need_chat_send_message") {
-      const result = await sendNeedChatMessageFromSupabase(body);
+      const result = await sendNeedChatMessageFromSupabase(body, chatIdentity!);
       return withNoCache(NextResponse.json(result, { status: result.ok ? 200 : 500 }));
     }
     if (action === "provider_register") {

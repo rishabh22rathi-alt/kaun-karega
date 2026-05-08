@@ -1,20 +1,27 @@
 import { NextResponse } from "next/server";
 import { adminSupabase } from "@/lib/supabase/admin";
+import { requireAdminSession } from "@/lib/adminAuth";
 
 // GET  /api/admin/aliases?status=pending|active
 // POST /api/admin/aliases  body: { action: "approve"|"reject", alias, reason? }
 //
-// NOTE on auth: this endpoint uses the service-role client and assumes the
-// caller is already authenticated as admin via route-level protection on
-// /admin/* pages (the existing pattern in this codebase). For a hardened
-// build, gate with an X-Admin-Phone header check against the same admin
-// allowlist used in /api/kk admin actions. Documented as TODO; not blocking
-// for the alias-review feature.
+// Auth: every entry point goes through `requireAdminSession`, which verifies
+// the signed `kk_auth_session` cookie phone against the `admins` table
+// (active=true). Inactive or non-admin sessions get 401. The service-role
+// client below is only used after the gate has passed.
 
 const PENDING = "pending";
 const ACTIVE = "active";
 
 export async function GET(request: Request) {
+  const auth = await requireAdminSession(request);
+  if (!auth.ok) {
+    return NextResponse.json(
+      { ok: false, error: "Unauthorized" },
+      { status: 401 }
+    );
+  }
+
   const status = (
     new URL(request.url).searchParams.get("status") || PENDING
   ).toLowerCase();
@@ -79,6 +86,14 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const auth = await requireAdminSession(request);
+  if (!auth.ok) {
+    return NextResponse.json(
+      { ok: false, error: "Unauthorized" },
+      { status: 401 }
+    );
+  }
+
   let body: Record<string, unknown>;
   try {
     body = (await request.json()) as Record<string, unknown>;

@@ -13,7 +13,11 @@ export default async function ConfirmationPage({
   const status = params.status ?? "";
   const showProviders = (params as { show?: string }).show === "1";
 
-  let providers: { name: string; phone: string }[] = [];
+  // Public /api/find-provider response no longer carries raw phone numbers;
+  // we display the masked phone (e.g. 98XXXXXX21). Direct WhatsApp / tel
+  // links from this page are gone — providers reach out to the user via
+  // the server-side notification pipeline.
+  let providers: { name: string; phoneMasked: string }[] = [];
   if (showProviders && category && area) {
     try {
       const res = await fetch(
@@ -93,20 +97,16 @@ export default async function ConfirmationPage({
             {providers.length > 0 ? (
               providers.map((p, i) => {
                 const name = p.name || `Provider ${i + 1}`;
-                const phone = p.phone || "";
-                const digits = phone.toString().replace(/\D/g, "");
+                const phoneMasked = p.phoneMasked || "";
                 return (
                   <div
                     key={`${name}-${i}`}
                     className="p-4 border-b flex justify-between items-center"
                   >
                     <span className="text-slate-900 font-medium">{name}</span>
-                    <a
-                      href={`https://wa.me/${digits}`}
-                      className="text-green-600 font-bold"
-                    >
-                      Chat on WhatsApp
-                    </a>
+                    <span className="text-slate-500 font-mono text-sm">
+                      {phoneMasked}
+                    </span>
                   </div>
                 );
               })

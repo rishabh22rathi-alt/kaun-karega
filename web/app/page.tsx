@@ -1563,18 +1563,16 @@ const hasArea = area.trim() !== "";
 
               {showProvidersList && (
                 <div className="space-y-3">
-                  {providersList.map((p) => (
-                    <div key={p.phone} className="rounded-xl border border-slate-200 p-3">
+                  {providersList.map((p, i) => (
+                    <div
+                      key={p.ProviderID || `${p.name}-${i}`}
+                      className="rounded-xl border border-slate-200 p-3"
+                    >
                       <p className="font-semibold text-slate-800">{p.name}</p>
                       <p className="mt-0.5 text-sm text-slate-500">&#128205; {p.area}</p>
-                      <p className="text-sm text-slate-500">&#128222; {p.phone}</p>
-                      <a
-                        href={`tel:${p.phone}`}
-                        draggable={false}
-                        className="mt-2 inline-block rounded-lg bg-blue-500 px-3 py-1 text-sm text-white"
-                      >
-                        Call
-                      </a>
+                      <p className="text-sm text-slate-500 font-mono">
+                        &#128222; {p.phoneMasked}
+                      </p>
                     </div>
                   ))}
                 </div>

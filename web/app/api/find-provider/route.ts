@@ -238,6 +238,18 @@ async function handle(req: Request) {
       throw new Error(providersError.message || "Unable to load providers.");
     }
 
+    // Mask raw phone numbers so the public response cannot be used to
+    // harvest the provider directory. Internal matching above still uses
+    // `providers.phone` to populate `provider_task_matches`; the WhatsApp
+    // notification path (`/api/process-task-notifications`) re-reads the
+    // raw phone server-side at send time, so the user-facing handoff is
+    // unaffected.
+    const maskPhone10 = (value: string): string => {
+      const digits = String(value || "").replace(/\D/g, "").slice(-10);
+      if (digits.length !== 10) return "";
+      return `${digits.slice(0, 2)}XXXXXX${digits.slice(-2)}`;
+    };
+
     const providersList = Array.isArray(providers)
       ? matchedProviderIds
           .map((providerId) => {
@@ -247,7 +259,9 @@ async function handle(req: Request) {
             return {
               ProviderID: String(provider.provider_id || "").trim(),
               name: String(provider.full_name || "").trim(),
-              phone: String(provider.phone || "").trim(),
+              // Public response carries ONLY the masked phone. The raw
+              // phone never leaves this handler.
+              phoneMasked: maskPhone10(String(provider.phone || "")),
               category,
               area,
               verified: String(provider.verified || "").trim(),
@@ -256,7 +270,7 @@ async function handle(req: Request) {
           .filter((provider): provider is {
             ProviderID: string;
             name: string;
-            phone: string;
+            phoneMasked: string;
             category: string;
             area: string;
             verified: string;

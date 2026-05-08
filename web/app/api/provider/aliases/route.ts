@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
 import { adminSupabase } from "@/lib/supabase/admin";
+import { getAuthSession } from "@/lib/auth";
+
+export const runtime = "nodejs";
 
 // POST /api/provider/aliases
 //
@@ -13,14 +16,21 @@ import { adminSupabase } from "@/lib/supabase/admin";
 // adding a parallel "pending alias requests" table. The active flag is the
 // approval gate.
 //
-// Expected body:
-//   { providerId: string, alias: string, canonicalCategory: string }
+// Auth (A8 fix):
+//   - Caller MUST present a valid signed `kk_auth_session` cookie. The
+//     session phone is the only trusted identity signal.
+//   - The provider id used as `submitted_by_provider_id` is resolved from
+//     the session phone — body.providerId is accepted only for backward
+//     compatibility of the payload shape and is cross-checked against the
+//     session-resolved id (mismatch → 403). Body never widens access.
 //
-// Validation:
-//   - providerId must be present and resolve to a real providers row.
+// Expected body:
+//   { alias: string, canonicalCategory: string, providerId?: string }
+//
+// Validation (post-auth):
 //   - canonicalCategory must exist in `categories` with active=true and must
-//     be a category the provider already has in provider_services. Providers
-//     cannot pin aliases to categories they don't offer.
+//     be a category the calling provider already has in provider_services.
+//     Providers cannot pin aliases to categories they don't offer.
 //   - alias must be non-empty after trim and must not already exist
 //     (case-insensitive) in category_aliases — duplicates are rejected with
 //     409 so the provider knows the term is already covered.
@@ -31,10 +41,18 @@ import { adminSupabase } from "@/lib/supabase/admin";
 // Response codes:
 //   200 — created (active=false, awaiting admin review)
 //   400 — invalid body
-//   403 — alias does not match a category this provider offers
-//   404 — provider or canonical category not found
-//   409 — alias already exists
+//   401 — no signed session
+//   403 — session phone is not a registered provider, or body.providerId
+//         disagrees with the session-resolved id, or alias category is not
+//         offered by the calling provider
+//   404 — canonical category not found
+//   409 — alias already exists / collides with canonical
 //   500 — DB error
+
+function normalizePhone10(value: unknown): string {
+  return String(value || "").replace(/\D/g, "").slice(-10);
+}
+
 export async function POST(request: Request) {
   let body: Record<string, unknown>;
   try {
@@ -46,11 +64,58 @@ export async function POST(request: Request) {
     );
   }
 
-  const providerId = String(body.providerId ?? "").trim();
+  // Step 1: verify signed session. The session phone is the sole authority
+  // for which provider this submission belongs to.
+  const session = await getAuthSession({
+    cookie: request.headers.get("cookie") ?? "",
+  });
+  const sessionPhone10 = normalizePhone10(session?.phone);
+  if (!session || sessionPhone10.length !== 10) {
+    return NextResponse.json(
+      { ok: false, error: "UNAUTHORIZED" },
+      { status: 401 }
+    );
+  }
+
+  // Step 2: resolve the provider row from the session phone. This row's
+  // provider_id is the ONLY id used for the alias insert below.
+  const { data: providerRows, error: providerLookupErr } = await adminSupabase
+    .from("providers")
+    .select("provider_id, phone")
+    .or(`phone.eq.${sessionPhone10},phone.eq.91${sessionPhone10}`)
+    .limit(5);
+  if (providerLookupErr) {
+    console.error(
+      "[provider/aliases] provider lookup failed",
+      providerLookupErr.message
+    );
+    return NextResponse.json({ ok: false, error: "DB_ERROR" }, { status: 500 });
+  }
+  const providerRow = (providerRows || []).find(
+    (row) => normalizePhone10(row.phone) === sessionPhone10
+  );
+  const providerId = String(providerRow?.provider_id || "").trim();
+  if (!providerRow || !providerId) {
+    return NextResponse.json(
+      { ok: false, error: "NOT_A_REGISTERED_PROVIDER" },
+      { status: 403 }
+    );
+  }
+
+  // Step 3: cross-check body.providerId against the session-resolved id.
+  // Body value is treated as a UI hint only — never used to widen access.
+  const claimedProviderId = String(body.providerId ?? "").trim();
+  if (claimedProviderId && claimedProviderId !== providerId) {
+    return NextResponse.json(
+      { ok: false, error: "PROVIDER_ID_MISMATCH" },
+      { status: 403 }
+    );
+  }
+
   const aliasRaw = String(body.alias ?? "").trim();
   const canonicalRaw = String(body.canonicalCategory ?? "").trim();
 
-  if (!providerId || !aliasRaw || !canonicalRaw) {
+  if (!aliasRaw || !canonicalRaw) {
     return NextResponse.json(
       { ok: false, error: "MISSING_FIELDS" },
       { status: 400 }
@@ -60,23 +125,6 @@ export async function POST(request: Request) {
     return NextResponse.json(
       { ok: false, error: "ALIAS_TOO_LONG" },
       { status: 400 }
-    );
-  }
-
-  // 1. Provider must exist.
-  const { data: providerRow, error: providerErr } = await adminSupabase
-    .from("providers")
-    .select("provider_id")
-    .eq("provider_id", providerId)
-    .maybeSingle();
-  if (providerErr) {
-    console.error("[provider/aliases] provider lookup failed", providerErr.message);
-    return NextResponse.json({ ok: false, error: "DB_ERROR" }, { status: 500 });
-  }
-  if (!providerRow) {
-    return NextResponse.json(
-      { ok: false, error: "PROVIDER_NOT_FOUND" },
-      { status: 404 }
     );
   }
 

@@ -5,6 +5,16 @@ import {
   sendUserFirstProviderMessageNotification,
   type SendTemplateResult,
 } from "../whatsappTemplates";
+import type { ChatSessionIdentity } from "./chatActor";
+
+// Re-export the identity helpers so route handlers can import from the same
+// surface as the chat persistence helpers.
+export {
+  resolveAuthenticatedChatActor,
+  type ChatSessionIdentity,
+  type ChatSessionIdentityResult,
+  type ChatSessionIdentityFailure,
+} from "./chatActor";
 
 type ProviderRow = {
   provider_id: string;
@@ -576,234 +586,98 @@ async function runChatNotificationSideEffects(
   }
 }
 
-async function resolveProviderActor(data: Record<string, unknown>): Promise<ChatActor> {
-  const providerPhone = normalizePhone10(
-    data.ProviderPhone ||
-      data.providerPhone ||
-      data.phone ||
-      data.requesterPhone ||
-      data.loggedInProviderPhone
-  );
-  const requestedProviderId = trimString(data.ProviderID || data.providerId);
+/**
+ * Build a per-thread actor from the verified session identity.
+ *
+ * Authorization rules — bound strictly to the signed cookie, NOT to any
+ * body-supplied UserPhone / ProviderPhone:
+ *   - "user" actor: identity.sessionPhone must equal thread.user_phone (10d).
+ *   - "provider" actor: identity.provider must exist and provider.providerId
+ *     must equal thread.provider_id.
+ *
+ * Body fields `ActorType` / `actorType` are ACCEPTED as a UI HINT only —
+ * they pick which side to auth as when both apply (sole-trader case). They
+ * NEVER widen access. Body `UserPhone`, `ProviderPhone`, `loggedInProviderPhone`,
+ * `phone`, `requesterPhone`, `SessionPhone`, `SenderName`, etc. are not
+ * read here for authorization.
+ */
+function buildChatActorForThread(
+  identity: ChatSessionIdentity,
+  thread: ChatThreadRow,
+  hint: { actorType?: unknown; senderName?: unknown }
+): { ok: true; actor: Extract<ChatActor, { ok: true }> } | { ok: false; error: string } {
+  const threadUserPhone10 = normalizePhone10(thread.user_phone);
+  const threadProviderId = trimString(thread.provider_id);
 
-  if (!providerPhone) {
+  const canBeUser = !!threadUserPhone10 && identity.sessionPhone === threadUserPhone10;
+  const canBeProvider =
+    !!identity.provider &&
+    !!threadProviderId &&
+    identity.provider.providerId === threadProviderId;
+
+  const requested = trimString(hint.actorType).toLowerCase();
+  let chosen: "user" | "provider" | null = null;
+  if (requested === "user") {
+    if (!canBeUser) return { ok: false, error: "Access denied" };
+    chosen = "user";
+  } else if (requested === "provider") {
+    if (!canBeProvider) return { ok: false, error: "Access denied" };
+    chosen = "provider";
+  } else {
+    // Auto-detect: prefer provider when both apply (sole-trader); else user.
+    if (canBeProvider) chosen = "provider";
+    else if (canBeUser) chosen = "user";
+  }
+
+  if (chosen === null) {
+    return { ok: false, error: "Access denied" };
+  }
+
+  const senderNameOverride = trimString(hint.senderName);
+
+  if (chosen === "user") {
     return {
-      ok: false,
-      error: "Trusted logged-in provider phone is required for provider context",
+      ok: true,
+      actor: {
+        ok: true,
+        actorType: "user",
+        userPhone: identity.sessionPhone,
+        senderPhone: identity.sessionPhone,
+        senderName: senderNameOverride || "User",
+      },
     };
   }
 
-  const { data: providerRows, error } = await adminSupabase
-    .from("providers")
-    .select("provider_id, full_name, phone")
-    .or(`phone.eq.${providerPhone},phone.eq.91${providerPhone}`)
-    .limit(5);
-
-  if (error) {
-    return { ok: false, error: error.message };
-  }
-
-  const provider = ((providerRows ?? []) as ProviderRow[]).find(
-    (row) => normalizePhone10(row.phone) === providerPhone
-  );
-
-  if (!provider || !trimString(provider.provider_id)) {
-    return { ok: false, error: "Logged-in provider not found" };
-  }
-
-  const resolvedProviderId = trimString(provider.provider_id);
-  if (requestedProviderId && requestedProviderId !== resolvedProviderId) {
-    return { ok: false, error: "ProviderID does not match logged-in provider context" };
-  }
-
+  // chosen === "provider"; canBeProvider guarantees identity.provider !== null.
+  const provider = identity.provider!;
   return {
     ok: true,
-    actorType: "provider",
-    providerId: resolvedProviderId,
-    providerPhone,
-    senderPhone: providerPhone,
-    senderName:
-      trimString(data.SenderName || data.senderName || provider.full_name || "Provider") ||
-      "Provider",
+    actor: {
+      ok: true,
+      actorType: "provider",
+      providerId: provider.providerId,
+      providerPhone: provider.providerPhone,
+      senderPhone: provider.providerPhone,
+      senderName: senderNameOverride || provider.providerName || "Provider",
+    },
   };
 }
 
-async function resolveChatActor(data: Record<string, unknown>): Promise<ChatActor> {
-  const actorType = trimString(data.ActorType || data.actorType).toLowerCase();
-
-  if (actorType !== "user" && actorType !== "provider") {
-    return { ok: false, error: "ActorType must be user or provider" };
-  }
-
-  if (actorType === "user") {
-    const userPhone = normalizePhone10(
-      data.UserPhone || data.userPhone || data.phone || data.requesterPhone
-    );
-    if (!userPhone) {
-      return { ok: false, error: "UserPhone required for user context" };
-    }
-
-    return {
-      ok: true,
-      actorType: "user",
-      userPhone,
-      senderPhone: userPhone,
-      senderName: trimString(data.SenderName || data.senderName || "User") || "User",
-    };
-  }
-
-  return resolveProviderActor(data);
-}
-
-// Auto-resolution path. Used by message-side actions when the caller omits
-// `ActorType` — the session phone is matched against the loaded thread row
-// to determine whether the session belongs to the thread's user side or
-// provider side. Privacy boundary is unchanged: the returned actor still
-// flows through canChatActorAccessThread on the predicate side, and any
-// non-matching session phone produces "Access denied" identically to the
-// explicit-mode path. No changes to schema, templates, or the predicate.
-async function resolveChatActorAuto(
-  data: Record<string, unknown>,
-  threadRow: ChatThreadRow
-): Promise<ChatActor> {
-  const sessionPhone10 = normalizePhone10(
-    data.SessionPhone ||
-      data.sessionPhone ||
-      data.phone ||
-      data.requesterPhone
-  );
-  if (!sessionPhone10) {
-    return { ok: false, error: "SessionPhone required for actor auto-resolution" };
-  }
-
-  const threadProviderPhone10 = normalizePhone10(threadRow.provider_phone);
-  const threadUserPhone10 = normalizePhone10(threadRow.user_phone);
-
-  // Tie-break: prefer "provider" when both sides share the session phone
-  // (sole-trader testing as their own customer). Real (user, provider)
-  // pairs on a thread are distinct per the create-thread flow, so this
-  // branch is effectively the provider-side check in normal operation.
-  if (threadProviderPhone10 && sessionPhone10 === threadProviderPhone10) {
-    const { data: providerRows, error } = await adminSupabase
-      .from("providers")
-      .select("provider_id, full_name, phone")
-      .or(`phone.eq.${sessionPhone10},phone.eq.91${sessionPhone10}`)
-      .limit(5);
-    if (error) {
-      return { ok: false, error: error.message };
-    }
-    const provider = ((providerRows ?? []) as ProviderRow[]).find(
-      (row) => normalizePhone10(row.phone) === sessionPhone10
-    );
-    if (!provider || !trimString(provider.provider_id)) {
-      // Phone matches the thread's provider side but the providers row has
-      // gone away. Treat as access denied rather than letting the request
-      // through with an empty providerId — keeps canChatActorAccessThread's
-      // contract intact (sameProviderId check still meaningful).
-      return { ok: false, error: "Access denied" };
-    }
-    return {
-      ok: true,
-      actorType: "provider",
-      providerId: trimString(provider.provider_id),
-      providerPhone: sessionPhone10,
-      senderPhone: sessionPhone10,
-      senderName:
-        trimString(data.SenderName || data.senderName || provider.full_name || "Provider") ||
-        "Provider",
-    };
-  }
-
-  if (threadUserPhone10 && sessionPhone10 === threadUserPhone10) {
-    return {
-      ok: true,
-      actorType: "user",
-      userPhone: sessionPhone10,
-      senderPhone: sessionPhone10,
-      senderName: trimString(data.SenderName || data.senderName || "User") || "User",
-    };
-  }
-
-  return { ok: false, error: "Access denied" };
-}
-
-function canChatActorAccessThread(actor: Extract<ChatActor, { ok: true }>, thread: ChatThreadRow): boolean {
-  // ─── DEBUG START — temporary deny-path diagnostic.
-  // Search server logs for `[chat-deny]`. Remove this block (and the
-  // matching DEBUG markers below) once the access-denied root cause is
-  // confirmed. Authorization semantics are unchanged: every branch still
-  // returns the exact same boolean it returned before.
-  const normThreadProviderPhone = normalizePhone10(thread.provider_phone);
-  const normThreadUserPhone = normalizePhone10(thread.user_phone);
-  // ─── DEBUG END
-
+/**
+ * Predicate kept around for legacy callers (the public API hasn't been
+ * removed). With the new identity-first flow, every callsite now constructs
+ * the actor via `buildChatActorForThread`, which already fails closed when
+ * identity does not match the thread — so this predicate is mostly a
+ * defense-in-depth check rather than the primary gate.
+ */
+function canChatActorAccessThread(
+  actor: Extract<ChatActor, { ok: true }>,
+  thread: ChatThreadRow
+): boolean {
   if (actor.actorType === "user") {
-    const normActorUserPhone = normalizePhone10(actor.userPhone);
-    const sameUserPhone = normThreadUserPhone === normActorUserPhone;
-    // ─── DEBUG START
-    if (!sameUserPhone) {
-      console.warn("[chat-deny]", {
-        branch: "user",
-        thread: {
-          thread_id: thread.thread_id,
-          provider_id: thread.provider_id,
-          provider_phone: thread.provider_phone,
-          user_phone: thread.user_phone,
-        },
-        actor: {
-          actorType: actor.actorType,
-          providerId: null,
-          providerPhone: null,
-          userPhone: actor.userPhone,
-        },
-        normalized: {
-          thread_provider_phone: normThreadProviderPhone,
-          thread_user_phone: normThreadUserPhone,
-          actor_provider_phone: "",
-          actor_user_phone: normActorUserPhone,
-        },
-        sameProviderId: false,
-        sameProviderPhone: false,
-        sameUserPhone,
-      });
-    }
-    // ─── DEBUG END
-    return sameUserPhone;
+    return normalizePhone10(thread.user_phone) === normalizePhone10(actor.userPhone);
   }
-
-  const sameProviderId = trimString(thread.provider_id) === trimString(actor.providerId);
-  const normActorProviderPhone = normalizePhone10(actor.providerPhone);
-  const sameProviderPhone = normThreadProviderPhone === normActorProviderPhone;
-  const granted = sameProviderId || sameProviderPhone;
-  // ─── DEBUG START
-  if (!granted) {
-    console.warn("[chat-deny]", {
-      branch: "provider",
-      thread: {
-        thread_id: thread.thread_id,
-        provider_id: thread.provider_id,
-        provider_phone: thread.provider_phone,
-        user_phone: thread.user_phone,
-      },
-      actor: {
-        actorType: actor.actorType,
-        providerId: actor.providerId,
-        providerPhone: actor.providerPhone,
-        userPhone: null,
-      },
-      normalized: {
-        thread_provider_phone: normThreadProviderPhone,
-        thread_user_phone: normThreadUserPhone,
-        actor_provider_phone: normActorProviderPhone,
-        actor_user_phone: "",
-      },
-      sameProviderId,
-      sameProviderPhone,
-      sameUserPhone: false,
-    });
-  }
-  // ─── DEBUG END
-  return granted;
+  return trimString(thread.provider_id) === trimString(actor.providerId);
 }
 
 async function getChatThreadRow(threadId: string): Promise<ChatThreadRow | null> {
@@ -1074,11 +948,27 @@ export async function syncChatThreadsFromGasPayload(payload: unknown): Promise<v
 }
 
 export async function getChatThreadsFromSupabase(
-  data: Record<string, unknown>
+  data: Record<string, unknown>,
+  identity: ChatSessionIdentity
 ): Promise<ChatThreadsActionPayload> {
   try {
-    const actor = await resolveChatActor(data);
-    if (!actor.ok) return { ok: false, status: "error", error: actor.error };
+    // Pick which side of the threads index to read. Actor type is bound to
+    // the verified session: a "provider" view requires a provider row for
+    // the session phone; a "user" view always uses sessionPhone. Body's
+    // ActorType is honored ONLY as a UI hint when both sides could apply.
+    const requestedActorType = trimString(data.ActorType || data.actorType).toLowerCase();
+    let view: "user" | "provider";
+    if (requestedActorType === "provider") {
+      if (!identity.provider) {
+        return { ok: false, status: "error", error: "Access denied" };
+      }
+      view = "provider";
+    } else if (requestedActorType === "user") {
+      view = "user";
+    } else {
+      // Auto: prefer provider if available; otherwise user.
+      view = identity.provider ? "provider" : "user";
+    }
 
     const taskIdFilter = trimString(data.TaskID || data.taskId);
     const statusFilter = trimString(data.Status || data.status).toLowerCase();
@@ -1089,10 +979,10 @@ export async function getChatThreadsFromSupabase(
         "thread_id, task_id, user_phone, provider_id, provider_phone, category, area, status, created_at, updated_at, last_message_at, last_message_by, unread_user_count, unread_provider_count, thread_status, moderation_reason, last_moderated_at, last_moderated_by"
       );
 
-    if (actor.actorType === "user") {
-      query = query.eq("user_phone", actor.userPhone);
+    if (view === "user") {
+      query = query.eq("user_phone", identity.sessionPhone);
     } else {
-      query = query.eq("provider_id", actor.providerId);
+      query = query.eq("provider_id", identity.provider!.providerId);
     }
 
     if (taskIdFilter) {
@@ -1123,14 +1013,12 @@ export async function getChatThreadsFromSupabase(
 }
 
 export async function createOrGetChatThreadFromSupabase(
-  data: Record<string, unknown>
+  data: Record<string, unknown>,
+  identity: ChatSessionIdentity
 ): Promise<ChatCreateOrGetThreadActionPayload> {
   try {
     const taskId = trimString(data.TaskID || data.taskId);
     if (!taskId) return { ok: false, status: "error", error: "TaskID required" };
-
-    const actor = await resolveChatActor(data);
-    if (!actor.ok) return { ok: false, status: "error", error: actor.error };
 
     const task = await getTaskRow(taskId);
     if (!task) return { ok: false, status: "error", error: "Task not found" };
@@ -1140,10 +1028,45 @@ export async function createOrGetChatThreadFromSupabase(
       return { ok: false, status: "error", error: "Task user phone missing" };
     }
 
+    // Pick actor strictly from session identity. Body's ActorType is honored
+    // only when it doesn't widen access. Sole-trader case (provider chatting
+    // their own task) prefers provider-side as before.
+    const requested = trimString(data.ActorType || data.actorType).toLowerCase();
+    const isTaskOwner = identity.sessionPhone === taskUserPhone;
+    let actorType: "user" | "provider";
+    if (requested === "user") {
+      if (!isTaskOwner) {
+        return { ok: false, status: "error", error: "Access denied for this task" };
+      }
+      actorType = "user";
+    } else if (requested === "provider") {
+      if (!identity.provider) {
+        return { ok: false, status: "error", error: "Access denied" };
+      }
+      actorType = "provider";
+    } else {
+      // Auto-detect: prefer provider only if a body-supplied ProviderID
+      // matches the session's provider; else fall back to user-as-task-owner.
+      const requestedProviderId = trimString(data.ProviderID || data.providerId);
+      if (
+        identity.provider &&
+        requestedProviderId &&
+        identity.provider.providerId === requestedProviderId
+      ) {
+        actorType = "provider";
+      } else if (isTaskOwner) {
+        actorType = "user";
+      } else if (identity.provider) {
+        actorType = "provider";
+      } else {
+        return { ok: false, status: "error", error: "Access denied" };
+      }
+    }
+
     let providerId = "";
     let providerPhone = "";
 
-    if (actor.actorType === "user") {
+    if (actorType === "user") {
       providerId = trimString(data.ProviderID || data.providerId);
       if (!providerId) {
         return { ok: false, status: "error", error: "ProviderID required for user flow" };
@@ -1152,16 +1075,13 @@ export async function createOrGetChatThreadFromSupabase(
       if (!provider || !trimString(provider.provider_id)) {
         return { ok: false, status: "error", error: "Provider not found" };
       }
-      if (normalizePhone10(actor.userPhone) !== taskUserPhone) {
-        return { ok: false, status: "error", error: "Access denied for this task" };
-      }
       providerPhone = normalizePhone10(provider.phone);
     } else {
-      providerId = trimString(actor.providerId);
-      if (!providerId) {
-        return { ok: false, status: "error", error: "Logged-in provider context missing" };
-      }
-      providerPhone = normalizePhone10(actor.providerPhone);
+      // Provider context. providerId / providerPhone come from session
+      // identity, never from the body.
+      const sessionProvider = identity.provider!;
+      providerId = sessionProvider.providerId;
+      providerPhone = sessionProvider.providerPhone;
     }
 
     const match = await getTaskProviderMatch(taskId, providerId);
@@ -1171,9 +1091,12 @@ export async function createOrGetChatThreadFromSupabase(
 
     const existing = await getChatThreadByTaskProvider(taskId, providerId);
     if (existing) {
-      if (!canChatActorAccessThread(actor, existing)) {
-        return { ok: false, status: "error", error: "Access denied" };
-      }
+      // Defense-in-depth: rebuild the actor against the existing thread row
+      // and ensure session identity still owns the side it claims.
+      const built = buildChatActorForThread(identity, existing, {
+        actorType,
+      });
+      if (!built.ok) return { ok: false, status: "error", error: built.error };
       return {
         ok: true,
         status: "success",
@@ -1231,26 +1154,22 @@ export async function createOrGetChatThreadFromSupabase(
 }
 
 export async function markChatReadFromSupabase(
-  data: Record<string, unknown>
+  data: Record<string, unknown>,
+  identity: ChatSessionIdentity
 ): Promise<ChatMarkReadActionPayload> {
   try {
     const threadId = trimString(data.ThreadID || data.threadId);
     if (!threadId) return { ok: false, status: "error", error: "ThreadID required" };
 
-    // Thread first, then actor — same reorder as the other message-side
-    // actions, so the auto-mode branch can read the thread phones.
     const threadRow = await getChatThreadRow(threadId);
     if (!threadRow) return { ok: false, status: "error", error: "Thread not found" };
 
-    const explicitActorType = trimString(data.ActorType || data.actorType).toLowerCase();
-    const actor = explicitActorType
-      ? await resolveChatActor(data)
-      : await resolveChatActorAuto(data, threadRow);
-    if (!actor.ok) return { ok: false, status: "error", error: actor.error };
-
-    if (!canChatActorAccessThread(actor, threadRow)) {
-      return { ok: false, status: "error", error: "Access denied" };
-    }
+    const built = buildChatActorForThread(identity, threadRow, {
+      actorType: data.ActorType || data.actorType,
+      senderName: data.SenderName || data.senderName,
+    });
+    if (!built.ok) return { ok: false, status: "error", error: built.error };
+    const actor = built.actor;
 
     const nowIso = new Date().toISOString();
     let markedCount = 0;
@@ -1496,27 +1415,22 @@ export async function getAdminChatThreadFromSupabase(
 }
 
 export async function getChatMessagesFromSupabase(
-  data: Record<string, unknown>
+  data: Record<string, unknown>,
+  identity: ChatSessionIdentity
 ): Promise<ChatMessagesActionPayload> {
   try {
     const threadId = trimString(data.ThreadID || data.threadId);
     if (!threadId) return { ok: false, status: "error", error: "ThreadID required" };
 
-    // Thread is loaded first so the auto-mode branch (no ActorType) can
-    // compare the session phone against the row. Explicit-mode callers
-    // pick up the same row and skip the second query they used to do.
     const threadRow = await getChatThreadRow(threadId);
     if (!threadRow) return { ok: false, status: "error", error: "Thread not found" };
 
-    const explicitActorType = trimString(data.ActorType || data.actorType).toLowerCase();
-    const actor = explicitActorType
-      ? await resolveChatActor(data)
-      : await resolveChatActorAuto(data, threadRow);
-    if (!actor.ok) return { ok: false, status: "error", error: actor.error };
-
-    if (!canChatActorAccessThread(actor, threadRow)) {
-      return { ok: false, status: "error", error: "Access denied" };
-    }
+    const built = buildChatActorForThread(identity, threadRow, {
+      actorType: data.ActorType || data.actorType,
+      senderName: data.SenderName || data.senderName,
+    });
+    if (!built.ok) return { ok: false, status: "error", error: built.error };
+    const actor = built.actor;
 
     const messageRows = await getChatMessageRows(threadId);
     return {
@@ -1577,7 +1491,8 @@ export async function updateChatThreadStatusFromSupabase(params: {
 }
 
 export async function sendChatMessageFromSupabase(
-  data: Record<string, unknown>
+  data: Record<string, unknown>,
+  identity: ChatSessionIdentity
 ): Promise<ChatSendMessageActionPayload> {
   try {
     const threadId = trimString(data.ThreadID || data.threadId);
@@ -1593,21 +1508,15 @@ export async function sendChatMessageFromSupabase(
       return { ok: false, status: "error", error: "Only text messages are supported" };
     }
 
-    // Thread first, then actor — same reorder as getChatMessagesFromSupabase.
-    // Explicit-mode callers go through the original resolver; callers that
-    // omit ActorType go through the thread-driven auto-resolver.
     const threadRow = await getChatThreadRow(threadId);
     if (!threadRow) return { ok: false, status: "error", error: "Thread not found" };
 
-    const explicitActorType = trimString(data.ActorType || data.actorType).toLowerCase();
-    const actor = explicitActorType
-      ? await resolveChatActor(data)
-      : await resolveChatActorAuto(data, threadRow);
-    if (!actor.ok) return { ok: false, status: "error", error: actor.error };
-
-    if (!canChatActorAccessThread(actor, threadRow)) {
-      return { ok: false, status: "error", error: "Access denied" };
-    }
+    const built = buildChatActorForThread(identity, threadRow, {
+      actorType: data.ActorType || data.actorType,
+      senderName: data.SenderName || data.senderName,
+    });
+    if (!built.ok) return { ok: false, status: "error", error: built.error };
+    const actor = built.actor;
 
     const effectiveThreadStatus = getEffectiveThreadStatus(threadRow);
     if (effectiveThreadStatus === "closed") {
@@ -1863,34 +1772,53 @@ function mapNeedChatMessageRow(row: NeedChatMessageRow): NeedChatMessagePayload 
   };
 }
 
-function canNeedChatActorAccessThread(
-  actorRole: string,
-  userPhone10: string,
-  thread: NeedChatThreadRow
-): boolean {
-  if (actorRole === "poster") return normalizePhone10(thread.poster_phone) === userPhone10;
-  if (actorRole === "responder") return normalizePhone10(thread.responder_phone) === userPhone10;
-  return false;
+/**
+ * Resolve which side of a need-chat thread the verified session owns.
+ *
+ * Body's `ActorRole` is honored only as a UI hint to disambiguate when the
+ * session phone could match both sides (sole-actor test setups). Body's
+ * `UserPhone` is no longer trusted for authorization — the comparison uses
+ * `identity.sessionPhone`.
+ */
+function resolveNeedChatActorRole(
+  identity: ChatSessionIdentity,
+  thread: NeedChatThreadRow,
+  hintRole?: unknown
+):
+  | { ok: true; role: "poster" | "responder" }
+  | { ok: false; error: string } {
+  const sessionPhone = identity.sessionPhone;
+  const isPoster = normalizePhone10(thread.poster_phone) === sessionPhone;
+  const isResponder = normalizePhone10(thread.responder_phone) === sessionPhone;
+  const hint = trimString(hintRole).toLowerCase();
+
+  if (hint === "poster") {
+    if (!isPoster) return { ok: false, error: "Access denied" };
+    return { ok: true, role: "poster" };
+  }
+  if (hint === "responder") {
+    if (!isResponder) return { ok: false, error: "Access denied" };
+    return { ok: true, role: "responder" };
+  }
+  // Auto-detect — prefer poster when both sides match (defensive default).
+  if (isPoster) return { ok: true, role: "poster" };
+  if (isResponder) return { ok: true, role: "responder" };
+  return { ok: false, error: "Access denied" };
 }
 
 export async function getNeedChatMessagesFromSupabase(
-  data: Record<string, unknown>
+  data: Record<string, unknown>,
+  identity: ChatSessionIdentity
 ): Promise<NeedChatMessagesActionPayload> {
   try {
     const threadId = trimString(String(data.ThreadID || ""));
-    const actorRole = trimString(String(data.ActorRole || "")).toLowerCase();
-    const userPhone10 = normalizePhone10(String(data.UserPhone || ""));
-
     if (!threadId) return { ok: false, status: "error", error: "ThreadID required" };
-    if (actorRole !== "poster" && actorRole !== "responder") {
-      return { ok: false, status: "error", error: "ActorRole must be poster or responder" };
-    }
-    if (!userPhone10) return { ok: false, status: "error", error: "UserPhone required" };
 
     const threadRow = await getNeedChatThreadRow(threadId);
     if (!threadRow) return { ok: false, status: "error", error: "Thread not found" };
-    if (!canNeedChatActorAccessThread(actorRole, userPhone10, threadRow)) {
-      return { ok: false, status: "error", error: "Access denied" };
+    const roleResult = resolveNeedChatActorRole(identity, threadRow, data.ActorRole);
+    if (!roleResult.ok) {
+      return { ok: false, status: "error", error: roleResult.error };
     }
 
     const { data: messageRows, error } = await adminSupabase
@@ -1917,24 +1845,20 @@ export async function getNeedChatMessagesFromSupabase(
 }
 
 export async function markNeedChatReadFromSupabase(
-  data: Record<string, unknown>
+  data: Record<string, unknown>,
+  identity: ChatSessionIdentity
 ): Promise<NeedChatMarkReadActionPayload> {
   try {
     const threadId = trimString(String(data.ThreadID || ""));
-    const actorRole = trimString(String(data.ActorRole || "")).toLowerCase();
-    const userPhone10 = normalizePhone10(String(data.UserPhone || ""));
-
     if (!threadId) return { ok: false, status: "error", error: "ThreadID required" };
-    if (actorRole !== "poster" && actorRole !== "responder") {
-      return { ok: false, status: "error", error: "ActorRole must be poster or responder" };
-    }
-    if (!userPhone10) return { ok: false, status: "error", error: "UserPhone required" };
 
     const threadRow = await getNeedChatThreadRow(threadId);
     if (!threadRow) return { ok: false, status: "error", error: "Thread not found" };
-    if (!canNeedChatActorAccessThread(actorRole, userPhone10, threadRow)) {
-      return { ok: false, status: "error", error: "Access denied" };
+    const roleResult = resolveNeedChatActorRole(identity, threadRow, data.ActorRole);
+    if (!roleResult.ok) {
+      return { ok: false, status: "error", error: roleResult.error };
     }
+    const actorRole = roleResult.role;
 
     const nowIso = new Date().toISOString();
 
@@ -1971,26 +1895,24 @@ export async function markNeedChatReadFromSupabase(
 }
 
 export async function sendNeedChatMessageFromSupabase(
-  data: Record<string, unknown>
+  data: Record<string, unknown>,
+  identity: ChatSessionIdentity
 ): Promise<NeedChatSendMessageActionPayload> {
   try {
     const threadId = trimString(String(data.ThreadID || ""));
-    const actorRole = trimString(String(data.ActorRole || "")).toLowerCase();
-    const userPhone10 = normalizePhone10(String(data.UserPhone || ""));
     const messageText = trimString(String(data.MessageText || ""));
 
     if (!threadId) return { ok: false, status: "error", error: "ThreadID required" };
-    if (actorRole !== "poster" && actorRole !== "responder") {
-      return { ok: false, status: "error", error: "ActorRole must be poster or responder" };
-    }
-    if (!userPhone10) return { ok: false, status: "error", error: "UserPhone required" };
     if (!messageText) return { ok: false, status: "error", error: "MessageText required" };
 
     const threadRow = await getNeedChatThreadRow(threadId);
     if (!threadRow) return { ok: false, status: "error", error: "Thread not found" };
-    if (!canNeedChatActorAccessThread(actorRole, userPhone10, threadRow)) {
-      return { ok: false, status: "error", error: "Access denied" };
+    const roleResult = resolveNeedChatActorRole(identity, threadRow, data.ActorRole);
+    if (!roleResult.ok) {
+      return { ok: false, status: "error", error: roleResult.error };
     }
+    const actorRole = roleResult.role;
+    const userPhone10 = identity.sessionPhone;
 
     const nowIso = new Date().toISOString();
     const messageId = buildMessageId();
@@ -2053,10 +1975,14 @@ export async function sendNeedChatMessageFromSupabase(
 
 export async function getNeedChatThreadsForNeedFromSupabase(
   needId: string,
-  userPhone: string
+  identity: ChatSessionIdentity
 ): Promise<NeedChatThreadRow[]> {
   const safeNeedId = trimString(needId);
-  const phone10 = normalizePhone10(userPhone);
+  // Identity-bound: only ever reveal threads where the verified session
+  // phone is the POSTER. Responder-side listing is not supported here
+  // (each responder only sees their own thread, retrieved by need + their
+  // own session phone via createOrGetNeedChatThread).
+  const phone10 = identity.sessionPhone;
   const phone91 = phone10 ? `91${phone10}` : "";
 
   if (!safeNeedId || !phone10) return [];
@@ -2107,16 +2033,18 @@ export async function findNeedChatThreadByNeedAndResponder(
 
 export async function createOrGetNeedChatThreadFromSupabase(
   needId: string,
-  responderPhoneRaw: string
+  identity: ChatSessionIdentity
 ): Promise<
   | { ok: true; status: "success"; created: boolean; thread: NeedChatThreadPayload }
   | { ok: false; status: "error"; error: string }
 > {
   const safeNeedId = trimString(needId);
-  const responderPhone10 = normalizePhone10(String(responderPhoneRaw || ""));
+  // Responder phone comes from the verified session — never from the body.
+  // A user can only open or join a need-chat as themselves.
+  const responderPhone10 = identity.sessionPhone;
 
   if (!safeNeedId) return { ok: false, status: "error", error: "NeedID required" };
-  if (!responderPhone10) return { ok: false, status: "error", error: "ResponderPhone required" };
+  if (!responderPhone10) return { ok: false, status: "error", error: "Unauthorized" };
 
   // Return existing thread if already in Supabase
   const existing = await findNeedChatThreadByNeedAndResponder(safeNeedId, responderPhone10);

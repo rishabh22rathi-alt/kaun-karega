@@ -1,9 +1,12 @@
 import { NextResponse } from "next/server";
 import { getAuthSession } from "@/lib/auth";
+import { checkAdminByPhone } from "@/lib/adminAuth";
 import { canonicalizeProviderAreasToCanonicalNames } from "@/lib/admin/adminAreaMappings";
 import { createClient } from "@/lib/supabase/server";
 import { appendNotificationLog } from "@/lib/notificationLogStore";
 import { sendProviderLeadMessage } from "@/lib/whatsapp-provider";
+
+export const runtime = "nodejs";
 
 function extractMessageId(payload: unknown): string {
   if (!payload || typeof payload !== "object") return "";
@@ -12,6 +15,21 @@ function extractMessageId(payload: unknown): string {
   return String(firstId || "").trim();
 }
 
+function normalizePhone10(value: unknown): string {
+  return String(value || "").replace(/\D/g, "").slice(-10);
+}
+
+// Statuses that indicate the matching/notification pipeline has already run
+// for this task. Subsequent calls from owner/admin (without `force=true`)
+// short-circuit so a malicious or buggy retry cannot re-send WhatsApp leads.
+const TERMINAL_TASK_STATUSES = new Set([
+  "notified",
+  "provider_responded",
+  "no_providers_matched",
+  "closed",
+  "completed",
+]);
+
 export async function POST(request: Request) {
   const routeStartMs = Date.now();
 
@@ -19,16 +37,39 @@ export async function POST(request: Request) {
     const body = (await request.json()) as Record<string, unknown>;
     const taskId =
       typeof body?.taskId === "string" ? body.taskId.trim() : "";
+    const forceRequested = body?.force === true;
 
     if (!taskId) {
       return NextResponse.json({ ok: false, error: "TaskID required" }, { status: 400 });
     }
 
-    const session = await getAuthSession({
-      cookie: request.headers.get("cookie") ?? "",
-    });
-    if (!session) {
-      return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+    // ─── Authorization (A7) ─────────────────────────────────────────────
+    // Three accepted paths, in order of preference:
+    //   1. Internal server caller — `x-kk-internal-secret` header equals
+    //      `process.env.PROCESS_TASK_NOTIFICATIONS_SECRET` (≥ 16 chars).
+    //      Bypasses the session check entirely; intended for cron jobs and
+    //      same-process retries.
+    //   2. Task owner — verified signed `kk_auth_session` cookie whose
+    //      phone matches `tasks.phone` for this taskId.
+    //   3. Active admin — verified session whose phone is in `admins`
+    //      with active=true.
+    // Body fields are NEVER consulted to decide ownership. Body fields
+    // like `force` are honored only for paths (1) and (3).
+    const internalSecretHeader = request.headers.get("x-kk-internal-secret") ?? "";
+    const expectedInternalSecret = process.env.PROCESS_TASK_NOTIFICATIONS_SECRET ?? "";
+    const isInternalCall =
+      expectedInternalSecret.length >= 16 &&
+      internalSecretHeader.length >= 16 &&
+      internalSecretHeader === expectedInternalSecret;
+
+    let session: Awaited<ReturnType<typeof getAuthSession>> = null;
+    if (!isInternalCall) {
+      session = await getAuthSession({
+        cookie: request.headers.get("cookie") ?? "",
+      });
+      if (!session) {
+        return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+      }
     }
 
     const reconcileResult = await canonicalizeProviderAreasToCanonicalNames();
@@ -41,15 +82,79 @@ export async function POST(request: Request) {
     // 1. Load the task. work_tag is the original alias the user typed when
     // it resolved to a different canonical (e.g. "dentist" -> doctor). Null
     // for canonical / unknown / pre-migration rows — broad matching path
-    // handles those exactly like today.
+    // handles those exactly like today. `phone` and `status` are needed for
+    // the A7 authorization + idempotency checks below.
     const { data: task, error: taskError } = await supabase
       .from("tasks")
-      .select("task_id, display_id, category, area, selected_timeframe, work_tag")
+      .select("task_id, display_id, category, area, selected_timeframe, work_tag, phone, status")
       .eq("task_id", taskId)
       .single();
 
     if (taskError || !task) {
       return NextResponse.json({ ok: false, error: "Task not found" }, { status: 404 });
+    }
+
+    // ─── Authorization (cont.): owner-or-admin gate ────────────────────
+    let isOwner = false;
+    let isAdmin = false;
+    if (!isInternalCall) {
+      const sessionPhone10 = normalizePhone10(session?.phone);
+      const taskOwnerPhone10 = normalizePhone10(task.phone);
+      isOwner = sessionPhone10.length === 10 && sessionPhone10 === taskOwnerPhone10;
+      if (!isOwner && session?.phone) {
+        const adminResult = await checkAdminByPhone(session.phone);
+        isAdmin = adminResult.ok;
+      }
+      if (!isOwner && !isAdmin) {
+        return NextResponse.json(
+          { ok: false, error: "Forbidden: not the task owner" },
+          { status: 403 }
+        );
+      }
+    }
+
+    // ─── Idempotency ────────────────────────────────────────────────────
+    // If the task has already been processed and the caller has not
+    // explicitly opted in to re-sending (admin/internal only), short-circuit.
+    // Owners cannot force a resend — this is the path most likely to be
+    // weaponized as a WhatsApp-spam vector against matched providers.
+    const forceAllowed = isInternalCall || isAdmin;
+    const currentStatus = String(task.status || "").trim().toLowerCase();
+    if (
+      !forceAllowed &&
+      currentStatus &&
+      TERMINAL_TASK_STATUSES.has(currentStatus)
+    ) {
+      return NextResponse.json({
+        ok: true,
+        matchedProviders: 0,
+        attemptedSends: 0,
+        failedSends: 0,
+        matchTier: "category",
+        usedFallback: false,
+        skipped: true,
+        skippedReason: `task already in '${currentStatus}' state`,
+      });
+    }
+    const force = forceAllowed && forceRequested;
+    if (
+      !force &&
+      forceAllowed &&
+      currentStatus &&
+      TERMINAL_TASK_STATUSES.has(currentStatus)
+    ) {
+      // Admin/internal hit a terminal task without explicit force=true —
+      // also short-circuit. Forces must be intentional.
+      return NextResponse.json({
+        ok: true,
+        matchedProviders: 0,
+        attemptedSends: 0,
+        failedSends: 0,
+        matchTier: "category",
+        usedFallback: false,
+        skipped: true,
+        skippedReason: `task already in '${currentStatus}' state; pass force=true to override`,
+      });
     }
 
     // Gate: only match providers when the task's category exists in the master
