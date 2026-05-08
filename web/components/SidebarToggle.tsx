@@ -34,7 +34,7 @@ export default function SidebarToggle() {
 
   return (
     <div className="fixed inset-x-0 top-0 z-50 border-b border-slate-200 bg-white/95 pt-3 shadow-sm backdrop-blur md:hidden md:pt-0">
-      <div className="flex h-14 items-center px-3">
+      <div className="flex h-12 items-center px-3">
         <button
           type="button"
           onClick={handleClick}

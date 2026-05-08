@@ -1220,7 +1220,7 @@ const hasArea = area.trim() !== "";
     <div className="min-h-screen bg-slate-50">
 
       {/* ── HERO ─────────────────────────────────────────────────────── */}
-      <section className="relative overflow-hidden bg-white px-4 pb-10 pt-5 text-center">
+      <section className="relative overflow-hidden bg-white px-4 pb-10 pt-2 text-center md:pt-5">
         {/* Very subtle dot-grid texture */}
         <div
           aria-hidden="true"
