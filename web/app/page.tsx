@@ -241,7 +241,6 @@ type TaskDraft = {
   time?: string;
   serviceDate?: string;
   timeSlot?: string;
-  details?: string;
 };
 
 const saveTaskDraftToSessionStorage = (draft: TaskDraft) => {
@@ -317,7 +316,6 @@ function PageContent() {
   const [timeSlot, setTimeSlot] = useState("");
   const [area, setArea] = useState("");
   const [areaError, setAreaError] = useState("");
-  const [details, setDetails] = useState("");
   const [error, setError] = useState("");
   const [debug, setDebug] = useState("");
   const [loading, setLoading] = useState(false);
@@ -466,9 +464,6 @@ function PageContent() {
     }
     if (typeof draft.timeSlot === "string") {
       setTimeSlot(draft.timeSlot);
-    }
-    if (typeof draft.details === "string") {
-      setDetails(draft.details);
     }
   }, [params]);
 
@@ -889,7 +884,6 @@ const handleSubmit = async () => {
     time,
     serviceDate,
     timeSlot,
-    details,
   });
   const nextPath =
     typeof window !== "undefined"
@@ -902,7 +896,6 @@ const submitResolvedRequest = async (resolution: CategoryResolution) => {
   setLoading(true);
   setError("");
   setDebug("");
-  const cleanDetails = (details ?? "").trim();
   const normalizedArea = normalizeAreaValue(area);
   if (!normalizedArea) {
     setLoading(false);
@@ -930,7 +923,6 @@ const submitResolvedRequest = async (resolution: CategoryResolution) => {
           time,
           serviceDate: normalizedServiceDate,
           timeSlot,
-          details: cleanDetails,
           createdAt: new Date().toISOString(),
         }),
       });
@@ -960,7 +952,6 @@ const submitResolvedRequest = async (resolution: CategoryResolution) => {
       if (normalizedArea) params.set("area", normalizedArea);
 
       setShowDirectContactOption(false);
-      setDetails("");
       if (typeof window !== "undefined") {
         window.localStorage.setItem("kk_last_area", normalizedArea);
       }
@@ -986,7 +977,6 @@ const submitResolvedRequest = async (resolution: CategoryResolution) => {
         time,
         serviceDate: normalizedServiceDate,
         timeSlot,
-        details: cleanDetails,
         createdAt: new Date().toISOString(),
     };
       console.log("submit payload", {
@@ -995,7 +985,6 @@ const submitResolvedRequest = async (resolution: CategoryResolution) => {
         time: payload.time,
         serviceDate: payload.serviceDate,
         timeSlot: payload.timeSlot,
-        detailsLength: payload.details.length,
       });
       // TEMP debug: prove the resolved category (not the raw input) is on the wire.
       console.log("FINAL CATEGORY SENT:", payload.category);
@@ -1039,7 +1028,6 @@ const submitResolvedRequest = async (resolution: CategoryResolution) => {
     });
 
     setShowDirectContactOption(true);
-    setDetails("");
     if (typeof window !== "undefined") {
       window.localStorage.setItem("kk_last_area", normalizedArea);
     }
@@ -1452,7 +1440,6 @@ const hasArea = area.trim() !== "";
                 setSelectedCategory("");
                 setTime("");
                 setArea("");
-                setDetails("");
               }}
               className="ml-auto text-xs text-[#003d20]/50 hover:text-[#003d20]"
             >
@@ -1511,27 +1498,11 @@ const hasArea = area.trim() !== "";
             </div>
           )}
 
-          {/* Step 4: Details + Submit */}
+          {/* Submit panel — the optional "Task details" textarea was removed
+              for the MVP. The wrapper card stays so error/debug/direct-
+              contact prompts and the Submit button keep their layout slot. */}
           {hasTime && hasArea && (
             <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-              <div>
-                <p className="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-400">
-                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#003d20] text-[10px] font-bold text-white">
-                    4
-                  </span>
-                  Task details (optional)
-                </p>
-                <textarea
-                  value={details}
-                  onChange={(e) => setDetails(e.target.value)}
-                  placeholder="Describe your work in 1&#8211;2 sentences (e.g. &quot;Kitchen tap is leaking, need plumber today evening&quot;)..."
-                  rows={3}
-                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-800 focus:border-[#003d20] focus:outline-none focus:ring-2 focus:ring-[#003d20]/20"
-                  onDrop={(e) => e.preventDefault()}
-                  onDragOver={(e) => e.preventDefault()}
-                />
-              </div>
-
               {error && <div className="text-sm text-red-600">{error}</div>}
               {debug && (
                 <pre className="text-xs whitespace-pre-wrap rounded border bg-gray-50 p-2">
