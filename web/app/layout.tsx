@@ -38,7 +38,7 @@ export default function RootLayout({
           className="flex min-h-screen"
           style={{
             "--kk-sidebar-width": "0px",
-            "--kk-mobile-header-height": "60px",
+            "--kk-mobile-header-height": "0px",
           } as React.CSSProperties}
         >
           <SidebarToggle />

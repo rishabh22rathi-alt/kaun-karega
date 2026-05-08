@@ -1220,7 +1220,7 @@ const hasArea = area.trim() !== "";
     <div className="min-h-screen bg-slate-50">
 
       {/* ── HERO ─────────────────────────────────────────────────────── */}
-      <section className="relative overflow-hidden bg-white px-4 pb-10 pt-2 text-center md:pt-5">
+      <section className="relative overflow-hidden bg-white px-4 pb-10 pt-0 text-center md:pt-5">
         {/* Very subtle dot-grid texture */}
         <div
           aria-hidden="true"
@@ -1231,10 +1231,10 @@ const hasArea = area.trim() !== "";
           }}
         />
 
-        <div className="relative mx-auto max-w-2xl">
+        <div className="relative mx-auto max-w-2xl pt-[max(env(safe-area-inset-top),0.75rem)] md:pt-0">
 
           {/* Text wordmark */}
-          <div className="mb-3 flex justify-center select-none">
+          <div className="mb-1 flex justify-center select-none md:mb-3">
             <div className="inline-flex items-start justify-center gap-2 leading-none sm:gap-3">
               <span className="relative inline-block translate-y-[18px] text-[2.75rem] font-extrabold tracking-tight text-orange-600 sm:translate-y-[22px] sm:text-6xl md:translate-y-[28px] md:text-[4.8rem]">
                 कौन
@@ -1243,7 +1243,7 @@ const hasArea = area.trim() !== "";
                 <span className="relative inline-block text-[2.4rem] font-extrabold tracking-[0.06em] text-[#003d20] sm:text-5xl md:text-[4.35rem]">
                   <span className="relative inline-block pb-1 after:absolute after:bottom-0 after:left-0 after:h-[5px] after:w-full after:translate-y-[-2px] after:bg-orange-600 after:content-['']">KAREGA</span><span>?</span>
                 </span>
-                <p className="mt-2 text-[11px] font-semibold uppercase tracking-[0.24em] text-gray-600 sm:text-xs">
+                <p className="mt-1 text-[11px] font-semibold uppercase tracking-[0.24em] text-gray-600 sm:mt-2 sm:text-xs">
                   Jodhpur Local Services
                 </p>
               </div>
@@ -1251,7 +1251,7 @@ const hasArea = area.trim() !== "";
           </div>
 
           {/* Search bar */}
-          <div className="mx-auto mt-3 max-w-xl">
+          <div className="mx-auto mt-1 max-w-xl md:mt-3">
 
             <div className="relative">
               <div data-tour="service" className="relative flex items-center rounded-2xl border border-orange-600/25 bg-white px-4 py-3 shadow-[0_18px_45px_rgba(234,88,12,0.12)] transition-all duration-200 focus-within:border-orange-600/40 focus-within:ring-2 focus-within:ring-orange-600/20 focus-within:shadow-[0_20px_50px_rgba(234,88,12,0.16)]">

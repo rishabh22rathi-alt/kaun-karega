@@ -431,7 +431,7 @@ export default function Sidebar() {
       window.matchMedia("(min-width: 768px)").matches;
     const isSidebarVisible = isDesktop ? !shouldHide : isOpen && !shouldHide;
     const width = !isSidebarVisible ? "0rem" : isCollapsed ? "80px" : "288px";
-    const mobileHeaderHeight = shouldHide ? "0px" : "60px";
+    const mobileHeaderHeight = "0px";
     const shell = document.getElementById("kk-app-shell");
     if (shell) {
       shell.style.setProperty("--kk-sidebar-width", width);
