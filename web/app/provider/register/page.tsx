@@ -197,6 +197,17 @@ function ProviderRegisterPageInner() {
   const [workTagsByCanonical, setWorkTagsByCanonical] = useState<
     Record<string, Array<{ tag: string; aliasType?: string }>>
   >({});
+  // Alias suggestions surfaced in the category typeahead. Built from the same
+  // /api/categories?include=aliases response as workTagsByCanonical, but kept
+  // separate because the typeahead needs a flat list and aliasLookup needs an
+  // index keyed by alias label for O(1) resolve in toggleCategory /
+  // handleAddCustomCategory.
+  const [aliasOptions, setAliasOptions] = useState<
+    Array<{ label: string; canonical: string; aliasType?: string }>
+  >([]);
+  const [aliasLookup, setAliasLookup] = useState<
+    Map<string, { canonical: string; label: string; aliasType?: string }>
+  >(new Map());
   // Provider's tag picks per category. Key = categoryKey(category).
   const [selectedWorkTags, setSelectedWorkTags] = useState<Record<string, string[]>>(
     {}
@@ -334,6 +345,11 @@ function ProviderRegisterPageInner() {
           ? (data.suggestions as Array<Record<string, unknown>>)
           : [];
         const tagsMap: Record<string, Array<{ tag: string; aliasType?: string }>> = {};
+        const optionsList: Array<{ label: string; canonical: string; aliasType?: string }> = [];
+        const lookupMap = new Map<
+          string,
+          { canonical: string; label: string; aliasType?: string }
+        >();
         for (const row of suggestions) {
           if (!row || row.type !== "alias") continue;
           const label = typeof row.label === "string" ? row.label.trim() : "";
@@ -353,8 +369,27 @@ function ProviderRegisterPageInner() {
               aliasType ? { tag: label, aliasType } : { tag: label }
             );
           }
+
+          // aliasOptions feeds the category typeahead; aliasLookup is the
+          // O(1) resolver for toggleCategory and the belt-and-braces guard
+          // in handleAddCustomCategory. Indexed by categoryKey(label) so the
+          // input normalisation matches everywhere. First-write-wins on rare
+          // cross-canonical label collisions; the API already de-dupes alias-
+          // vs-canonical and per-canonical duplicates.
+          const labelKey = categoryKey(label);
+          if (!lookupMap.has(labelKey)) {
+            const entry = aliasType
+              ? { canonical, label, aliasType }
+              : { canonical, label };
+            lookupMap.set(labelKey, entry);
+            optionsList.push(
+              aliasType ? { label, canonical, aliasType } : { label, canonical }
+            );
+          }
         }
         setWorkTagsByCanonical(tagsMap);
+        setAliasOptions(optionsList);
+        setAliasLookup(lookupMap);
       } catch (error) {
         setCategories([]);
         setCategoriesError(normalizeLoadError("Failed to load categories", error));
@@ -505,13 +540,63 @@ function ProviderRegisterPageInner() {
     };
   }, [celebrate]);
 
-  const filteredCategories = useMemo(() => {
+  const filteredCategories = useMemo<
+    Array<{ value: string; display: string; isAlias: boolean; canonical: string }>
+  >(() => {
     const q = categoryKey(catQuery);
     const selectedKeys = toCategoryLookup(selectedCategories);
-    const pool = categories.filter((item) => !selectedKeys.has(categoryKey(item)));
-    if (!q) return pool;
-    return pool.filter((item) => categoryKey(item).includes(q));
-  }, [categories, catQuery, selectedCategories]);
+
+    // Single dedup set used by both the canonical and alias pushes. Key
+    // mirrors the render-side React key in the suggestion list, so a chip
+    // that survives this Set is guaranteed unique on render. Prevents the
+    // "two children with the same key" warning when the API or local state
+    // produces duplicate canonical names (e.g. case-only differences) or
+    // when an alias label collides with another alias.
+    const seenKeys = new Set<string>();
+    const dedupKey = (isAlias: boolean, value: string) =>
+      `${isAlias ? "alias" : "canon"}:${value.toLowerCase()}`;
+    const out: Array<{
+      value: string;
+      display: string;
+      isAlias: boolean;
+      canonical: string;
+    }> = [];
+
+    // Canonical entries — drop already-selected, then push only if unseen.
+    for (const item of categories) {
+      if (selectedKeys.has(categoryKey(item))) continue;
+      const key = dedupKey(false, item);
+      if (seenKeys.has(key)) continue;
+      seenKeys.add(key);
+      out.push({ value: item, display: item, isAlias: false, canonical: item });
+    }
+
+    // Default view (no query) — show ONLY canonical chips. Aliases stay
+    // hidden until the provider actively searches; they would otherwise
+    // flood the chip list and obscure the canonical service taxonomy.
+    if (!q) return out;
+
+    // Search view — alias entries join the pool, displayed as
+    // "alias (canonical)" so the provider sees the underlying service.
+    // Aliases whose canonical is already selected, or whose label collides
+    // with a selected canonical, are filtered out so MAX_CATEGORIES=1
+    // cannot be bypassed by picking canonical + its alias.
+    for (const opt of aliasOptions) {
+      if (selectedKeys.has(categoryKey(opt.canonical))) continue;
+      if (selectedKeys.has(categoryKey(opt.label))) continue;
+      const key = dedupKey(true, opt.label);
+      if (seenKeys.has(key)) continue;
+      seenKeys.add(key);
+      out.push({
+        value: opt.label,
+        display: `${opt.label} (${opt.canonical})`,
+        isAlias: true,
+        canonical: opt.canonical,
+      });
+    }
+
+    return out.filter((opt) => categoryKey(opt.value).includes(q));
+  }, [categories, catQuery, selectedCategories, aliasOptions]);
 
   const filteredAreaSuggestions = useMemo(() => {
     const q = areaSearch.trim().toLowerCase();
@@ -562,26 +647,65 @@ function ProviderRegisterPageInner() {
   const toggleCategory = (category: string) => {
     setSubmitError("");
     setSuccess(null);
+
+    const normalizedInput = normalizeCategoryInput(category);
+    if (!normalizedInput) return;
+    const inputKey = categoryKey(normalizedInput);
+
+    // Alias-aware path. If the picked value is a known alias, route the
+    // canonical into selectedCategories AND auto-add the alias label into
+    // selectedWorkTags[canonicalKey]. Never adds to customCategoryKeys, so
+    // the submit path will not flag it as a pending category request.
+    const aliasHit = aliasLookup.get(inputKey);
+    if (aliasHit) {
+      const canonical = normalizeCategoryInput(aliasHit.canonical);
+      const canonicalKey = categoryKey(canonical);
+
+      // Snapshot guard against MAX_CATEGORIES — same UX as the canonical
+      // path. Closure value is the just-rendered state the user saw when
+      // they clicked, which is correct in normal event flow.
+      const isCanonicalSelected = hasCategoryKey(selectedCategories, canonicalKey);
+      if (!isCanonicalSelected && selectedCategories.length >= MAX_CATEGORIES) {
+        return;
+      }
+
+      setSelectedCategories((prev) => {
+        if (hasCategoryKey(prev, canonicalKey)) return prev;
+        if (prev.length >= MAX_CATEGORIES) return prev;
+        return [...prev, canonical];
+      });
+      setSelectedWorkTags((prev) => {
+        const current = prev[canonicalKey] || [];
+        if (current.includes(aliasHit.label)) return prev;
+        return { ...prev, [canonicalKey]: [...current, aliasHit.label] };
+      });
+      // Clear the typed query so:
+      //   1. the input no longer shows the search term ("Dance") that
+      //      conceptually resolved into a different label;
+      //   2. noMatch derives from an empty q → false → "+ Add as new"
+      //      cannot fire on a value that was actually a known alias.
+      setCatQuery("");
+      return;
+    }
+
+    // Canonical / unknown path — preserved verbatim from prior behaviour.
     setSelectedCategories((prev) => {
-      const normalized = normalizeCategoryInput(category);
-      const key = categoryKey(normalized);
-      if (!normalized) return prev;
-      if (hasCategoryKey(prev, key)) {
-        setCustomCategoryKeys((existingKeys) => existingKeys.filter((item) => item !== key));
+      if (hasCategoryKey(prev, inputKey)) {
+        setCustomCategoryKeys((existingKeys) => existingKeys.filter((item) => item !== inputKey));
         // Drop any tag picks tied to a category that's being deselected so
         // we never ship orphan tags in the payload.
         setSelectedWorkTags((wt) => {
-          if (!wt[key]) return wt;
+          if (!wt[inputKey]) return wt;
           const next = { ...wt };
-          delete next[key];
+          delete next[inputKey];
           return next;
         });
-        return removeCategoryKey(prev, key);
+        return removeCategoryKey(prev, inputKey);
       }
       if (prev.length >= MAX_CATEGORIES) {
         return prev;
       }
-      return [...prev, normalized];
+      return [...prev, normalizedInput];
     });
   };
 
@@ -678,6 +802,18 @@ function ProviderRegisterPageInner() {
     if (!canAddCustomCategory) return;
     const pending = normalizedCatQuery;
     const key = categoryKey(pending);
+
+    // Belt-and-braces: if the typed value is actually a known alias, divert
+    // to the alias-resolved path so it never becomes a pending category
+    // request. The canAddCustomCategory gate already excludes aliases via
+    // filteredCategories, but this guards against a race during initial
+    // alias load and against any future filter drift.
+    if (aliasLookup.has(key)) {
+      toggleCategory(pending);
+      setCatQuery("");
+      return;
+    }
+
     const selectedKeys = toCategoryLookup(selectedCategories);
     const newKeys = new Set(customCategoryKeys);
     if (selectedKeys.has(key) || newKeys.has(key)) {
@@ -921,7 +1057,7 @@ function ProviderRegisterPageInner() {
                   disabled={isMaxReached || showSuccessCelebration}
                   placeholder={
                     isMaxReached
-                      ? "You have chosen the maximum service categories (3)"
+                      ? "You can choose only one main service category"
                       : "Search categories"
                   }
                   className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 shadow-sm outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-200"
@@ -939,14 +1075,22 @@ function ProviderRegisterPageInner() {
                   {!isLoadingCategories && !categoriesError ? (
                     <div className="flex flex-wrap gap-2">
                     {filteredCategories.length > 0 ? (
-                      filteredCategories.map((category) => {
-                        const selected = hasCategoryKey(selectedCategories, categoryKey(category));
+                      filteredCategories.map((option) => {
+                        // For aliases the "selected" state tracks the resolved
+                        // canonical, but those rows are pre-filtered when the
+                        // canonical is already selected, so this stays false in
+                        // the alias case — kept for symmetry with the canonical
+                        // path.
+                        const selected = hasCategoryKey(
+                          selectedCategories,
+                          categoryKey(option.canonical)
+                        );
                         const disabled = !selected && totalSelectedServices >= MAX_CATEGORIES;
                         return (
                           <button
-                            key={category}
+                            key={`${option.isAlias ? "alias" : "canon"}:${option.value}`}
                             type="button"
-                            onClick={() => toggleCategory(category)}
+                            onClick={() => toggleCategory(option.value)}
                             disabled={disabled}
                             className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
                               selected
@@ -954,7 +1098,7 @@ function ProviderRegisterPageInner() {
                                 : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
                             } disabled:cursor-not-allowed disabled:opacity-60`}
                           >
-                            {category}
+                            {option.display}
                           </button>
                         );
                       })
@@ -972,22 +1116,34 @@ function ProviderRegisterPageInner() {
                   ) : null}
                   {totalSelectedServices > 0 ? (
                     <div className="mt-3 flex flex-wrap gap-2">
-                    {selectedCategories.map((category) => (
-                      <button
-                        key={category}
-                        type="button"
-                        onClick={() => removeCategory(category)}
-                        className="inline-flex items-center gap-2 rounded-full border border-green-700 bg-green-50 px-3 py-1.5 text-xs font-semibold text-green-800"
-                      >
-                        {category}
-                        {customCategoryKeys.includes(categoryKey(category)) ? (
-                          <span className="rounded bg-green-700 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
-                            NEW
-                          </span>
-                        ) : null}
-                        <span aria-hidden="true">x</span>
-                      </button>
-                    ))}
+                    {selectedCategories.map((category) => {
+                      // Show alias-derived work tags inline so the provider
+                      // sees what they actually picked. After an alias-pick
+                      // the chip reads e.g. "dance teacher (hobby classes)"
+                      // instead of just the canonical. Empty when the
+                      // canonical was picked directly with no tags toggled.
+                      const tags = selectedWorkTags[categoryKey(category)] || [];
+                      const displayLabel =
+                        tags.length > 0
+                          ? `${tags.join(", ")} (${category})`
+                          : category;
+                      return (
+                        <button
+                          key={category}
+                          type="button"
+                          onClick={() => removeCategory(category)}
+                          className="inline-flex items-center gap-2 rounded-full border border-green-700 bg-green-50 px-3 py-1.5 text-xs font-semibold text-green-800"
+                        >
+                          {displayLabel}
+                          {customCategoryKeys.includes(categoryKey(category)) ? (
+                            <span className="rounded bg-green-700 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
+                              NEW
+                            </span>
+                          ) : null}
+                          <span aria-hidden="true">x</span>
+                        </button>
+                      );
+                    })}
                     </div>
                   ) : null}
                   {/* Work-tag chips, one section per selected category that
