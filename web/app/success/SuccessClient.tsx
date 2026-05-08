@@ -17,10 +17,13 @@ type SuccessClientProps = {
 
 type ProviderItem = {
   name: string;
-  // Masked display value, e.g. "98XXXXXX21". Public /api/find-provider
-  // never exposes the raw phone digits — providers reach the user via the
-  // server-side WhatsApp notification pipeline rather than tel: links.
+  // Masked display value, e.g. "98XXXXXX21". Always present.
   phoneMasked: string;
+  // Raw 10-digit phone. Server returns this ONLY when the signed-in
+  // session is the verified owner of the requested taskId. Anonymous /
+  // unrelated users get an empty string here and fall back to
+  // phoneMasked for display.
+  phone: string;
   providerId: string;
   category: string;
   area: string;
@@ -46,6 +49,15 @@ function toProviderItem(item: unknown): ProviderItem | null {
     (typeof record.phoneMasked === "string" && record.phoneMasked.trim()) ||
     (typeof record.PhoneMasked === "string" && record.PhoneMasked.trim()) ||
     "";
+  // Raw phone is server-gated: present only when the signed-in caller is
+  // the verified task owner. Anonymous / unrelated users leave this empty.
+  const phoneRaw =
+    (typeof record.phone === "string" && record.phone.trim()) ||
+    (typeof record.Phone === "string" && record.Phone.trim()) ||
+    "";
+  const phone = /^\d{10}$/.test(phoneRaw.replace(/\D/g, "").slice(-10))
+    ? phoneRaw.replace(/\D/g, "").slice(-10)
+    : "";
   const providerId =
     (typeof record.ProviderID === "string" && record.ProviderID.trim()) ||
     (typeof record.providerId === "string" && record.providerId.trim()) ||
@@ -74,6 +86,7 @@ function toProviderItem(item: unknown): ProviderItem | null {
   return {
     name,
     phoneMasked,
+    phone,
     providerId,
     category,
     area,
@@ -350,12 +363,26 @@ export default function SuccessClient({
                         <td className="px-3 py-2.5 leading-snug text-slate-600">{provider.area || area || "—"}</td>
                         <td className="px-3 py-2.5">
                           <div className="flex flex-col leading-tight">
-                            <span className="font-bold text-[#003d20] font-mono">
-                              {provider.phoneMasked || "—"}
-                            </span>
-                            <span className="mt-1 text-[10px] font-medium text-[#003d20]/70">
-                              Provider will reach you on WhatsApp
-                            </span>
+                            {provider.phone ? (
+                              <>
+                                <a
+                                  href={`tel:${provider.phone}`}
+                                  className="font-bold text-[#003d20] underline decoration-[#f97316] decoration-2 underline-offset-4 transition-colors hover:text-[#002a16] hover:decoration-[#ea580c]"
+                                >
+                                  {provider.phone}
+                                </a>
+                                <span className="mt-1 text-[10px] font-medium text-[#003d20]/70">Tap to call</span>
+                              </>
+                            ) : (
+                              <>
+                                <span className="font-bold text-[#003d20] font-mono">
+                                  {provider.phoneMasked || "—"}
+                                </span>
+                                <span className="mt-1 text-[10px] font-medium text-[#003d20]/70">
+                                  Provider will reach you on WhatsApp
+                                </span>
+                              </>
+                            )}
                           </div>
                         </td>
                         <td className="pl-3 pr-6 py-2.5 text-slate-600">{provider.rating || "—"}</td>
@@ -376,12 +403,28 @@ export default function SuccessClient({
                       {provider.category || service || "Category not available"} · {provider.area || area || "Area not available"}
                     </p>
                     <div className="mt-3 flex flex-col">
-                      <span className="inline-flex text-sm font-bold text-[#003d20] font-mono">
-                        {provider.phoneMasked || "—"}
-                      </span>
-                      <span className="mt-1 text-[11px] font-medium text-[#003d20]/70">
-                        Provider will reach you on WhatsApp
-                      </span>
+                      {provider.phone ? (
+                        <>
+                          <a
+                            href={`tel:${provider.phone}`}
+                            className="inline-flex text-sm font-bold text-[#003d20] underline decoration-[#f97316] decoration-2 underline-offset-4 transition-colors hover:text-[#002a16] hover:decoration-[#ea580c]"
+                          >
+                            {provider.phone}
+                          </a>
+                          <span className="mt-1 text-[11px] font-medium text-[#003d20]/70">
+                            Tap to call · Hold to copy
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="inline-flex text-sm font-bold text-[#003d20] font-mono">
+                            {provider.phoneMasked || "—"}
+                          </span>
+                          <span className="mt-1 text-[11px] font-medium text-[#003d20]/70">
+                            Provider will reach you on WhatsApp
+                          </span>
+                        </>
+                      )}
                     </div>
                     <p className="mt-2 text-xs text-slate-500">
                       Rating: {provider.rating || "Rating not available"}

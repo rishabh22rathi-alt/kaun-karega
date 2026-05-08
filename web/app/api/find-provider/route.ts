@@ -1,4 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
+import { adminSupabase } from "@/lib/supabase/admin";
+import { getAuthSession } from "@/lib/auth";
 import { canonicalizeProviderAreasToCanonicalNames } from "@/lib/admin/adminAreaMappings";
 // CHANGE: import alias resolver so user-typed variants ("lohar", "welding")
 // map to canonical category ("welder") before downstream matching.
@@ -7,7 +9,44 @@ import { canonicalizeProviderAreasToCanonicalNames } from "@/lib/admin/adminArea
 // provider_work_terms when no explicit workTag was passed.
 import { resolveCategoryAliasDetailed } from "@/lib/categoryAliases";
 
+export const runtime = "nodejs";
+
 const clean = (s: string) => (s || "").trim().replace(/\s+/g, " ");
+
+function normalizePhone10(value: unknown): string {
+  return String(value || "").replace(/\D/g, "").slice(-10);
+}
+
+/**
+ * Determine whether the caller is authenticated as the owner of `taskId`.
+ *
+ * Privacy contract:
+ *   - Returns true ONLY when the signed `kk_auth_session` cookie is valid
+ *     AND `tasks.phone` for the given taskId equals the verified session
+ *     phone (10-digit normalised).
+ *   - Returns false for any other case (no session, no taskId, missing
+ *     task, mismatched owner, transient DB error). The caller treats
+ *     `false` as "public/anon view" and emits only masked phones.
+ *   - Body fields (`userPhone`, etc.) are intentionally NOT consulted —
+ *     ownership comes only from the signed cookie + the DB row.
+ */
+async function verifyTaskOwnership(
+  cookieHeader: string,
+  taskId: string
+): Promise<boolean> {
+  if (!taskId) return false;
+  const session = await getAuthSession({ cookie: cookieHeader });
+  const sessionPhone10 = normalizePhone10(session?.phone);
+  if (!session || sessionPhone10.length !== 10) return false;
+  const { data: taskRow, error } = await adminSupabase
+    .from("tasks")
+    .select("phone")
+    .eq("task_id", taskId)
+    .maybeSingle();
+  if (error || !taskRow) return false;
+  const taskPhone10 = normalizePhone10(taskRow.phone);
+  return taskPhone10.length === 10 && taskPhone10 === sessionPhone10;
+}
 
 async function handle(req: Request) {
   const url = new URL(req.url);
@@ -77,6 +116,16 @@ async function handle(req: Request) {
 
     const supabase = await createClient();
     const safeLimit = Math.min(Number.isFinite(limit) ? limit : 20, 50);
+
+    // Privileged path: only when the caller's signed session phone owns
+    // the supplied taskId do we include raw provider phone numbers in
+    // the response. Public browsing (no taskId, anonymous, or unrelated
+    // task) sees masked phones only — preserves A6 against directory
+    // scraping.
+    const ownerVerified = await verifyTaskOwnership(
+      req.headers.get("cookie") ?? "",
+      taskId
+    );
 
     // Gate: only return matches when the requested category exists in the
     // master `categories` table with active = true. Mirrors the gate in
@@ -250,31 +299,42 @@ async function handle(req: Request) {
       return `${digits.slice(0, 2)}XXXXXX${digits.slice(-2)}`;
     };
 
-    const providersList = Array.isArray(providers)
+    type ProviderListItem = {
+      ProviderID: string;
+      name: string;
+      phoneMasked: string;
+      // Present ONLY when ownerVerified is true (caller is signed-in task
+      // owner). Absent on every public/anon path — preserves A6.
+      phone?: string;
+      category: string;
+      area: string;
+      verified: string;
+    };
+
+    const providersList: ProviderListItem[] = Array.isArray(providers)
       ? matchedProviderIds
-          .map((providerId) => {
+          .map((providerId): ProviderListItem | null => {
             const provider = providers.find((item) => String(item.provider_id || "").trim() === providerId);
             if (!provider) return null;
             if (String(provider.status || "").trim().toLowerCase() === "blocked") return null;
-            return {
+            const rawPhone10 = normalizePhone10(provider.phone);
+            const item: ProviderListItem = {
               ProviderID: String(provider.provider_id || "").trim(),
               name: String(provider.full_name || "").trim(),
-              // Public response carries ONLY the masked phone. The raw
-              // phone never leaves this handler.
               phoneMasked: maskPhone10(String(provider.phone || "")),
               category,
               area,
               verified: String(provider.verified || "").trim(),
             };
+            // Privileged disclosure: only the signed-in task owner can see
+            // the raw 10-digit phone. Everyone else sees `phoneMasked`
+            // alone, never `phone`.
+            if (ownerVerified && rawPhone10.length === 10) {
+              item.phone = rawPhone10;
+            }
+            return item;
           })
-          .filter((provider): provider is {
-            ProviderID: string;
-            name: string;
-            phoneMasked: string;
-            category: string;
-            area: string;
-            verified: string;
-          } => Boolean(provider))
+          .filter((provider): provider is ProviderListItem => Boolean(provider))
       : [];
 
     if (taskId && providersList.length > 0) {
