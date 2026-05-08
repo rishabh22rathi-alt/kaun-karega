@@ -68,20 +68,34 @@ export default function ReportIssuePage() {
           description: trimmedDescription,
         }),
       });
-      const data = (await res.json()) as { ok?: boolean; issueId?: string; error?: string };
+      const data = (await res.json()) as {
+        ok?: boolean;
+        issueId?: string;
+        issueNo?: number;
+        error?: string;
+      };
 
       if (!res.ok || !data?.ok) {
         throw new Error(data?.error || "Failed to submit issue report");
       }
 
-      setIssueType("");
-      setIssuePage("");
-      setDescription("");
-      setSuccess(
-        data.issueId
-          ? `Issue submitted successfully. Reference: ${data.issueId}`
-          : "Issue submitted successfully."
-      );
+      // Keep issueType / issuePage / description on screen so the user
+      // sees exactly what was submitted. The "Submitted" button state
+      // (driven by `success` being non-empty) makes the form
+      // read-only-feeling without disabling the inputs themselves —
+      // any edit clears `success` (see field onChange handlers below)
+      // and re-enables Submit.
+
+      // Prefer the public sequential reference (Issue No. X). Fall back
+      // to the UUID only when issue_no isn't present (migration not yet
+      // applied). Final fallback: a generic success line.
+      const successLine =
+        typeof data.issueNo === "number" && data.issueNo > 0
+          ? `Issue submitted successfully. Issue No. ${data.issueNo}`
+          : data.issueId
+            ? `Issue submitted successfully. Reference: ${data.issueId}`
+            : "Issue submitted successfully.";
+      setSuccess(successLine);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to submit issue report");
     } finally {
@@ -112,8 +126,14 @@ export default function ReportIssuePage() {
             <label className="text-sm font-semibold text-slate-700">Issue Type</label>
             <select
               value={issueType}
-              onChange={(event) => setIssueType(event.target.value)}
-              className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-400/20"
+              onChange={(event) => {
+                setIssueType(event.target.value);
+                // Any edit after a successful submit clears the
+                // "Submitted" state so the user can submit a new
+                // report without re-mounting the page.
+                if (success) setSuccess("");
+              }}
+              className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none focus:border-[#003d20] focus:ring-2 focus:ring-[#003d20]/20"
               required
             >
               <option value="">Select issue type</option>
@@ -129,8 +149,11 @@ export default function ReportIssuePage() {
             <label className="text-sm font-semibold text-slate-700">Where did this happen?</label>
             <select
               value={issuePage}
-              onChange={(event) => setIssuePage(event.target.value)}
-              className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-400/20"
+              onChange={(event) => {
+                setIssuePage(event.target.value);
+                if (success) setSuccess("");
+              }}
+              className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none focus:border-[#003d20] focus:ring-2 focus:ring-[#003d20]/20"
               required
             >
               <option value="">Select page/area</option>
@@ -146,11 +169,14 @@ export default function ReportIssuePage() {
             <label className="text-sm font-semibold text-slate-700">Tell us what happened</label>
             <textarea
               value={description}
-              onChange={(event) => setDescription(event.target.value)}
+              onChange={(event) => {
+                setDescription(event.target.value);
+                if (success) setSuccess("");
+              }}
               placeholder="Please explain the issue in your own words."
               minLength={10}
               rows={6}
-              className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-400/20"
+              className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none focus:border-[#003d20] focus:ring-2 focus:ring-[#003d20]/20"
               required
             />
           </div>
@@ -162,17 +188,29 @@ export default function ReportIssuePage() {
           ) : null}
 
           {success ? (
-            <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+            <div
+              className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800"
+              role="status"
+              aria-live="polite"
+            >
               {success}
             </div>
           ) : null}
 
+          {/* Brand-green primary; orange-tinted "Submitted" confirmation
+              state. Disabled while the request is in flight or while
+              the form still reflects the just-submitted values; any
+              field edit clears `success` and re-enables Submit. */}
           <button
             type="submit"
-            disabled={submitting}
-            className="w-full rounded-full bg-sky-500 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-sky-600 disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={submitting || Boolean(success)}
+            className={`w-full rounded-full px-4 py-3 text-sm font-semibold text-white shadow-sm transition disabled:cursor-not-allowed disabled:opacity-80 ${
+              success
+                ? "bg-emerald-700 hover:bg-emerald-700"
+                : "bg-[#003d20] hover:bg-[#002a16]"
+            }`}
           >
-            {submitting ? "Submitting..." : "Submit"}
+            {submitting ? "Submitting..." : success ? "Submitted ✓" : "Submit"}
           </button>
         </form>
       </div>

@@ -231,6 +231,9 @@ type AdminNotificationSummaryResponse = {
 
 type IssueReport = {
   IssueID: string;
+  // Public sequential reference ("Issue No. 42"). 0 when the migration
+  // hasn't been applied yet — UI falls back to the UUID in that case.
+  IssueNo?: number;
   CreatedAt: string;
   ReporterRole: string;
   ReporterPhone: string;
@@ -437,6 +440,12 @@ export default function AdminDashboardPage() {
   const [selectedChatMessages, setSelectedChatMessages] = useState<AdminChatMessage[]>([]);
   const [notificationLogs, setNotificationLogs] = useState<NotificationLog[]>([]);
   const [issueReports, setIssueReports] = useState<IssueReport[]>([]);
+  // Reported-Issues filters. "all" disables the corresponding clause.
+  // Filters apply purely client-side over the already-loaded list, so no
+  // extra round-trips and no change to the admin_get_issue_reports
+  // contract.
+  const [issueStatusFilter, setIssueStatusFilter] = useState<string>("all");
+  const [issueReporterFilter, setIssueReporterFilter] = useState<string>("all");
   const [monitorTasks, setMonitorTasks] = useState<MonitorTask[]>([]);
   const [monitorError, setMonitorError] = useState("");
   const [autoCloseRunning, setAutoCloseRunning] = useState(false);
@@ -3727,34 +3736,98 @@ export default function AdminDashboardPage() {
         sectionKey="reportedIssues"
         title="Reported Issues"
         description="Problems reported by logged-in users and providers."
-        count={issueReports.length}
+        count={
+          issueReports.filter((item) => {
+            const status = String(item.Status || "open").toLowerCase();
+            const role = String(item.ReporterRole || "user").toLowerCase();
+            if (issueStatusFilter !== "all" && status !== issueStatusFilter) return false;
+            if (issueReporterFilter !== "all" && role !== issueReporterFilter) return false;
+            return true;
+          }).length
+        }
         isOpen={openSections.reportedIssues}
         onToggle={toggleSection}
       >
+        {/* Filter bar — newest-first sort is enforced upstream by
+            sortIssueReports. These two selects narrow the visible
+            list client-side without re-fetching. */}
+        <div className="flex flex-wrap items-center gap-3 border-b border-slate-100 px-4 py-3 text-xs">
+          <label className="flex items-center gap-2 font-medium text-slate-600">
+            <span>Status</span>
+            <select
+              value={issueStatusFilter}
+              onChange={(e) => setIssueStatusFilter(e.target.value)}
+              className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-medium text-slate-800 focus:border-[#003d20] focus:outline-none"
+            >
+              <option value="all">All</option>
+              <option value="open">Open</option>
+              <option value="in_progress">In progress</option>
+              <option value="resolved">Resolved</option>
+              <option value="rejected">Rejected</option>
+            </select>
+          </label>
+          <label className="flex items-center gap-2 font-medium text-slate-600">
+            <span>Reporter</span>
+            <select
+              value={issueReporterFilter}
+              onChange={(e) => setIssueReporterFilter(e.target.value)}
+              className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-medium text-slate-800 focus:border-[#003d20] focus:outline-none"
+            >
+              <option value="all">All</option>
+              <option value="user">User</option>
+              <option value="provider">Provider</option>
+              <option value="admin">Admin</option>
+              <option value="guest">Guest</option>
+            </select>
+          </label>
+          {(issueStatusFilter !== "all" || issueReporterFilter !== "all") && (
+            <button
+              type="button"
+              onClick={() => {
+                setIssueStatusFilter("all");
+                setIssueReporterFilter("all");
+              }}
+              className="ml-auto rounded-md border border-slate-300 px-3 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+            >
+              Clear filters
+            </button>
+          )}
+        </div>
         <div className="overflow-x-auto">
           <table className="min-w-full text-left">
             <thead className="bg-slate-50 text-xs uppercase text-slate-500">
               <tr>
-                <th className="px-4 py-3 font-semibold">Date</th>
-                <th className="px-4 py-3 font-semibold">IssueID</th>
-                <th className="px-4 py-3 font-semibold">ReporterRole</th>
-                <th className="px-4 py-3 font-semibold">ReporterPhone</th>
-                <th className="px-4 py-3 font-semibold">IssueType</th>
-                <th className="px-4 py-3 font-semibold">IssuePage</th>
-                <th className="px-4 py-3 font-semibold">Description</th>
+                <th className="px-4 py-3 font-semibold">Issue No.</th>
+                <th className="px-4 py-3 font-semibold">Created</th>
+                <th className="px-4 py-3 font-semibold">Reporter phone</th>
+                <th className="px-4 py-3 font-semibold">Reporter type</th>
+                <th className="px-4 py-3 font-semibold">Issue type</th>
+                <th className="px-4 py-3 font-semibold">Message</th>
                 <th className="px-4 py-3 font-semibold">Status</th>
                 <th className="px-4 py-3 font-semibold text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-sm text-slate-800">
-              {!loading && issueReports.length === 0 ? (
-                <tr>
-                  <td colSpan={9} className="px-4 py-6 text-center text-slate-500">
-                    No issue reports submitted yet.
-                  </td>
-                </tr>
-              ) : null}
-              {issueReports.map((item) => {
+              {(() => {
+                const filtered = issueReports.filter((item) => {
+                  const status = String(item.Status || "open").toLowerCase();
+                  const role = String(item.ReporterRole || "user").toLowerCase();
+                  if (issueStatusFilter !== "all" && status !== issueStatusFilter) return false;
+                  if (issueReporterFilter !== "all" && role !== issueReporterFilter) return false;
+                  return true;
+                });
+                if (!loading && filtered.length === 0) {
+                  return (
+                    <tr>
+                      <td colSpan={8} className="px-4 py-6 text-center text-slate-500">
+                        {issueReports.length === 0
+                          ? "No issue reports submitted yet."
+                          : "No reports match the current filters."}
+                      </td>
+                    </tr>
+                  );
+                }
+                return filtered.map((item) => {
                 const openKey = `${item.IssueID}:open`;
                 const progressKey = `${item.IssueID}:in_progress`;
                 const resolvedKey = `${item.IssueID}:resolved`;
@@ -3765,13 +3838,14 @@ export default function AdminDashboardPage() {
 
                 return (
                   <tr key={item.IssueID}>
+                    <td className="px-4 py-3 font-bold text-[#003d20]">
+                      {item.IssueNo && item.IssueNo > 0 ? `#${item.IssueNo}` : "—"}
+                    </td>
                     <td className="px-4 py-3">{formatDateTime(item.CreatedAt)}</td>
-                    <td className="px-4 py-3 font-medium text-slate-900">{item.IssueID}</td>
+                    <td className="px-4 py-3 font-mono text-xs">{item.ReporterPhone || "-"}</td>
                     <td className="px-4 py-3">{item.ReporterRole || "-"}</td>
-                    <td className="px-4 py-3">{item.ReporterPhone || "-"}</td>
                     <td className="px-4 py-3">{item.IssueType || "-"}</td>
-                    <td className="px-4 py-3">{item.IssuePage || "-"}</td>
-                    <td className="max-w-[320px] px-4 py-3">
+                    <td className="max-w-[360px] px-4 py-3">
                       <p className="line-clamp-3 whitespace-pre-wrap" title={item.Description || ""}>
                         {item.Description || "-"}
                       </p>
@@ -3815,7 +3889,8 @@ export default function AdminDashboardPage() {
                     </td>
                   </tr>
                 );
-              })}
+              });
+              })()}
             </tbody>
           </table>
         </div>

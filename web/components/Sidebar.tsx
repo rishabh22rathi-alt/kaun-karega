@@ -6,6 +6,7 @@ import {
   X,
   ChevronRight,
   ChevronLeft,
+  ChevronDown,
   Home,
   ClipboardList,
   MessageSquareWarning,
@@ -109,6 +110,11 @@ export default function Sidebar() {
   const [providerExists, setProviderExists] = useState<boolean | null>(null);
   const [myNeedsUnreadCount, setMyNeedsUnreadCount] = useState(0);
   const [isAdmin, setIsAdmin] = useState(false);
+  // "For your needs" section starts collapsed so the sidebar above the
+  // fold is dominated by the active features (Home, My Activity, For
+  // Providers, Help) rather than the launching-soon catalogue. Users
+  // click the header chevron to expand. Stays as a simple controlled
+  // boolean — no persistence needed.
   const [iNeedOpen, setINeedOpen] = useState(false);
   const [authHydrated, setAuthHydrated] = useState(false);
   const isLoggedIn = Boolean(session?.phone);
@@ -428,7 +434,13 @@ export default function Sidebar() {
       typeof window !== "undefined" &&
       window.matchMedia("(min-width: 768px)").matches;
     const isSidebarVisible = isDesktop ? !shouldHide : isOpen && !shouldHide;
-    const width = !isSidebarVisible ? "0rem" : isCollapsed ? "80px" : "288px";
+    // Collapsed icon rail tightened from 80px → 64px (industry-standard
+    // icon-only nav width). Expanded sidebar trimmed from 288px → 256px
+    // for ~32px more main-content room without truncating any current
+    // nav label. Both values flow into the layout shell via the
+    // `--kk-sidebar-width` CSS variable, so the main content shifts in
+    // sync with the new rail.
+    const width = !isSidebarVisible ? "0rem" : isCollapsed ? "64px" : "256px";
     const mobileHeaderHeight = "0px";
     const shell = document.getElementById("kk-app-shell");
     if (shell) {
@@ -500,7 +512,9 @@ export default function Sidebar() {
         href={href}
         draggable={false}
         onClick={() => setIsOpen(false)}
-        className={`flex items-center gap-3 rounded-lg px-3 py-2 font-semibold text-white transition ${
+        className={`flex items-center rounded-lg py-2 font-semibold text-white transition ${
+          isCollapsed ? "justify-center px-0" : "gap-3 px-3"
+        } ${
           active
             ? isHome
               ? "bg-transparent text-white ring-1 ring-inset ring-white/[0.12] hover:bg-white/[0.06]"
@@ -544,6 +558,33 @@ export default function Sidebar() {
       </p>
     );
 
+  // Collapsible variant of `renderSectionHeader` used for the
+  // "For your needs" group only. In the icon-rail (collapsed sidebar)
+  // the divider is reused — there's no room for a chevron toggle and
+  // the section's icon row remains visible so users can still tap into
+  // /i-need from the rail.
+  const renderForYourNeedsHeader = () =>
+    isCollapsed ? (
+      <div key="section-iNeed-divider" className="mx-2 my-2 border-t border-white/10" />
+    ) : (
+      <button
+        key="section-iNeed-toggle"
+        type="button"
+        onClick={() => setINeedOpen((v) => !v)}
+        aria-expanded={iNeedOpen}
+        aria-controls="kk-iNeed-section"
+        className="flex w-full items-center gap-2 rounded-md px-3 pb-1 pt-3 text-[10px] font-bold uppercase tracking-widest text-white/50 transition hover:text-white/80"
+      >
+        <span>For your needs</span>
+        <ChevronDown
+          className={`ml-auto h-3.5 w-3.5 shrink-0 text-white/50 transition-transform duration-200 ${
+            iNeedOpen ? "rotate-0" : "-rotate-90"
+          }`}
+          aria-hidden="true"
+        />
+      </button>
+    );
+
   // Launching Soon: I-Need feature is publicly paused. Sub-items are shown
   // for visibility (so users can see what's coming) but every sub-item routes
   // to /i-need (the Launching Soon page) — none open active flows. Restore
@@ -557,11 +598,13 @@ export default function Sidebar() {
   ];
 
   const postARequestButton = (
-    <div key="post-a-request">
+    <div key="post-a-request" id="kk-iNeed-section">
       <Link
         href="/i-need"
         onClick={() => setIsOpen(false)}
-        className="flex w-full items-center gap-3 rounded-lg bg-transparent px-3 py-2 font-semibold text-white transition hover:bg-white/[0.06]"
+        className={`flex w-full items-center rounded-lg bg-transparent py-2 font-semibold text-white transition hover:bg-white/[0.06] ${
+          isCollapsed ? "justify-center px-0" : "gap-3 px-3"
+        }`}
       >
         <ListTodo className="h-4 w-4 shrink-0 text-white/90" />
         {isCollapsed ? (
@@ -602,7 +645,9 @@ export default function Sidebar() {
       key="register-provider"
       type="button"
       onClick={() => setShowProviderConfirm(true)}
-      className="flex w-full items-center gap-3 rounded-lg px-3 py-2 font-semibold text-white transition hover:bg-white/[0.08] hover:text-white"
+      className={`flex w-full items-center rounded-lg py-2 font-semibold text-white transition hover:bg-white/[0.08] hover:text-white ${
+        isCollapsed ? "justify-center px-0" : "gap-3 px-3"
+      }`}
     >
       <UserPlus className="h-4 w-4 text-white/90" />
       {isCollapsed ? (
@@ -618,7 +663,9 @@ export default function Sidebar() {
       key="logout"
       type="button"
       onClick={handleLogout}
-      className="flex w-full items-center gap-3 rounded-lg px-3 py-2 font-semibold text-white transition hover:bg-white/[0.08] hover:text-white"
+      className={`flex w-full items-center rounded-lg py-2 font-semibold text-white transition hover:bg-white/[0.08] hover:text-white ${
+        isCollapsed ? "justify-center px-0" : "gap-3 px-3"
+      }`}
     >
       <LogOut className="h-4 w-4 text-white/90" />
       {isCollapsed ? (
@@ -643,10 +690,14 @@ export default function Sidebar() {
 
       <aside
         className={`fixed inset-y-0 left-0 z-40 min-h-screen overflow-hidden bg-[#003d20] text-white shadow-lg transition-all duration-200 flex flex-col ${
-          isCollapsed ? "w-20" : "w-72"
+          isCollapsed ? "w-16" : "w-64"
         } ${isOpen ? "translate-x-0" : "-translate-x-full"} md:translate-x-0`}
       >
-        <div className="flex items-center gap-2 border-b border-white/10 px-3 py-3">
+        <div
+          className={`flex items-center gap-2 border-b border-white/10 py-3 ${
+            isCollapsed ? "justify-center px-2" : "px-3"
+          }`}
+        >
           {!isCollapsed && (
             <div className="flex flex-col leading-tight select-none">
               <p className="text-base font-semibold text-white">Kaun Karega</p>
@@ -721,7 +772,11 @@ export default function Sidebar() {
           </div>
         </div>
 
-        <nav className="flex-1 overflow-hidden px-3 py-4 select-none">
+        <nav
+          className={`flex-1 overflow-hidden py-4 select-none ${
+            isCollapsed ? "px-2" : "px-3"
+          }`}
+        >
           <div className="space-y-2">
             {!authHydrated ? (
               <div className="space-y-2" aria-label="Loading sidebar navigation">
@@ -738,8 +793,12 @@ export default function Sidebar() {
               <>
                 {renderNavLink({ label: "Home", href: "/", icon: Home })}
 
-                {renderSectionHeader("FOR YOUR NEEDS")}
-                {postARequestButton}
+                {renderForYourNeedsHeader()}
+                {/* When the sidebar is collapsed (icon rail), the section
+                    is always visible — the toggle UX only applies in the
+                    expanded sidebar. This preserves rail-mode access to
+                    /i-need without forcing users to expand first. */}
+                {(isCollapsed || iNeedOpen) && postARequestButton}
 
                 {renderSectionHeader("MY ACTIVITY")}
                 {/* "My Posts" hidden while I-Need is paused — it points at

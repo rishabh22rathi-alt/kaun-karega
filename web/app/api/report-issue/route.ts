@@ -31,15 +31,20 @@ export async function POST(request: Request) {
 
     const body = await request.json();
     const issueType = typeof body?.issueType === "string" ? body.issueType.trim() : "";
-    const issuePage = typeof body?.issuePage === "string" ? body.issuePage.trim() : "";
-    const description =
-      typeof body?.description === "string" ? body.description.trim() : "";
+    // Frontend historically sends `description`; newer callers may
+    // use `message`. Either reaches the helper as `message`, which is
+    // the canonical column name in issue_reports.
+    const messageBody = (() => {
+      if (typeof body?.message === "string" && body.message.trim()) return body.message.trim();
+      if (typeof body?.description === "string") return body.description.trim();
+      return "";
+    })();
 
-    if (!issueType || !issuePage || description.length < 10) {
+    if (!issueType || messageBody.length < 10) {
       return NextResponse.json(
         {
           ok: false,
-          error: "Issue type, page, and a description of at least 10 characters are required.",
+          error: "Issue type and a message of at least 10 characters are required.",
         },
         { status: 400 }
       );
@@ -52,15 +57,18 @@ export async function POST(request: Request) {
       reporterRole,
       reporterName,
       issueType,
-      issuePage,
-      description,
+      message: messageBody,
     });
 
     if (!result.ok) {
       return NextResponse.json({ ok: false, error: result.error }, { status: 500 });
     }
 
-    return NextResponse.json({ ok: true, issueId: result.issueId });
+    return NextResponse.json({
+      ok: true,
+      issueId: result.issueId,
+      issueNo: result.issueNo,
+    });
   } catch (error: any) {
     return NextResponse.json(
       { ok: false, error: error?.message || "Internal Server Error" },
