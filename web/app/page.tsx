@@ -327,12 +327,6 @@ function PageContent() {
   const [showDirectContactOption, setShowDirectContactOption] = useState(false);
   const [providersList, setProvidersList] = useState<any[]>([]);
   const [showProvidersList, setShowProvidersList] = useState(false);
-  // Hero logo animation gate. Defaults to false so SSR + the very first
-  // client render show the static KAREGA — no flicker for repeat
-  // visitors. The mount-only effect below decides whether to flip this
-  // to true (i.e. "play once") based on a phone-keyed localStorage
-  // flag. See requirement A11 in docs/auto-memory.
-  const [playLogoAnimation, setPlayLogoAnimation] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState(
     (params.get("category") || "").trim()
   );
@@ -606,30 +600,6 @@ function PageContent() {
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
-
-  // Hero animation play-once gate. Runs client-only on mount.
-  // Storage key is phone-keyed for logged-in users (so two users on the
-  // same browser each see it once); falls back to "guest" for anonymous
-  // visitors. Failures (private mode, quota) fail-open by playing the
-  // animation — better to over-show on a marketing surface than break
-  // it silently.
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    try {
-      const session = getAuthSession();
-      const phone10 = session?.phone
-        ? String(session.phone).replace(/\D/g, "").slice(-10)
-        : "";
-      const storageKey =
-        phone10.length === 10 ? `kk_logo_seen_${phone10}` : "kk_logo_seen_guest";
-      const seen = window.localStorage.getItem(storageKey);
-      if (seen === "1") return;
-      window.localStorage.setItem(storageKey, "1");
-      setPlayLogoAnimation(true);
-    } catch {
-      setPlayLogoAnimation(true);
-    }
   }, []);
 
   useEffect(() => {
@@ -1286,47 +1256,11 @@ const hasArea = area.trim() !== "";
               </span>
               <div className="flex flex-col items-start">
                 <span className="relative inline-block text-[2.4rem] font-extrabold tracking-[0.06em] text-[#003d20] sm:text-5xl md:text-[4.35rem]">
-                  <span className={`${playLogoAnimation ? "kk-underline-reveal " : ""}relative inline-block pb-1 after:absolute after:bottom-0 after:left-0 after:h-[5px] after:w-full after:translate-y-[-2px] after:bg-orange-600 after:content-['']`}>
-                    {/*
-                      DOM order is K-A-R-E-G-A (canonical for SEO and
-                      screen readers — `aria-label="KAREGA"` on the
-                      wrapper provides a clean spoken read regardless of
-                      visual transforms). At t=0 each letter is
-                      translated horizontally so the VISUAL reading is
-                      "AGERAK" (the reverse). The `kk-letter` keyframe
-                      (globals.css) animates each letter back to
-                      translate(0,0) — its natural inline DOM slot —
-                      which lands the visual order as "KAREGA".
-
-                      Slot pitch is 0.68em so the swap scales with font
-                      size at every breakpoint. R drops from above; G
-                      rises from below; the other four travel only on X
-                      with a subtle pre-settle rotation.
-
-                      Per-letter timing — three swap-beats, each beat has
-                      one top-arc letter (negative --kk-peak-y) and one
-                      bottom-arc letter (positive --kk-peak-y) so the
-                      pair trades places without their paths crossing:
-                        Beat 1 (1.00s → 2.40s): K (top arc) + A5 (bottom arc)
-                        Beat 2 (2.40s → 3.60s): A1 (top arc) + G (bottom arc)
-                        Beat 3 (3.60s → 4.70s): R (top arc) + E (bottom arc)
-                      AGERAK is held static for the first 1.0 s — every
-                      letter has `animation-delay: ≥1.0s` and the
-                      `animation-fill-mode: both` rule keeps each letter
-                      pinned at its 0% keyframe (AGERAK position) until
-                      its delay ticks over.
-                    */}
-                    <span aria-label="KAREGA">
-                      <span className={playLogoAnimation ? "kk-letter" : ""} style={{ "--kk-start-x": "3.4em",  "--kk-start-rot": "0deg",  "--kk-peak-y": "-1.8em", animationDelay: "1.0s",  animationDuration: "1.4s" } as React.CSSProperties}>K</span>
-                      <span className={playLogoAnimation ? "kk-letter" : ""} style={{ "--kk-start-x": "2.04em", "--kk-start-rot": "5deg",  "--kk-peak-y": "-1.4em", animationDelay: "2.4s",  animationDuration: "1.2s" } as React.CSSProperties}>A</span>
-                      <span className={playLogoAnimation ? "kk-letter" : ""} style={{ "--kk-start-x": "0.68em", "--kk-start-rot": "-8deg", "--kk-peak-y": "-1.2em", animationDelay: "3.6s",  animationDuration: "1.1s" } as React.CSSProperties}>R</span>
-                      <span className={playLogoAnimation ? "kk-letter" : ""} style={{ "--kk-start-x": "-0.68em","--kk-start-rot": "6deg",  "--kk-peak-y": "1.2em",  animationDelay: "3.6s",  animationDuration: "1.1s" } as React.CSSProperties}>E</span>
-                      <span className={playLogoAnimation ? "kk-letter" : ""} style={{ "--kk-start-x": "-2.04em","--kk-start-rot": "-6deg", "--kk-peak-y": "1.4em",  animationDelay: "2.4s",  animationDuration: "1.2s" } as React.CSSProperties}>G</span>
-                      <span className={playLogoAnimation ? "kk-letter" : ""} style={{ "--kk-start-x": "-3.4em", "--kk-start-rot": "-5deg", "--kk-peak-y": "1.8em",  animationDelay: "1.0s",  animationDuration: "1.4s" } as React.CSSProperties}>A</span>
-                    </span>
-                  </span><span className={playLogoAnimation ? "kk-q-wobble" : ""}>?</span>
+                  <span className="relative inline-block pb-1 after:absolute after:bottom-0 after:left-0 after:h-[5px] after:w-full after:translate-y-[-2px] after:bg-orange-600 after:content-['']">
+                    KAREGA
+                  </span><span className="kk-q-wobble">?</span>
                 </span>
-                <p className={`${playLogoAnimation ? "kk-tagline-reveal " : ""}mt-1 text-[11px] font-semibold uppercase tracking-[0.24em] text-gray-600 sm:mt-2 sm:text-xs`}>
+                <p className="mt-1 text-[11px] font-semibold uppercase tracking-[0.24em] text-gray-600 sm:mt-2 sm:text-xs">
                   Jodhpur Local Services
                 </p>
               </div>
@@ -1334,7 +1268,7 @@ const hasArea = area.trim() !== "";
           </div>
 
           {/* Search bar */}
-          <div className={`${playLogoAnimation ? "kk-search-reveal " : ""}mx-auto mt-1 max-w-xl md:mt-3`}>
+          <div className="mx-auto mt-1 max-w-xl md:mt-3">
 
             <div className="relative">
               <div data-tour="service" className="relative flex items-center rounded-2xl border border-orange-600/25 bg-white px-4 py-3 shadow-[0_18px_45px_rgba(234,88,12,0.12)] transition-all duration-200 focus-within:border-orange-600/40 focus-within:ring-2 focus-within:ring-orange-600/20 focus-within:shadow-[0_20px_50px_rgba(234,88,12,0.16)]">
