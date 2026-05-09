@@ -328,12 +328,21 @@ function VerifyPageContent() {
               ref={(el) => { inputRefs.current[i] = el; }}
               type="text"
               inputMode="numeric"
+              pattern="[0-9]*"
+              // `autoComplete="one-time-code"` is set on the first box only.
+              // iOS Safari's QuickType SMS suggestion fires when the focused
+              // input has this attribute; tapping the suggestion pastes the
+              // full code, which `handleOtpPaste` then distributes across
+              // the remaining boxes. Setting it on every box would compete
+              // for the same suggestion and isn't necessary.
+              autoComplete={i === 0 ? "one-time-code" : "off"}
+              name={i === 0 ? "otp" : undefined}
               maxLength={1}
               value={otp[i] ?? ""}
               onChange={(e) => handleDigitInput(i, e.target.value)}
               onKeyDown={(e) => handleDigitKeyDown(i, e)}
               onPaste={handleOtpPaste}
-              className="w-14 h-14 rounded-xl border-2 border-slate-200 bg-white text-center text-2xl font-bold text-slate-900 shadow-sm transition focus:border-green-500 focus:outline-none focus:ring-2 focus:ring-green-500/30"
+              className="w-14 h-14 rounded-xl border-2 border-slate-200 bg-white text-center text-2xl font-bold text-[#003d20] shadow-sm transition focus:border-[#003d20] focus:outline-none focus:ring-2 focus:ring-[#003d20]/25"
             />
           ))}
         </div>
@@ -344,7 +353,7 @@ function VerifyPageContent() {
           type="button"
           onClick={handleVerify}
           disabled={verifyingOtp}
-          className="w-full rounded-xl bg-green-600 px-4 py-3 text-white font-semibold shadow-md transition hover:bg-green-700 active:scale-95 disabled:opacity-60"
+          className="w-full rounded-xl bg-[#003d20] px-4 py-3 text-white font-semibold shadow-md transition hover:bg-[#00542b] active:scale-95 disabled:opacity-60"
         >
           {verifyingOtp ? "Verifying..." : "Verify & Continue"}
         </button>
@@ -362,7 +371,7 @@ function VerifyPageContent() {
                 void handleResendOtp();
               }}
               disabled={sendingOtp}
-              className="font-semibold text-green-600 hover:text-green-700 transition"
+              className="font-semibold text-orange-600 hover:text-orange-700 transition"
             >
               {sendingOtp ? "Sending OTP..." : "Resend OTP"}
             </button>

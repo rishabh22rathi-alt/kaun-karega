@@ -330,20 +330,7 @@ function PageContent() {
   const [selectedCategory, setSelectedCategory] = useState(
     (params.get("category") || "").trim()
   );
-  const [showOtpModal, setShowOtpModal] = useState(false);
-  const [phone, setPhone] = useState("");
-  const [otp, setOtp] = useState("");
-  const [requestId, setRequestId] = useState("");
-  const [otpSent, setOtpSent] = useState(false);
-  const [otpError, setOtpError] = useState("");
-  const [otpLoading, setOtpLoading] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
-  const [isSending, setIsSending] = useState(false);
-  const [otpTimer, setOtpTimer] = useState(120); // seconds
-  const [canResend, setCanResend] = useState(false);
-  const [shakeOtp, setShakeOtp] = useState(false);
   const [isHydrated, setIsHydrated] = useState(false);
-  const lastOtpSentAtRef = useRef(0);
   // Flips to true the moment the user actively claims ownership of the
   // category field (selection or typing). Mount-time bootstrap effects
   // (URL ?category=, session draft) bail out once this is set, so a stale
@@ -602,17 +589,6 @@ function PageContent() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  useEffect(() => {
-    if (!otpSent) return;
-    if (otpTimer === 0) {
-      setCanResend(true);
-      return;
-    }
-    const interval = setInterval(() => {
-      setOtpTimer((t) => t - 1);
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [otpSent, otpTimer]);
 
   const canSubmit = useMemo(
     () => category.trim() !== "" && time.trim() !== "" && area.trim() !== "",
@@ -898,11 +874,6 @@ const handleSubmit = async () => {
     return;
   }
 
-  const modalSession = getAuthSession();
-  if (modalSession?.phone) {
-    setShowOtpModal(false);
-    return;
-  }
   saveTaskDraftToSessionStorage({
     category,
     area,
@@ -1076,121 +1047,7 @@ const submitResolvedRequest = async (resolution: CategoryResolution) => {
   }
 };
 
-  const sendOtp = async () => {
-    if (isSending) return;
-    const now = Date.now();
-    if (now - lastOtpSentAtRef.current < 2000) {
-      return;
-    }
-    lastOtpSentAtRef.current = now;
 
-    setOtpError("");
-    setOtpLoading(true);
-    setIsLoading(true);
-    setIsSending(true);
-    const trimmedPhone = phone.trim();
-    if (!trimmedPhone || trimmedPhone.length !== 10) {
-      setOtpError("Enter a valid 10-digit phone number.");
-      setOtpLoading(false);
-      setIsLoading(false);
-      setIsSending(false);
-      return;
-    }
-  const nextRequestId = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
-  setRequestId(nextRequestId);
-    try {
-      const res = await fetch("/api/send-otp", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        // --- FIX IS HERE: Sending correct keys for API route ---
-        body: JSON.stringify({
-          toPhoneNumber: "91" + trimmedPhone,
-        requestId: nextRequestId,
-          otpCode: "789012",
-          buttonUrl: `${process.env.NEXT_PUBLIC_SITE_URL || ""}/login`,
-        }),
-        // ----------------------------------------------------
-      });
-
-      const rawText = await res.text();
-
-      let data;
-      try {
-        data = JSON.parse(rawText);
-      } catch {
-        console.error("Server returned non-JSON:", rawText);
-        throw new Error("Server error. Check backend.");
-      }
-
-      if (!res.ok) {
-        throw new Error(data?.error || "Failed to send OTP");
-      }
-
-      if (data?.success) {
-        setOtpSent(true);
-      } else {
-        throw new Error(data?.error || "Failed to send OTP");
-      }
-    } catch (err: any) {
-      setOtpError(err?.message || "Failed to send OTP. Try again.");
-    } finally {
-      setOtpLoading(false);
-      setIsLoading(false);
-      setIsSending(false);
-    }
-  };
-
-  const verifyOtp = async () => {
-  setOtpError("");
-  setOtpLoading(true);
-  if (!requestId) {
-    setOtpError("OTP request expired. Please request a new OTP.");
-    setOtpLoading(false);
-    return;
-  }
-  try {
-    const res = await fetch("/api/verify-otp", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ phone: phone.trim(), otp: otp.trim(), requestId }),
-    });
-    const data = await res.json();
-      const alreadyVerified =
-        typeof data?.error === "string" &&
-        data.error.toLowerCase().includes("already verified");
-     if ((!res.ok || !data?.ok) && !alreadyVerified) {
-       setShakeOtp(true);
-       setOtpError("Incorrect OTP. Please try again.");
-       setTimeout(() => setShakeOtp(false), 600);
-       throw new Error(data?.error || "Invalid OTP");
-     }
-     setShowOtpModal(false);
-     if (data?.phone) {
-       // Session cookie is set server-side by /api/verify-otp via Set-Cookie
-       // (HttpOnly + signed). Client JS no longer writes the session cookie.
-       setPhone(data.phone);
-     }
-     // Mirror admin status from server response — sidebar reads this
-     if (data?.isAdmin === true) {
-       window.localStorage.setItem(
-         "kk_admin_session",
-         JSON.stringify({
-           isAdmin: true,
-           name: data.adminName ?? null,
-           role: data.adminRole ?? null,
-           permissions: data.permissions ?? [],
-         })
-       );
-     } else {
-       window.localStorage.removeItem("kk_admin_session");
-     }
-    await submitResolvedRequest(categoryResolution);
-   } catch (err: any) {
-     setOtpError(err?.message || "Invalid OTP. Please try again.");
-  } finally {
-      setOtpLoading(false);
-    }
-  };
 
   const handleShowProviders = async () => {
     try {
@@ -1208,12 +1065,6 @@ const submitResolvedRequest = async (resolution: CategoryResolution) => {
     }
   };
 
-  const handleResendOtp = async () => {
-    setOtp("");
-    setOtpTimer(120);
-    setCanResend(false);
-    await sendOtp();
-  };
 
   const hasCategory = category.trim() !== "";
   const hasStartedRequest = hasCategory || selectedCategory.trim() !== "";
@@ -1703,125 +1554,6 @@ const hasArea = area.trim() !== "";
         </section>
       )}
 
-      {/* ── OTP MODAL ────────────────────────────────────────────────── */}
-      {showOtpModal && !isLoggedIn && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
-          <div className="w-full max-w-md space-y-4 rounded-2xl bg-white p-6 shadow-2xl">
-            <div className="space-y-2 text-center select-none">
-              <h3 className="text-xl font-semibold text-slate-900">
-                Verify your phone number
-              </h3>
-              <p className="mt-2 text-sm text-slate-600">
-                To serve you better, please verify your number.
-                <br />
-                This helps us connect your request to the right nearby providers.
-                <br />
-                <br />
-                Be assured &#8212; your phone number will NOT be shared with any provider.
-                <br />
-                You will receive a WhatsApp notification where a secure chat box
-                <br />
-                will appear for your negotiation.
-              </p>
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-sm font-semibold text-slate-700">
-                Phone Number
-              </label>
-              <input
-                type="tel"
-                value={phone}
-                onChange={(e) => setPhone(e.target.value.replace(/\D/g, "").slice(0, 10))}
-                className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-400/30"
-                placeholder="10-digit mobile number"
-                inputMode="numeric"
-                onDrop={(e) => e.preventDefault()}
-                onDragOver={(e) => e.preventDefault()}
-              />
-              <button
-                type="button"
-                onClick={sendOtp}
-                disabled={isSending || isLoading || otpLoading || phone.trim().length !== 10}
-                className="w-full rounded-full bg-sky-500 px-4 py-3 text-sm font-semibold text-white shadow-md transition hover:bg-sky-600 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {isSending ? "Sending..." : "Send OTP"}
-              </button>
-            </div>
-
-            {otpSent && (
-              <div className="space-y-2">
-                <label className="text-sm font-semibold text-slate-700">
-                  Enter OTP
-                </label>
-                <input
-                  type="tel"
-                  value={otp}
-                  onChange={(e) => {
-                    const value = e.target.value.replace(/\D/g, "");
-                    if (value.length <= 4) setOtp(value);
-                    if (value.length === 4) {
-                      setTimeout(() => {
-                        document.getElementById("verifyOtpBtn")?.focus();
-                      }, 50);
-                    }
-                  }}
-                  maxLength={4}
-                  inputMode="numeric"
-                  pattern="\\d{4}"
-                  className={`w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-center text-lg tracking-[0.25em] shadow-sm focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-400/30 ${
-                    shakeOtp ? "shake" : ""
-                  }`}
-                  placeholder="____"
-                  onDrop={(e) => e.preventDefault()}
-                  onDragOver={(e) => e.preventDefault()}
-                />
-                <button
-                  type="button"
-                  id="verifyOtpBtn"
-                  onClick={verifyOtp}
-                  disabled={otpLoading || otp.trim().length !== 4}
-                  className="w-full rounded-full bg-emerald-500 px-4 py-3 text-sm font-semibold text-white shadow-md transition hover:bg-emerald-600 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {otpLoading ? "Verifying..." : "Verify OTP"}
-                </button>
-              </div>
-            )}
-
-            {otpSent && (
-              <div className="mt-2 text-center text-sm text-slate-600">
-                {!canResend ? (
-                  <span>
-                    Resend OTP in {String(Math.floor(otpTimer / 60)).padStart(2, "0")}:
-                    {String(otpTimer % 60).padStart(2, "0")}
-                  </span>
-                ) : (
-                  <button onClick={handleResendOtp} className="font-medium text-blue-600">
-                    Resend OTP
-                  </button>
-                )}
-              </div>
-            )}
-
-            {otpError && (
-              <p className="text-center text-sm text-red-600">{otpError}</p>
-            )}
-            <style jsx>{`
-              .shake {
-                animation: shake 0.3s linear;
-              }
-              @keyframes shake {
-                0% { transform: translateX(0); }
-                20% { transform: translateX(-4px); }
-                40% { transform: translateX(4px); }
-                60% { transform: translateX(-4px); }
-                80% { transform: translateX(4px); }
-                100% { transform: translateX(0); }
-              }
-            `}</style>
-          </div>
-        </div>
-      )}
 
       <FirstVisitCoachmark />
     </div>

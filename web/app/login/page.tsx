@@ -100,8 +100,8 @@ function LoginPageContent() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 px-4 py-10">
-      <div className="mx-auto flex min-h-[calc(100vh-5rem)] w-full max-w-md items-center justify-center">
+    <div className="min-h-screen bg-slate-50 px-4 pb-10 pt-[9vh] sm:pt-[11vh] lg:pt-[12vh]">
+      <div className="mx-auto flex w-full max-w-md justify-center">
       <form
         onSubmit={handleLogin}
         className="w-full rounded-2xl border border-slate-200 bg-white p-6 shadow-lg md:p-8"
@@ -109,13 +109,13 @@ function LoginPageContent() {
       >
         <div className="mb-6 text-center">
           <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight leading-tight">
-            <span className="text-green-600">Kaun</span>{" "}
-            <span className="text-orange-500">Karega</span>
+            <span className="text-[#003d20]">Kaun</span>{" "}
+            <span className="text-orange-600">Karega</span>
           </h1>
           <p className="mt-1 text-base md:text-lg text-slate-500 font-medium">
             Trusted local help in minutes
           </p>
-          <h1 className="mt-4 text-2xl font-semibold text-slate-900">
+          <h1 className="mt-4 text-2xl font-semibold text-[#003d20]">
             Verify your phone
           </h1>
           <p className="mt-2 text-sm text-slate-600">
@@ -132,6 +132,7 @@ function LoginPageContent() {
           </label>
           <input
             id="phone"
+            name="phone"
             type="tel"
             maxLength={10}
             placeholder="Enter 10-digit WhatsApp number"
@@ -142,8 +143,9 @@ function LoginPageContent() {
             }}
             disabled={loading}
             inputMode="numeric"
-            autoComplete="tel"
-            className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 placeholder:text-slate-400 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-300 disabled:cursor-not-allowed disabled:bg-slate-100"
+            pattern="[0-9]*"
+            autoComplete="tel-national"
+            className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 placeholder:text-slate-400 focus:border-orange-500 focus:outline-none focus:ring-2 focus:ring-orange-500/25 disabled:cursor-not-allowed disabled:bg-slate-100"
             aria-describedby="phone-helper"
           />
           <p id="phone-helper" className="text-xs text-slate-500">
@@ -163,7 +165,7 @@ function LoginPageContent() {
         <button
           type="submit"
           disabled={loading}
-          className="mt-5 inline-flex w-full items-center justify-center rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+          className="mt-5 inline-flex w-full items-center justify-center rounded-xl bg-[#003d20] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#00542b] disabled:cursor-not-allowed disabled:opacity-60"
         >
           {loading ? "Sending..." : "Send OTP"}
         </button>

@@ -205,6 +205,17 @@ export default function Sidebar() {
   useEffect(() => {
     if (typeof window === "undefined") return;
     const onProviderProfileUpdated = () => {
+      // Logout race guard: an in-flight fetchProviderDashboardProfile() can
+      // resolve AFTER handleLogout has already nulled state and cleared
+      // localStorage. The helper writes the fresh payload back to
+      // localStorage and dispatches this event, so without this check the
+      // listener would re-read the just-written cache and re-populate
+      // providerProfile, leaving the header showing the old provider name
+      // and Phone Verified badge until the next page reload.
+      if (!getAuthSession()) {
+        setProviderProfile(null);
+        return;
+      }
       if (readAdminSession()) {
         setProviderProfile(null);
         return;
@@ -469,12 +480,18 @@ export default function Sidebar() {
       window.localStorage.removeItem(ADMIN_SESSION_STORAGE_KEY);
     }
     setIsOpen(false);
+    // clearAuthSession() must run BEFORE dispatching `auth-updated`. The
+    // dispatch fires our own listener synchronously, which re-reads
+    // getAuthSession() from the kk_session_user cookie — if we dispatched
+    // first, that listener would clobber setSession(null) above with the
+    // still-present old session, leaving the sidebar visually logged in
+    // and forcing the user to tap logout a second time.
+    await clearAuthSession();
     window.dispatchEvent(
       new CustomEvent(SIDEBAR_TOGGLE_EVENT, {
         detail: { type: "auth-updated" },
       })
     );
-    await clearAuthSession();
     router.push("/");
   };
 
