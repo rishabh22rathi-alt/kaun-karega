@@ -74,24 +74,36 @@ html, body {
 }
 
 /*
- * Wordmark "?" — continuous slow rotation. Mobile-reliable.
- *
- * Previous "spin then hold at 360deg" keyframe was being short-circuited
- * by mobile compositors (the static 360deg window suppressed repaints,
- * and 0deg ↔ 360deg loop wrap was normalized away). Simple 0 → 360
- * keyframe with inline-flex wrapper renders reliably on iOS Safari and
- * Android Chrome.
+ * Wordmark "?" — fixed-size rotating wrapper around a stable inner glyph.
+ * Mobile browsers and Android WebView do not reliably repaint a raw text
+ * glyph that's the direct animated element; rotating a sized wrapper
+ * box (with translateZ(0) baseline) forces a compositor layer that
+ * actually repaints on every frame.
  */
 @keyframes kk-q-spin {
-  from { transform: rotate(0deg); }
-  to   { transform: rotate(360deg); }
+  from { transform: translateZ(0) rotate(0deg); }
+  to   { transform: translateZ(0) rotate(360deg); }
 }
 
 .kk-question-rotate {
   display: inline-flex;
-  transform-origin: center;
+  width: 0.75em;
+  height: 0.75em;
+  align-items: center;
+  justify-content: center;
+  vertical-align: baseline;
+  flex-shrink: 0;
+  transform-origin: 50% 50%;
+  animation: kk-q-spin 2.4s linear infinite;
   will-change: transform;
-  animation: kk-q-spin 5s ease-in-out infinite;
+  backface-visibility: hidden;
+  transform: translateZ(0);
+}
+
+.kk-question-glyph {
+  display: inline-block;
+  line-height: 1;
+  color: #003d20;
 }
 
 @media (prefers-reduced-motion: reduce) {

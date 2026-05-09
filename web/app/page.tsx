@@ -1106,10 +1106,10 @@ const hasArea = area.trim() !== "";
                 कौन
               </span>
               <div className="flex flex-col items-start">
-                <span className="relative inline-block text-[2.4rem] font-extrabold tracking-[0.06em] text-[#003d20] sm:text-5xl md:text-[4.35rem]">
+                <span className="relative inline-block whitespace-nowrap text-[2.4rem] font-extrabold tracking-[0.06em] text-[#003d20] sm:text-5xl md:text-[4.35rem]">
                   <span className="relative inline-block pb-1 after:absolute after:bottom-0 after:left-0 after:h-[5px] after:w-full after:translate-y-[-2px] after:bg-orange-600 after:content-['']">
                     KAREGA
-                  </span><span className="kk-question-rotate">?</span>
+                  </span><span className="kk-question-rotate" aria-hidden="true"><span className="kk-question-glyph">?</span></span>
                 </span>
                 <p className="mt-1 text-[11px] font-semibold uppercase tracking-[0.24em] text-gray-600 sm:mt-2 sm:text-xs">
                   Jodhpur Local Services
@@ -1119,10 +1119,10 @@ const hasArea = area.trim() !== "";
           </div>
 
           {/* Search bar */}
-          <div className="mx-auto mt-1 max-w-xl md:mt-3">
+          <div className="mx-auto mt-7 max-w-xl md:mt-9">
 
             <div className="relative">
-              <div data-tour="service" className="relative flex items-center rounded-2xl border border-orange-600/25 bg-white px-4 py-3 shadow-[0_18px_45px_rgba(234,88,12,0.12)] transition-all duration-200 focus-within:border-orange-600/40 focus-within:ring-2 focus-within:ring-orange-600/20 focus-within:shadow-[0_20px_50px_rgba(234,88,12,0.16)]">
+              <div data-tour="service" className="relative flex items-center rounded-2xl border border-orange-600/40 bg-orange-50/40 px-4 py-3 shadow-[0_22px_55px_rgba(234,88,12,0.18),0_4px_12px_rgba(15,23,42,0.08)] transition-all duration-200 focus-within:border-orange-600/55 focus-within:ring-2 focus-within:ring-orange-600/20 focus-within:shadow-[0_25px_60px_rgba(234,88,12,0.22),0_5px_14px_rgba(15,23,42,0.10)]">
                 {/* Brand-tinted lucide search icon. The green stroke matches
                     the KAREGA wordmark; an absolute orange accent dot sits
                     at the lens centre for a marketplace-feel hit-mark.
@@ -1157,7 +1157,7 @@ const hasArea = area.trim() !== "";
                     onDrop={(e) => e.preventDefault()}
                     onDragOver={(e) => e.preventDefault()}
                     placeholder={isHydrated && !isCategoryFocused && twText ? "" : "What service do you need? (e.g. Electrician)"}
-                    className="w-full bg-transparent pr-3 text-base text-slate-900 outline-none placeholder:text-slate-400 md:text-lg"
+                    className="w-full bg-transparent pr-3 text-base text-[#003d20] caret-[#003d20] outline-none placeholder:text-slate-400 md:text-lg"
                   />
                   {/* Typewriter overlay — anchored to input wrapper */}
                   {isHydrated && !isCategoryFocused && category === "" && twText !== "" && (
@@ -1166,7 +1166,7 @@ const hasArea = area.trim() !== "";
                       className="pointer-events-none select-none absolute inset-0 flex items-center bg-white"
                       onDragStart={(e) => e.preventDefault()}
                     >
-                      <span className="text-base font-medium text-slate-500 md:text-lg">
+                      <span className="text-base font-medium text-[#003d20] md:text-lg">
                         {twText}
                         <span
                           className="ml-px"
@@ -1261,59 +1261,83 @@ const hasArea = area.trim() !== "";
                 )}
             </div>
 
-            {/* Trust strip */}
+            {/* Popular-search chips — tap surface that calls the existing
+                selectCategory handler. No new logic; mirrors the trust-strip
+                fade-on-engage pattern below. */}
             <div
-              className={`mt-5 grid grid-cols-3 gap-2 overflow-hidden select-none transition-all duration-300 ease-out sm:gap-3 ${
+              className={`mt-4 select-none overflow-hidden transition-all duration-300 ease-out ${
                 hasStartedRequest
-                  ? "max-h-0 translate-y-[-6px] opacity-0"
+                  ? "max-h-0 translate-y-[-4px] opacity-0"
                   : "max-h-32 translate-y-0 opacity-100"
               }`}
               aria-hidden={hasStartedRequest}
             >
-              {[
-                { icon: "✓", label: "Trusted", desc: "Verified providers" },
-                { icon: "⚡", label: "Quick", desc: "Matched in minutes" },
-                { icon: "★", label: "Reliable", desc: "Real reviews" },
-              ].map(({ icon, label, desc }) => (
-                <div
-                  key={label}
-                  className="flex flex-col items-center rounded-xl border border-slate-100 bg-slate-50 px-2 py-3 text-center sm:px-3"
-                >
-                  <span className="text-base text-[#003d20]/60">{icon}</span>
-                  <p className="mt-1 text-sm font-medium text-slate-600">{label}</p>
-                  <p className="mt-0.5 text-[11px] leading-snug text-slate-400 sm:text-xs sm:leading-normal">{desc}</p>
-                </div>
-              ))}
+              <div className="flex flex-wrap items-center justify-center gap-1.5 sm:gap-2">
+                <span className="mr-1 text-[10px] font-bold uppercase tracking-widest text-[#003d20]">
+                  Popular
+                </span>
+                {["Electrician", "Plumber", "AC Repair", "Carpenter", "Tutor", "Tailor"].map((label) => (
+                  <button
+                    key={label}
+                    type="button"
+                    onClick={() => selectCategory(label)}
+                    className="rounded-full border border-orange-600/25 bg-white px-3 py-1.5 text-xs font-medium text-[#003d20] shadow-sm transition hover:border-orange-600/40 hover:bg-orange-50 hover:shadow active:scale-[0.97]"
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Hero tiles — 6 unified cards (3 trust + 3 stats) rendered
+                from one shared template so all dimensions stay identical. */}
+            <div
+              className={`mt-5 select-none overflow-hidden transition-all duration-300 ease-out ${
+                hasStartedRequest
+                  ? "max-h-0 translate-y-[-6px] opacity-0"
+                  : "max-h-[320px] translate-y-0 opacity-100"
+              }`}
+              aria-hidden={hasStartedRequest}
+            >
+              <div className="grid grid-cols-3 gap-2 sm:gap-3">
+                {[
+                  { primary: "Trusted",  secondary: "Verified providers", icon: "✓",  theme: "green"  as const },
+                  { primary: "Quick",    secondary: "Matched in seconds", icon: "⚡", theme: "orange" as const },
+                  { primary: "Reliable", secondary: "Real reviews",       icon: "★",  theme: "green"  as const },
+                  { primary: "250+",     secondary: "Service Types",      icon: null, theme: "orange" as const },
+                  { primary: "100+",     secondary: "Areas in Jodhpur",   icon: null, theme: "green"  as const },
+                  { primary: "Free",     secondary: "To Post a Request",  icon: null, theme: "orange" as const },
+                ].map((tile) => (
+                  <div
+                    key={tile.primary}
+                    className={`flex min-h-[118px] flex-col items-center justify-center rounded-2xl border px-2 py-3 text-center shadow-sm sm:px-3 ${
+                      tile.theme === "green"
+                        ? "border-[#003d20]/30 bg-green-100/70"
+                        : "border-orange-700/30 bg-orange-100/70"
+                    }`}
+                  >
+                    {tile.icon && (
+                      <span className={`text-base ${tile.theme === "green" ? "text-[#003d20]" : "text-orange-600"}`}>
+                        {tile.icon}
+                      </span>
+                    )}
+                    <p
+                      className={`${tile.icon ? "mt-1 text-sm font-semibold" : "text-lg font-bold"} ${
+                        tile.theme === "green" ? "text-[#003d20]" : "text-orange-700"
+                      }`}
+                    >
+                      {tile.primary}
+                    </p>
+                    <p className="mt-0.5 text-[11px] leading-snug text-slate-500 sm:text-xs sm:leading-normal">
+                      {tile.secondary}
+                    </p>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         </div>
       </section>
-
-      {/* ── STATS BAR ────────────────────────────────────────────────── */}
-      <div
-        className={`overflow-hidden border-b bg-white select-none transition-all duration-300 ease-out ${
-          hasStartedRequest
-            ? "max-h-0 border-transparent opacity-0"
-            : "max-h-24 border-slate-100 opacity-100"
-        }`}
-        aria-hidden={hasStartedRequest}
-        onDragStart={(e) => e.preventDefault()}
-      >
-          <div className="mx-auto grid max-w-2xl grid-cols-3 divide-x divide-slate-100">
-            <div className="py-3 text-center">
-              <p className="text-lg font-semibold text-[#003d20]/60">50+</p>
-              <p className="mt-0.5 text-[11px] leading-snug text-slate-400 sm:text-xs sm:leading-normal">Service Types</p>
-            </div>
-            <div className="py-3 text-center">
-              <p className="text-lg font-semibold text-[#003d20]/60">40+</p>
-              <p className="mt-0.5 text-[11px] leading-snug text-slate-400 sm:text-xs sm:leading-normal">Areas in Jodhpur</p>
-            </div>
-            <div className="py-3 text-center">
-              <p className="text-lg font-semibold text-[#003d20]/60">Free</p>
-              <p className="mt-0.5 text-[11px] leading-snug text-slate-400 sm:text-xs sm:leading-normal">To Post a Request</p>
-            </div>
-          </div>
-        </div>
 
       {/* ── PROGRESSIVE FORM STEPS ───────────────────────────────────── */}
       {hasCategory && (
