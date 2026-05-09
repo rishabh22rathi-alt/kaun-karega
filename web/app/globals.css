@@ -92,11 +92,15 @@ html, body {
  * Suppressed for users with prefers-reduced-motion: reduce.
  */
 @keyframes kk-q-spin {
-  0%   { transform: rotate(0deg)   scale(1); }
-  48%  { transform: rotate(360deg) scale(1); }
-  51%  { transform: rotate(360deg) scale(1.06); }
-  54%  { transform: rotate(360deg) scale(1); }
-  100% { transform: rotate(360deg) scale(1); }
+  /* translate3d(0,0,0) forces a GPU compositor layer on mobile browsers
+     (iOS Safari, Android Chrome) — without it, an inline-block element
+     containing a single text glyph is not promoted to its own layer
+     and the rotation ticks happen without a visible repaint. */
+  0%   { transform: translate3d(0,0,0) rotate(0deg)   scale(1); }
+  48%  { transform: translate3d(0,0,0) rotate(360deg) scale(1); }
+  51%  { transform: translate3d(0,0,0) rotate(360deg) scale(1.06); }
+  54%  { transform: translate3d(0,0,0) rotate(360deg) scale(1); }
+  100% { transform: translate3d(0,0,0) rotate(360deg) scale(1); }
 }
 
 .kk-q-wobble {
