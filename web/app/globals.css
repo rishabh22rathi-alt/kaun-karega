@@ -74,45 +74,28 @@ html, body {
 }
 
 /*
- * Wordmark "?" — slow clockwise spin, subtle pop, then a 2-second rest.
+ * Wordmark "?" — continuous slow rotation. Mobile-reliable.
  *
- * Cycle (5.0 s total):
- *   0%   →  48%   (≈2.4 s)  Slow clockwise rotation, 0deg → 360deg.
- *   48%  →  51%   (≈0.15 s) Pop: scale 1 → 1.06.
- *   51%  →  54%   (≈0.15 s) Settle: scale 1.06 → 1.
- *   54%  → 100%   (≈2.3 s)  Hold at rest before the next cycle.
- *
- * Rotation pivots around the geometric centre of the glyph
- * (`transform-origin: 50% 50%`) so the baseline alignment with KAREGA
- * is preserved at every frame — the bounding box never moves, only
- * the glyph rotates inside it. Combining rotate + scale on one
- * `transform` keeps the paint compositor-only (GPU-friendly, no
- * layout shift, no jitter on neighboring text).
- *
- * Suppressed for users with prefers-reduced-motion: reduce.
+ * Previous "spin then hold at 360deg" keyframe was being short-circuited
+ * by mobile compositors (the static 360deg window suppressed repaints,
+ * and 0deg ↔ 360deg loop wrap was normalized away). Simple 0 → 360
+ * keyframe with inline-flex wrapper renders reliably on iOS Safari and
+ * Android Chrome.
  */
 @keyframes kk-q-spin {
-  /* translate3d(0,0,0) forces a GPU compositor layer on mobile browsers
-     (iOS Safari, Android Chrome) — without it, an inline-block element
-     containing a single text glyph is not promoted to its own layer
-     and the rotation ticks happen without a visible repaint. */
-  0%   { transform: translate3d(0,0,0) rotate(0deg)   scale(1); }
-  48%  { transform: translate3d(0,0,0) rotate(360deg) scale(1); }
-  51%  { transform: translate3d(0,0,0) rotate(360deg) scale(1.06); }
-  54%  { transform: translate3d(0,0,0) rotate(360deg) scale(1); }
-  100% { transform: translate3d(0,0,0) rotate(360deg) scale(1); }
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
 }
 
-.kk-q-wobble {
-  display: inline-block;
-  transform-origin: 50% 50%;
-  animation: kk-q-spin 5s cubic-bezier(0.65, 0, 0.35, 1) infinite;
-  backface-visibility: hidden;
+.kk-question-rotate {
+  display: inline-flex;
+  transform-origin: center;
   will-change: transform;
+  animation: kk-q-spin 5s ease-in-out infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .kk-q-wobble {
+  .kk-question-rotate {
     animation: none;
   }
 }

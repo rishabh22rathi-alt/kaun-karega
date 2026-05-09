@@ -1109,7 +1109,7 @@ const hasArea = area.trim() !== "";
                 <span className="relative inline-block text-[2.4rem] font-extrabold tracking-[0.06em] text-[#003d20] sm:text-5xl md:text-[4.35rem]">
                   <span className="relative inline-block pb-1 after:absolute after:bottom-0 after:left-0 after:h-[5px] after:w-full after:translate-y-[-2px] after:bg-orange-600 after:content-['']">
                     KAREGA
-                  </span><span className="kk-q-wobble">?</span>
+                  </span><span className="kk-question-rotate">?</span>
                 </span>
                 <p className="mt-1 text-[11px] font-semibold uppercase tracking-[0.24em] text-gray-600 sm:mt-2 sm:text-xs">
                   Jodhpur Local Services
