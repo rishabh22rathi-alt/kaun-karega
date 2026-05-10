@@ -1,11 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getAuthSession } from "@/lib/auth";
 import { getTaskDisplayLabel } from "@/lib/taskDisplay";
 import InAppToastStack, { type InAppToast } from "@/components/InAppToastStack";
+import ProviderPledgeModal from "@/components/ProviderPledgeModal";
+import { PROVIDER_PLEDGE_VERSION } from "@/lib/disclaimer";
 
 type MatchedJob = {
   TaskID: string;
@@ -103,6 +105,13 @@ export default function ProviderMyJobsPage() {
   const [openingChatTaskId, setOpeningChatTaskId] = useState("");
   const [chatErrorByTaskId, setChatErrorByTaskId] = useState<Record<string, string>>({});
   const [toasts, setToasts] = useState<InAppToast[]>([]);
+  // Provider Responsibility Pledge — Phase C. See note in
+  // /provider/job-requests/page.tsx for the design rationale; same
+  // pattern is repeated per-page intentionally to avoid a shared hook.
+  const [pledgeOpen, setPledgeOpen] = useState(false);
+  const [pledgeAccepting, setPledgeAccepting] = useState(false);
+  const [pledgeAcceptError, setPledgeAcceptError] = useState<string | null>(null);
+  const pendingChatRef = useRef<(() => Promise<void>) | null>(null);
 
   const showSuccessToast = (message: string) => {
     const id = `myjobs-toast-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -227,6 +236,18 @@ export default function ProviderMyJobsPage() {
       }
     }
 
+    await openThreadAndNavigate(taskId, phone);
+  };
+
+  // Same retry-friendly inner closure pattern as job-requests/page.tsx.
+  // The implicit /api/tasks/respond runs once outside this function;
+  // pledge-driven retries only re-run the chat-thread step.
+  const openThreadAndNavigate = async (
+    taskId: string,
+    providerPhone: string
+  ): Promise<void> => {
+    setOpeningChatTaskId(taskId);
+    setChatErrorByTaskId((current) => ({ ...current, [taskId]: "" }));
     try {
       const res = await fetch("/api/kk", {
         method: "POST",
@@ -235,18 +256,30 @@ export default function ProviderMyJobsPage() {
           action: "chat_create_or_get_thread",
           ActorType: "provider",
           TaskID: taskId,
-          loggedInProviderPhone: phone,
+          loggedInProviderPhone: providerPhone,
         }),
       });
-      const data = (await res.json()) as {
-        ok?: boolean;
-        ThreadID?: string;
-        threadId?: string;
-        thread?: { ThreadID?: string };
-        error?: string;
-      };
-      const threadId =
-        String(data?.ThreadID || data?.threadId || data?.thread?.ThreadID || "").trim();
+      const data = (await res.json().catch(() => null)) as
+        | {
+            ok?: boolean;
+            ThreadID?: string;
+            threadId?: string;
+            thread?: { ThreadID?: string };
+            error?: string;
+          }
+        | null;
+
+      if (res.status === 403 && data?.error === "PLEDGE_REQUIRED") {
+        pendingChatRef.current = () =>
+          openThreadAndNavigate(taskId, providerPhone);
+        setPledgeAcceptError(null);
+        setPledgeOpen(true);
+        return;
+      }
+
+      const threadId = String(
+        data?.ThreadID || data?.threadId || data?.thread?.ThreadID || ""
+      ).trim();
       if (!res.ok || !data?.ok || !threadId) {
         setChatErrorByTaskId((current) => ({
           ...current,
@@ -263,6 +296,42 @@ export default function ProviderMyJobsPage() {
     } finally {
       setOpeningChatTaskId("");
     }
+  };
+
+  const acceptProviderPledge = async () => {
+    setPledgeAccepting(true);
+    setPledgeAcceptError(null);
+    try {
+      const res = await fetch("/api/provider/pledge", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ version: PROVIDER_PLEDGE_VERSION }),
+      });
+      const data = (await res.json().catch(() => null)) as
+        | { ok?: boolean; error?: string }
+        | null;
+      if (!res.ok || !data?.ok) {
+        setPledgeAcceptError("Could not save right now. Please try again.");
+        return;
+      }
+      setPledgeOpen(false);
+      const queued = pendingChatRef.current;
+      pendingChatRef.current = null;
+      if (queued) {
+        void queued();
+      }
+    } catch {
+      setPledgeAcceptError("Could not save right now. Please try again.");
+    } finally {
+      setPledgeAccepting(false);
+    }
+  };
+
+  const dismissProviderPledge = () => {
+    pendingChatRef.current = null;
+    setPledgeOpen(false);
+    setPledgeAcceptError(null);
   };
 
   if (loading) {
@@ -403,6 +472,7 @@ export default function ProviderMyJobsPage() {
                       type="button"
                       onClick={() => void openChatForJob(job)}
                       disabled={!taskId || isOpening}
+                      data-testid="kk-provider-open-chat"
                       className="inline-flex items-center justify-center rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-600 disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       {isOpening ? "Opening..." : job.Responded ? "Chat" : "Respond"}
@@ -425,6 +495,13 @@ export default function ProviderMyJobsPage() {
         </div>
       </div>
       <InAppToastStack toasts={toasts} onDismiss={dismissToast} />
+      <ProviderPledgeModal
+        open={pledgeOpen}
+        onAccept={acceptProviderPledge}
+        onDismiss={dismissProviderPledge}
+        isAccepting={pledgeAccepting}
+        acceptError={pledgeAcceptError}
+      />
     </main>
   );
 }

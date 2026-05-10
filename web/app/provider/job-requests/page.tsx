@@ -1,11 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getAuthSession } from "@/lib/auth";
 import { getTaskDisplayLabel } from "@/lib/taskDisplay";
 import InAppToastStack, { type InAppToast } from "@/components/InAppToastStack";
+import ProviderPledgeModal from "@/components/ProviderPledgeModal";
+import { PROVIDER_PLEDGE_VERSION } from "@/lib/disclaimer";
 
 type MatchedRequest = {
   TaskID: string;
@@ -62,6 +64,15 @@ export default function ProviderJobRequestsPage() {
   const [openingChatTaskId, setOpeningChatTaskId] = useState("");
   const [chatErrorByTaskId, setChatErrorByTaskId] = useState<Record<string, string>>({});
   const [toasts, setToasts] = useState<InAppToast[]>([]);
+  // Provider Responsibility Pledge — Phase C. Local state only, no
+  // localStorage. The chat-thread-creation step intercepts a 403
+  // PLEDGE_REQUIRED silently and stashes a retry closure in
+  // pendingChatRef; on accept we run that closure directly without a
+  // setTimeout (the closure carries its own state via captured args).
+  const [pledgeOpen, setPledgeOpen] = useState(false);
+  const [pledgeAccepting, setPledgeAccepting] = useState(false);
+  const [pledgeAcceptError, setPledgeAcceptError] = useState<string | null>(null);
+  const pendingChatRef = useRef<(() => Promise<void>) | null>(null);
 
   const showSuccessToast = (message: string) => {
     const id = `job-toast-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -180,6 +191,23 @@ export default function ProviderJobRequestsPage() {
       }
     }
 
+    await openThreadAndNavigate(taskId, phone);
+  };
+
+  // Inner closure: just the chat-thread-creation + navigation step. Split
+  // out so the silent 403 PLEDGE_REQUIRED path can stash this exact call
+  // (with its captured taskId/phone) into pendingChatRef and re-run it
+  // verbatim after the provider accepts the pledge — no setTimeout, no
+  // stale-closure trap. The implicit /api/tasks/respond call above is
+  // intentionally NOT part of the retry loop (it ran once on the first
+  // click and flipped Responded=true; running it again would noop or
+  // notify twice).
+  const openThreadAndNavigate = async (
+    taskId: string,
+    providerPhone: string
+  ): Promise<void> => {
+    setOpeningChatTaskId(taskId);
+    setChatErrorByTaskId((current) => ({ ...current, [taskId]: "" }));
     try {
       const res = await fetch("/api/kk", {
         method: "POST",
@@ -188,18 +216,33 @@ export default function ProviderJobRequestsPage() {
           action: "chat_create_or_get_thread",
           ActorType: "provider",
           TaskID: taskId,
-          loggedInProviderPhone: phone,
+          loggedInProviderPhone: providerPhone,
         }),
       });
-      const data = (await res.json()) as {
-        ok?: boolean;
-        ThreadID?: string;
-        threadId?: string;
-        thread?: { ThreadID?: string };
-        error?: string;
-      };
-      const threadId =
-        String(data?.ThreadID || data?.threadId || data?.thread?.ThreadID || "").trim();
+      const data = (await res.json().catch(() => null)) as
+        | {
+            ok?: boolean;
+            ThreadID?: string;
+            threadId?: string;
+            thread?: { ThreadID?: string };
+            error?: string;
+          }
+        | null;
+
+      // Silent provider-pledge gate. Phase B's /api/kk gate returns 403
+      // PLEDGE_REQUIRED for legacy/imported providers; show the modal
+      // with no scary toast and queue the retry.
+      if (res.status === 403 && data?.error === "PLEDGE_REQUIRED") {
+        pendingChatRef.current = () =>
+          openThreadAndNavigate(taskId, providerPhone);
+        setPledgeAcceptError(null);
+        setPledgeOpen(true);
+        return;
+      }
+
+      const threadId = String(
+        data?.ThreadID || data?.threadId || data?.thread?.ThreadID || ""
+      ).trim();
       if (!res.ok || !data?.ok || !threadId) {
         setChatErrorByTaskId((current) => ({
           ...current,
@@ -216,6 +259,45 @@ export default function ProviderJobRequestsPage() {
     } finally {
       setOpeningChatTaskId("");
     }
+  };
+
+  const acceptProviderPledge = async () => {
+    setPledgeAccepting(true);
+    setPledgeAcceptError(null);
+    try {
+      const res = await fetch("/api/provider/pledge", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ version: PROVIDER_PLEDGE_VERSION }),
+      });
+      const data = (await res.json().catch(() => null)) as
+        | { ok?: boolean; error?: string }
+        | null;
+      if (!res.ok || !data?.ok) {
+        setPledgeAcceptError("Could not save right now. Please try again.");
+        return;
+      }
+      setPledgeOpen(false);
+      const queued = pendingChatRef.current;
+      pendingChatRef.current = null;
+      if (queued) {
+        // Direct call — no setTimeout. The closure carries its own taskId
+        // and providerPhone via captured args, so there is no stale-state
+        // dependency on this render's React state.
+        void queued();
+      }
+    } catch {
+      setPledgeAcceptError("Could not save right now. Please try again.");
+    } finally {
+      setPledgeAccepting(false);
+    }
+  };
+
+  const dismissProviderPledge = () => {
+    pendingChatRef.current = null;
+    setPledgeOpen(false);
+    setPledgeAcceptError(null);
   };
 
   if (loading) {
@@ -328,6 +410,7 @@ export default function ProviderJobRequestsPage() {
                       type="button"
                       onClick={() => void openChatForTask(request)}
                       disabled={!taskId || isOpening}
+                      data-testid="kk-provider-open-chat"
                       className="inline-flex items-center justify-center rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-600 disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       {isOpening ? "Opening..." : "Chat"}
@@ -350,6 +433,13 @@ export default function ProviderJobRequestsPage() {
         </div>
       </div>
       <InAppToastStack toasts={toasts} onDismiss={dismissToast} />
+      <ProviderPledgeModal
+        open={pledgeOpen}
+        onAccept={acceptProviderPledge}
+        onDismiss={dismissProviderPledge}
+        isAccepting={pledgeAccepting}
+        acceptError={pledgeAcceptError}
+      />
     </main>
   );
 }

@@ -8,6 +8,7 @@ type WhenNeedItProps = {
   timeSlot: string;
   minDate?: string;
   dateError?: string;
+  showQuestionLabel?: boolean;
   onSelect: (timeValue: string) => void;
   onServiceDateChange: (date: string) => void;
   onTimeSlotChange: (slot: string) => void;
@@ -36,6 +37,7 @@ export default function WhenNeedIt({
   timeSlot,
   minDate = "",
   dateError = "",
+  showQuestionLabel = true,
   onSelect,
   onServiceDateChange,
   onTimeSlotChange,
@@ -61,9 +63,11 @@ export default function WhenNeedIt({
 
   return (
     <div className="w-full">
-      <p className="mb-2 text-sm font-semibold text-[#111827]">
-        When do you need it?
-      </p>
+      {showQuestionLabel ? (
+        <p className="mb-2 text-sm font-semibold text-[#111827]">
+          When do you need it?
+        </p>
+      ) : null}
       <div className="flex flex-wrap gap-2">
         {OPTIONS.map((option) => {
           const active = selectedTime === option;

@@ -9,7 +9,15 @@ import AreaSelection, {
 } from "@/app/(public)/components/AreaSelection";
 import WhenNeedIt from "@/app/(public)/components/WhenNeedIt";
 import FirstVisitCoachmark from "@/components/FirstVisitCoachmark";
+import UserDisclaimerModal from "@/components/UserDisclaimerModal";
 import { getAuthSession } from "@/lib/auth";
+import {
+  DISCLAIMER_LOCALSTORAGE_KEY,
+  DISCLAIMER_VERSION,
+  isDisclaimerFresh,
+  readLocalDisclaimer,
+  writeLocalDisclaimer,
+} from "@/lib/disclaimer";
 
 const MASTER_AREAS = [
   "Sardarpura",
@@ -337,6 +345,24 @@ function PageContent() {
   // URL value can't snap back over a user-picked canonical.
   const userPickedCategoryRef = useRef(false);
 
+  // ── Disclaimer (Phase 2) ────────────────────────────────────────────────
+  // null = unknown (still bootstrapping), true = fresh, false = needs accept.
+  const [disclaimerFresh, setDisclaimerFresh] = useState<boolean | null>(null);
+  const [disclaimerOpen, setDisclaimerOpen] = useState(false);
+  const [disclaimerMode, setDisclaimerMode] = useState<"soft" | "blocking">(
+    "soft"
+  );
+  const [disclaimerAccepting, setDisclaimerAccepting] = useState(false);
+  const [disclaimerAcceptError, setDisclaimerAcceptError] = useState<
+    string | null
+  >(null);
+  // User clicked Later during this mount — suppresses any further auto-open
+  // of the soft modal until next mount/login. Submit attempts still open it
+  // in blocking mode (independent path).
+  const dismissedSoftRef = useRef(false);
+  // A submit was queued while the blocking modal was up — retry on accept.
+  const pendingSubmitRef = useRef(false);
+
   // ── Typewriter animation ──────────────────────────────────────────────────
   // Cycles through real Kaun Karega service categories so users immediately
   // see the breadth of the platform: trades, classes, repairs, events,
@@ -440,6 +466,107 @@ function PageContent() {
   useEffect(() => {
     setIsHydrated(true);
   }, []);
+
+  // ── Disclaimer bootstrap ───────────────────────────────────────────────
+  // Runs once after hydration when the user is logged in. localStorage is
+  // a UI HINT only — never a freshness oracle. The previous implementation
+  // skipped the server GET when the local record looked fresh, which
+  // masked any server-side rollback (e.g. profiles.disclaimer_accepted_at
+  // manually reset to an old date) and left the soft modal stuck closed.
+  //
+  // New flow:
+  //   1. Set initial state optimistically from the localStorage hint so the
+  //      page paints without a flicker.
+  //   2. ALWAYS fire GET /api/user/disclaimer.
+  //   3. Reconcile against the server response:
+  //        isFresh:true  → sync localStorage from the server record, keep
+  //                        state at true. No prompt.
+  //        isFresh:false → flip state to false, REMOVE the stale local
+  //                        record (otherwise the next mount would trust
+  //                        the optimistic hint again), and schedule the
+  //                        soft prompt with the existing 800–1200ms jitter.
+  //                        dismissedSoftRef still gates auto-reopens.
+  //   4. Network failure → keep best-effort behaviour: leave state as the
+  //      hint suggested, do not show a scary error, do not auto-prompt.
+  //      Genuine drift is still caught by the existing 403
+  //      DISCLAIMER_REQUIRED interception in submitResolvedRequest.
+  useEffect(() => {
+    if (!isHydrated) return;
+    const session = getAuthSession();
+    if (!session?.phone) return;
+
+    const localRecord = readLocalDisclaimer();
+    const localFresh = isDisclaimerFresh(localRecord);
+    setDisclaimerFresh(localFresh);
+
+    let cancelled = false;
+    let promptTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const scheduleSoftPrompt = () => {
+      const delay = 800 + Math.floor(Math.random() * 401); // 800–1200ms
+      promptTimer = setTimeout(() => {
+        if (cancelled) return;
+        if (dismissedSoftRef.current) return;
+        setDisclaimerMode("soft");
+        setDisclaimerOpen(true);
+      }, delay);
+    };
+
+    fetch("/api/user/disclaimer", { credentials: "same-origin" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then(
+        (
+          data:
+            | {
+                ok?: boolean;
+                version?: string | null;
+                acceptedAt?: string | null;
+                isFresh?: boolean;
+              }
+            | null
+        ) => {
+          if (cancelled) return;
+          if (data?.isFresh) {
+            if (
+              typeof data.version === "string" &&
+              typeof data.acceptedAt === "string"
+            ) {
+              writeLocalDisclaimer(data.version, data.acceptedAt);
+            }
+            setDisclaimerFresh(true);
+            return;
+          }
+          // Server-authoritative not-fresh. Drop the stale local hint so
+          // a future mount cannot trust it again; without this clear, a
+          // DB rollback (admin reset, manual edit) would never surface
+          // because the bootstrap would keep painting with the cached
+          // fresh hint.
+          if (typeof window !== "undefined") {
+            try {
+              window.localStorage.removeItem(DISCLAIMER_LOCALSTORAGE_KEY);
+            } catch {
+              // Storage unavailable / quota — non-fatal. Server remains
+              // the source of truth; the next /api/submit-request call
+              // will still 403 if needed.
+            }
+          }
+          setDisclaimerFresh(false);
+          scheduleSoftPrompt();
+        }
+      )
+      .catch(() => {
+        if (cancelled) return;
+        // Best-effort offline: leave state at whatever the localStorage
+        // hint already set above. No auto-prompt, no toast. If the user
+        // is genuinely stale, the existing 403 DISCLAIMER_REQUIRED path
+        // on submit will silently open the blocking modal.
+      });
+
+    return () => {
+      cancelled = true;
+      if (promptTimer) clearTimeout(promptTimer);
+    };
+  }, [isHydrated]);
 
   useEffect(() => {
     if (userPickedCategoryRef.current) return;
@@ -838,6 +965,74 @@ function PageContent() {
     );
   };
 
+const acceptDisclaimer = async () => {
+  setDisclaimerAccepting(true);
+  setDisclaimerAcceptError(null);
+  try {
+    const res = await fetch("/api/user/disclaimer", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ version: DISCLAIMER_VERSION }),
+    });
+    const data = (await res.json().catch(() => null)) as
+      | {
+          ok?: boolean;
+          error?: string;
+          version?: string;
+          acceptedAt?: string;
+        }
+      | null;
+    if (!res.ok || !data?.ok) {
+      setDisclaimerAcceptError("Could not save right now. Please try again.");
+      return;
+    }
+    if (
+      typeof data.version === "string" &&
+      typeof data.acceptedAt === "string"
+    ) {
+      writeLocalDisclaimer(data.version, data.acceptedAt);
+    }
+    setDisclaimerFresh(true);
+    setDisclaimerOpen(false);
+    // Retry a queued submission immediately, bypassing handleSubmit's
+    // disclaimer pre-flight. Going through handleSubmit here would read
+    // `disclaimerFresh` from this render's closure — which is still the
+    // OLD `false` value because setDisclaimerFresh(true) above is queued
+    // and won't apply until React commits the next render. The previous
+    // setTimeout(0) wrapper did not fix this (timer fires before the
+    // render commit, so the stale closure was still being invoked) and
+    // forced the user to click Accept twice.
+    //
+    // We just confirmed freshness with the server, so we can skip the
+    // pre-flight check. The other form guards (area, canSubmit,
+    // serviceDate, time) already passed on the original Submit click,
+    // and the blocking modal prevents the form from being mutated in
+    // between, so categoryResolution and the form payload captured in
+    // this closure are still the values the user wants to send. If the
+    // server somehow disagrees on freshness (race / cross-format
+    // profiles row), submitResolvedRequest's own 403 DISCLAIMER_REQUIRED
+    // branch will silently reopen the blocking modal — same recovery
+    // path as a first-time submit.
+    if (pendingSubmitRef.current) {
+      pendingSubmitRef.current = false;
+      void submitResolvedRequest(categoryResolution);
+    }
+  } catch {
+    setDisclaimerAcceptError("Network error. Please try again.");
+  } finally {
+    setDisclaimerAccepting(false);
+  }
+};
+
+const dismissDisclaimer = () => {
+  // Soft mode only — the Later button is hidden in blocking mode, so this
+  // path is unreachable when a submit is queued. Setting the ref prevents
+  // the soft prompt from auto-reopening during this mount.
+  dismissedSoftRef.current = true;
+  setDisclaimerOpen(false);
+};
+
 const handleSubmit = async () => {
   setError("");
   setDebug("");
@@ -870,6 +1065,18 @@ const handleSubmit = async () => {
 
   const session = getAuthSession();
   if (session?.phone) {
+    // Client-side pre-flight: when bootstrap has already determined the
+    // disclaimer is stale, queue the submit and open the blocking modal
+    // rather than wasting a round-trip and emitting any toast text.
+    // disclaimerFresh === null means bootstrap is still in flight — let
+    // the request go through; the server's 403 will catch and reopen the
+    // modal silently if needed.
+    if (disclaimerFresh === false) {
+      pendingSubmitRef.current = true;
+      setDisclaimerMode("blocking");
+      setDisclaimerOpen(true);
+      return;
+    }
     await submitResolvedRequest(categoryResolution);
     return;
   }
@@ -994,13 +1201,30 @@ const submitResolvedRequest = async (resolution: CategoryResolution) => {
 
     const raw = await res.text();
     const responseParsedMs = Date.now();
-    console.log("api raw", raw);
-    setDebug(`API ${res.status}\n${raw}`);
 
     let json: any = null;
     try {
       json = JSON.parse(raw);
     } catch {}
+
+    // Server-side disclaimer-freshness gate (set up in Phase 1). Silent
+    // recovery path: no setError, no setDebug, no toast. Open the
+    // blocking modal and queue the submit so the user accepts and we
+    // retry. Reaches this branch when localStorage said fresh but the
+    // server disagreed (admin invalidation, 15-day boundary crossed
+    // since localStorage write, etc.).
+    if (res.status === 403 && json?.error === "DISCLAIMER_REQUIRED") {
+      pendingSubmitRef.current = true;
+      setDisclaimerFresh(false);
+      setDisclaimerMode("blocking");
+      setDisclaimerOpen(true);
+      setLoading(false);
+      setIsRedirecting(false);
+      return;
+    }
+
+    console.log("api raw", raw);
+    setDebug(`API ${res.status}\n${raw}`);
 
     if (!res.ok) {
       setError(json?.message || json?.error || "Non-200 response");
@@ -1109,7 +1333,7 @@ const hasArea = area.trim() !== "";
                 <span className="relative inline-block whitespace-nowrap text-[2.4rem] font-extrabold tracking-[0.06em] text-[#003d20] sm:text-5xl md:text-[4.35rem]">
                   <span className="relative inline-block pb-1 after:absolute after:bottom-0 after:left-0 after:h-[5px] after:w-full after:translate-y-[-2px] after:bg-orange-600 after:content-['']">
                     KAREGA
-                  </span><span className="kk-question-rotate" aria-hidden="true"><span className="kk-question-glyph">?</span></span>
+                  </span><span className="kk-question-wave" aria-hidden="true"><span className="kk-question-glyph">?</span></span>
                 </span>
                 <p className="mt-1 text-[11px] font-semibold uppercase tracking-[0.24em] text-gray-600 sm:mt-2 sm:text-xs">
                   Jodhpur Local Services
@@ -1157,6 +1381,7 @@ const hasArea = area.trim() !== "";
                     onDrop={(e) => e.preventDefault()}
                     onDragOver={(e) => e.preventDefault()}
                     placeholder={isHydrated && !isCategoryFocused && twText ? "" : "What service do you need? (e.g. Electrician)"}
+                    data-testid="kk-home-search-input"
                     className="w-full bg-transparent pr-3 text-base text-[#003d20] caret-[#003d20] outline-none placeholder:text-slate-400 md:text-lg"
                   />
                   {/* Typewriter overlay — anchored to input wrapper */}
@@ -1189,6 +1414,7 @@ const hasArea = area.trim() !== "";
                       categoryInputRef.current?.focus();
                     }
                   }}
+                  data-testid="kk-home-submit"
                   className="ml-2 shrink-0 rounded-xl bg-[#003d20] px-5 py-2.5 text-sm font-bold text-white transition hover:bg-[#002a15] active:scale-[0.97] md:text-base"
                 >
                   Search
@@ -1281,6 +1507,7 @@ const hasArea = area.trim() !== "";
                     key={label}
                     type="button"
                     onClick={() => selectCategory(label)}
+                    data-testid="kk-home-service-chip"
                     className="rounded-full border border-orange-600/25 bg-white px-3 py-1.5 text-xs font-medium text-[#003d20] shadow-sm transition hover:border-orange-600/40 hover:bg-orange-50 hover:shadow active:scale-[0.97]"
                   >
                     {label}
@@ -1367,12 +1594,14 @@ const hasArea = area.trim() !== "";
 
           {/* Step 2: When */}
           <div data-tour="time" className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <p className="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-400">
-              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#003d20] text-[10px] font-bold text-white">
-                2
+            <div className="mb-3 flex items-center gap-3">
+              <span className="shrink-0 text-xs font-bold uppercase tracking-widest text-orange-600 sm:text-sm">
+                STEP 2
               </span>
-              When do you need it?
-            </p>
+              <h2 className="text-[17px] font-semibold leading-snug text-[#003d20] sm:text-lg">
+                When do you need it?
+              </h2>
+            </div>
             <WhenNeedIt
               selectedTime={time}
               serviceDate={serviceDate}
@@ -1391,18 +1620,21 @@ const hasArea = area.trim() !== "";
                 setTimeSlot(value);
                 if (error) setError("");
               }}
+              showQuestionLabel={false}
             />
           </div>
 
           {/* Step 3: Where */}
           {hasTime && (
             <div data-tour="area" className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-              <p className="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-400">
-                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#003d20] text-[10px] font-bold text-white">
-                  3
+              <div className="mb-3 flex items-center gap-3">
+                <span className="shrink-0 text-xs font-bold uppercase tracking-widest text-orange-600 sm:text-sm">
+                  STEP 3
                 </span>
-                Where do you need it?
-              </p>
+                <h2 className="text-[17px] font-semibold leading-snug text-[#003d20] sm:text-lg">
+                  Where do you need it?
+                </h2>
+              </div>
               <AreaSelection
                 selectedArea={area}
                 onSelect={(value) => {
@@ -1412,6 +1644,7 @@ const hasArea = area.trim() !== "";
                   console.debug("[home] area selected:", normalizedArea);
                 }}
                 errorMessage={areaError}
+                showQuestionLabel={false}
               />
             </div>
           )}
@@ -1580,6 +1813,14 @@ const hasArea = area.trim() !== "";
 
 
       <FirstVisitCoachmark />
+      <UserDisclaimerModal
+        open={disclaimerOpen}
+        mode={disclaimerMode}
+        onAccept={acceptDisclaimer}
+        onDismiss={dismissDisclaimer}
+        isAccepting={disclaimerAccepting}
+        acceptError={disclaimerAcceptError}
+      />
     </div>
   );
 }

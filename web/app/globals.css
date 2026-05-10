@@ -74,18 +74,21 @@ html, body {
 }
 
 /*
- * Wordmark "?" — fixed-size rotating wrapper around a stable inner glyph.
- * Mobile browsers and Android WebView do not reliably repaint a raw text
- * glyph that's the direct animated element; rotating a sized wrapper
- * box (with translateZ(0) baseline) forces a compositor layer that
- * actually repaints on every frame.
+ * Wordmark "?" — fixed-size waving wrapper around a stable inner glyph.
+ * Replaces the previous full 360° rotation with a gentle left/right
+ * sway so the mark feels like a friendly hello rather than a spin.
+ * Mobile browsers and Android WebView do not reliably repaint a raw
+ * text glyph that's the direct animated element; animating a sized
+ * wrapper box (with translateZ(0) baseline) forces a compositor layer
+ * that repaints on every frame.
  */
-@keyframes kk-q-spin {
-  from { transform: translateZ(0) rotate(0deg); }
-  to   { transform: translateZ(0) rotate(360deg); }
+@keyframes kk-q-wave {
+  0%   { transform: translateZ(0) translateX(-2px) rotate(-6deg); }
+  50%  { transform: translateZ(0) translateX(3px) rotate(6deg); }
+  100% { transform: translateZ(0) translateX(-2px) rotate(-6deg); }
 }
 
-.kk-question-rotate {
+.kk-question-wave {
   display: inline-flex;
   width: 0.75em;
   height: 0.75em;
@@ -94,7 +97,7 @@ html, body {
   vertical-align: baseline;
   flex-shrink: 0;
   transform-origin: 50% 50%;
-  animation: kk-q-spin 2.4s linear infinite;
+  animation: kk-q-wave 1.8s ease-in-out infinite;
   will-change: transform;
   backface-visibility: hidden;
   transform: translateZ(0);
@@ -107,7 +110,7 @@ html, body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .kk-question-rotate {
+  .kk-question-wave {
     animation: none;
   }
 }

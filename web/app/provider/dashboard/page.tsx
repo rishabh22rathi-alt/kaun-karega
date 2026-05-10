@@ -6,6 +6,8 @@ import { useRouter, useSearchParams } from "next/navigation";
 import InAppToastStack, { type InAppToast } from "@/components/InAppToastStack";
 import ProviderDashboardCoachmark from "@/components/ProviderDashboardCoachmark";
 import ProviderAliasSubmitter from "@/components/ProviderAliasSubmitter";
+import ProviderPledgeModal from "@/components/ProviderPledgeModal";
+import { PROVIDER_PLEDGE_VERSION } from "@/lib/disclaimer";
 import { getAuthSession } from "@/lib/auth";
 import { getTaskDisplayLabel } from "@/lib/taskDisplay";
 import { isProviderVerifiedBadge } from "@/lib/providerPresentation";
@@ -297,6 +299,13 @@ function ProviderDashboardInner() {
   const [shareFeedback, setShareFeedback] = useState("");
   const [openingChatTaskId, setOpeningChatTaskId] = useState("");
   const [chatErrorByTaskId, setChatErrorByTaskId] = useState<Record<string, string>>({});
+  // Provider Responsibility Pledge — Phase C. Same per-page pattern as
+  // /provider/job-requests and /provider/my-jobs. Local state only,
+  // no shared hook, no localStorage.
+  const [pledgeOpen, setPledgeOpen] = useState(false);
+  const [pledgeAccepting, setPledgeAccepting] = useState(false);
+  const [pledgeAcceptError, setPledgeAcceptError] = useState<string | null>(null);
+  const pendingChatRef = useRef<(() => Promise<void>) | null>(null);
   const [providerThreadSummaryByTaskId, setProviderThreadSummaryByTaskId] =
     useState<ProviderThreadSummaryByTaskId>({});
   const [toasts, setToasts] = useState<InAppToast[]>([]);
@@ -586,6 +595,18 @@ function ProviderDashboardInner() {
       return;
     }
 
+    await openThreadAndNavigate(taskId, requestKey, phone);
+  };
+
+  // Inner closure — split out so the silent 403 PLEDGE_REQUIRED path can
+  // stash this exact call (with its captured args) into pendingChatRef
+  // and re-run it verbatim after the provider accepts the pledge. Same
+  // pattern as /provider/job-requests and /provider/my-jobs.
+  const openThreadAndNavigate = async (
+    taskId: string,
+    requestKey: string,
+    providerPhone: string
+  ): Promise<void> => {
     setOpeningChatTaskId(taskId);
     setChatErrorByTaskId((current) => ({
       ...current,
@@ -601,10 +622,25 @@ function ProviderDashboardInner() {
           action: "chat_create_or_get_thread",
           ActorType: "provider",
           TaskID: taskId,
-          loggedInProviderPhone: phone,
+          loggedInProviderPhone: providerPhone,
         }),
       });
-      const data = (await res.json()) as CreateThreadResponse;
+      const data = (await res
+        .json()
+        .catch(() => null)) as CreateThreadResponse | null;
+
+      // Silent provider-pledge gate. Phase B's /api/kk gate returns 403
+      // PLEDGE_REQUIRED for legacy/imported providers; show the modal
+      // with no scary toast and queue the retry.
+      if (res.status === 403 && data?.error === "PLEDGE_REQUIRED") {
+        pendingChatRef.current = () =>
+          openThreadAndNavigate(taskId, requestKey, providerPhone);
+        setPledgeAcceptError(null);
+        setPledgeOpen(true);
+        setOpeningChatTaskId("");
+        return;
+      }
+
       const threadId = extractThreadIdFromCreateThreadResponse(data);
       const finalHref = threadId ? `/chat/thread/${encodeURIComponent(threadId)}` : "";
 
@@ -616,7 +652,6 @@ function ProviderDashboardInner() {
 
       console.log("[provider/dashboard] open chat selection", {
         taskId,
-        existingThreadId,
         extractedThreadId: threadId,
         created: Boolean(data?.created),
         finalHref,
@@ -634,6 +669,42 @@ function ProviderDashboardInner() {
       }));
       setOpeningChatTaskId("");
     }
+  };
+
+  const acceptProviderPledge = async () => {
+    setPledgeAccepting(true);
+    setPledgeAcceptError(null);
+    try {
+      const res = await fetch("/api/provider/pledge", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ version: PROVIDER_PLEDGE_VERSION }),
+      });
+      const data = (await res.json().catch(() => null)) as
+        | { ok?: boolean; error?: string }
+        | null;
+      if (!res.ok || !data?.ok) {
+        setPledgeAcceptError("Could not save right now. Please try again.");
+        return;
+      }
+      setPledgeOpen(false);
+      const queued = pendingChatRef.current;
+      pendingChatRef.current = null;
+      if (queued) {
+        void queued();
+      }
+    } catch {
+      setPledgeAcceptError("Could not save right now. Please try again.");
+    } finally {
+      setPledgeAccepting(false);
+    }
+  };
+
+  const dismissProviderPledge = () => {
+    pendingChatRef.current = null;
+    setPledgeOpen(false);
+    setPledgeAcceptError(null);
   };
   const categoryDemand = useMemo(
     () =>
@@ -1243,6 +1314,13 @@ function ProviderDashboardInner() {
         onDismiss={(id) => setToasts((current) => current.filter((toast) => toast.id !== id))}
       />
       <ProviderDashboardCoachmark />
+      <ProviderPledgeModal
+        open={pledgeOpen}
+        onAccept={acceptProviderPledge}
+        onDismiss={dismissProviderPledge}
+        isAccepting={pledgeAccepting}
+        acceptError={pledgeAcceptError}
+      />
     </main>
   );
 }

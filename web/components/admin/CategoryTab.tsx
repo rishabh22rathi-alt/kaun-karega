@@ -66,6 +66,14 @@ export default function CategoryTab() {
   const [editingAliasId, setEditingAliasId] = useState<string | null>(null);
   const [editingAliasDraft, setEditingAliasDraft] = useState("");
 
+  // Per-row inline "+ Add alias / work tag" state. Keyed by category name
+  // so only one add-form is open at a time across the whole table.
+  const [addingAliasFor, setAddingAliasFor] = useState<string | null>(null);
+  const [newAliasDraft, setNewAliasDraft] = useState("");
+  const [newAliasType, setNewAliasType] = useState<
+    "search" | "local_name" | "work_tag"
+  >("search");
+
   // Pending tab UI state
   const [expandedRequest, setExpandedRequest] = useState<string | null>(null);
 
@@ -237,6 +245,50 @@ export default function CategoryTab() {
       }
       setEditingAliasId(null);
       setEditingAliasDraft("");
+      refreshCategories();
+    } catch (err: unknown) {
+      setActionError(err instanceof Error ? err.message : "Network error");
+    } finally {
+      setActionInProgress(null);
+    }
+  };
+
+  const handleStartAddAlias = (categoryName: string) => {
+    setAddingAliasFor(categoryName);
+    setNewAliasDraft("");
+    setNewAliasType("search");
+    setActionError(null);
+  };
+
+  const handleCancelAddAlias = () => {
+    setAddingAliasFor(null);
+    setNewAliasDraft("");
+    setNewAliasType("search");
+  };
+
+  const handleSaveNewAlias = async (categoryName: string) => {
+    const aliasText = newAliasDraft.trim();
+    if (!aliasText) return;
+    const actionKey = `addAlias::${categoryName}`;
+    setActionInProgress(actionKey);
+    setActionError(null);
+    try {
+      const res = await fetch("/api/admin/aliases", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "create",
+          alias: aliasText,
+          canonicalCategory: categoryName,
+          aliasType: newAliasType,
+        }),
+      });
+      const json = (await res.json()) as { ok?: boolean; error?: string };
+      if (!res.ok || !json?.ok) {
+        setActionError(json?.error || `Add failed (${res.status})`);
+        return;
+      }
+      handleCancelAddAlias();
       refreshCategories();
     } catch (err: unknown) {
       setActionError(err instanceof Error ? err.message : "Network error");
@@ -490,33 +542,33 @@ export default function CategoryTab() {
                                 )}
                               </td>
                               <td className="px-3 py-2 text-slate-700">
-                                {cat.aliases.length === 0 ? (
-                                  <span className="text-xs text-slate-400">
-                                    no aliases
-                                  </span>
-                                ) : (
-                                  <div>
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        setExpandedAliasFor((prev) => {
-                                          const next = new Set(prev);
-                                          if (next.has(cat.name)) next.delete(cat.name);
-                                          else next.add(cat.name);
-                                          return next;
-                                        })
-                                      }
-                                      aria-expanded={expandedAliasFor.has(cat.name)}
-                                      className="inline-flex items-center gap-1 rounded border border-slate-300 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
-                                    >
-                                      {expandedAliasFor.has(cat.name)
-                                        ? "Hide"
-                                        : "View"}{" "}
-                                      aliases / work tags ({cat.aliases.length})
-                                    </button>
-                                    {expandedAliasFor.has(cat.name) && (
-                                      <div className="mt-2 flex flex-wrap gap-1.5">
-                                        {cat.aliases.map((a, aliasIndex) => {
+                                <div>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setExpandedAliasFor((prev) => {
+                                        const next = new Set(prev);
+                                        if (next.has(cat.name)) next.delete(cat.name);
+                                        else next.add(cat.name);
+                                        return next;
+                                      })
+                                    }
+                                    aria-expanded={expandedAliasFor.has(cat.name)}
+                                    className="inline-flex items-center gap-1 rounded border border-slate-300 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                                  >
+                                    {expandedAliasFor.has(cat.name)
+                                      ? "Hide"
+                                      : "View"}{" "}
+                                    aliases / work tags ({cat.aliases.length})
+                                  </button>
+                                  {expandedAliasFor.has(cat.name) && (
+                                    <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                                      {cat.aliases.length === 0 && (
+                                        <span className="text-xs italic text-slate-400">
+                                          no aliases yet
+                                        </span>
+                                      )}
+                                      {cat.aliases.map((a, aliasIndex) => {
                                           const isEditingAlias =
                                             editingAliasId === a.id && a.id !== "";
                                           const editKey = `editAlias::${a.id}`;
@@ -610,10 +662,85 @@ export default function CategoryTab() {
                                             </span>
                                           );
                                         })}
+                                      {addingAliasFor === cat.name ? (
+                                        <div className="inline-flex items-center gap-1 rounded-full border border-[#003d20]/40 bg-white px-2 py-0.5">
+                                          <input
+                                            type="text"
+                                            value={newAliasDraft}
+                                            onChange={(e) =>
+                                              setNewAliasDraft(e.target.value)
+                                            }
+                                            onKeyDown={(e) => {
+                                              if (e.key === "Enter")
+                                                void handleSaveNewAlias(cat.name);
+                                              if (e.key === "Escape")
+                                                handleCancelAddAlias();
+                                            }}
+                                            placeholder="alias text"
+                                            maxLength={80}
+                                            autoFocus
+                                            className="w-32 bg-transparent text-xs text-slate-900 outline-none placeholder:text-slate-400"
+                                          />
+                                          <select
+                                            value={newAliasType}
+                                            onChange={(e) =>
+                                              setNewAliasType(
+                                                e.target.value as
+                                                  | "search"
+                                                  | "local_name"
+                                                  | "work_tag"
+                                              )
+                                            }
+                                            className="bg-transparent text-[10px] text-slate-700 outline-none"
+                                            aria-label="alias type"
+                                          >
+                                            <option value="search">search</option>
+                                            <option value="local_name">
+                                              local_name
+                                            </option>
+                                            <option value="work_tag">
+                                              work_tag
+                                            </option>
+                                          </select>
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              void handleSaveNewAlias(cat.name)
+                                            }
+                                            disabled={
+                                              !newAliasDraft.trim() ||
+                                              actionInProgress ===
+                                                `addAlias::${cat.name}`
+                                            }
+                                            className="rounded bg-[#003d20] px-1.5 py-0.5 text-[10px] font-semibold text-white disabled:opacity-50"
+                                          >
+                                            {actionInProgress ===
+                                            `addAlias::${cat.name}`
+                                              ? "…"
+                                              : "Save"}
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={handleCancelAddAlias}
+                                            className="text-[10px] text-slate-500 hover:text-slate-800"
+                                          >
+                                            Cancel
+                                          </button>
+                                        </div>
+                                      ) : (
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            handleStartAddAlias(cat.name)
+                                          }
+                                          className="inline-flex items-center gap-1 rounded-full border border-dashed border-[#003d20]/40 bg-white px-2 py-0.5 text-xs font-medium text-[#003d20] hover:bg-[#003d20]/5"
+                                        >
+                                          + Add alias / work tag
+                                        </button>
+                                      )}
                                       </div>
                                     )}
                                   </div>
-                                )}
                               </td>
                               <td className="px-3 py-2 text-right">
                                 <div className="inline-flex flex-wrap justify-end gap-2">
@@ -657,10 +784,6 @@ export default function CategoryTab() {
                   </div>
                 )}
 
-              <p className="text-[11px] text-slate-500">
-                Add / remove of approved aliases and work tags is not yet wired
-                — needs new admin route.
-              </p>
             </div>
           )}
 

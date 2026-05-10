@@ -6,6 +6,10 @@ import { getAuthSession } from "@/lib/auth";
 import confetti from "canvas-confetti";
 import InAppToastStack, { type InAppToast } from "@/components/InAppToastStack";
 import { PROVIDER_PROFILE_UPDATED_EVENT } from "@/components/sidebarEvents";
+import {
+  PROVIDER_PLEDGE_TEXT,
+  PROVIDER_PLEDGE_VERSION,
+} from "@/lib/disclaimer";
 
 // Change limits here if business rules change.
 // Restricted from 3 to 1 — providers register a single canonical service
@@ -237,6 +241,13 @@ function ProviderRegisterPageInner() {
   const [showEditSuccessModal, setShowEditSuccessModal] = useState(false);
   const [successProviderId, setSuccessProviderId] = useState("");
   const [toasts, setToasts] = useState<InAppToast[]>([]);
+  // Provider Responsibility Pledge — Phase 3. Only relevant on the
+  // NEW-registration path; edit mode never reads or writes these. The
+  // submit button stays clickable when the box is unchecked so the user
+  // sees a friendly inline message rather than wondering why nothing
+  // happens.
+  const [pledgeAccepted, setPledgeAccepted] = useState(false);
+  const [pledgeError, setPledgeError] = useState<string | null>(null);
 
   const showSuccessToast = (message: string) => {
     const id = `save-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -832,6 +843,19 @@ function ProviderRegisterPageInner() {
   const handleSubmit = async () => {
     if (!canSubmit || !/^\d{10}$/.test(phone)) return;
 
+    // Pledge gate — NEW-registration path only. Edit mode (provider_update
+    // flow below) skips this entirely so existing / imported / legacy
+    // providers can keep saving changes without re-accepting. The submit
+    // button is intentionally still enabled when the box is unchecked
+    // (canSubmit excludes pledgeAccepted) so the user gets a clear inline
+    // message instead of a silently-disabled button.
+    if (!isEditMode && !pledgeAccepted) {
+      setPledgeError(
+        "Please accept the Provider Responsibility Pledge to continue."
+      );
+      return;
+    }
+
     setIsSubmitting(true);
     setSubmitError("");
     setSuccess(null);
@@ -894,6 +918,10 @@ function ProviderRegisterPageInner() {
         workTags: JSON.stringify(selectedWorkTags),
         requiresAdminApproval:
           pendingNewCategories.length > 0 || pendingNewAreas.length > 0 ? "true" : "false",
+        // Provider Responsibility Pledge — version only. The server
+        // generates and stores pledge_accepted_at itself; we deliberately
+        // do NOT send a client-side timestamp.
+        pledgeVersion: PROVIDER_PLEDGE_VERSION,
       };
 
       const response = await fetch("/api/kk", {
@@ -1319,6 +1347,64 @@ function ProviderRegisterPageInner() {
                   </div>
                 ) : null}
               </div>
+
+              {!isEditMode ? (
+                <div
+                  data-testid="kk-pledge-card"
+                  className="rounded-2xl border border-[#003d20]/15 bg-gradient-to-br from-orange-50/60 to-green-50/40 p-4 shadow-sm"
+                >
+                  <div className="flex items-center gap-2">
+                    <span aria-hidden="true" className="text-base">🤝</span>
+                    <p className="text-sm font-bold text-[#003d20]">
+                      Provider Responsibility Pledge
+                    </p>
+                  </div>
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    A quick read so we&apos;re on the same page.
+                  </p>
+                  <div className="mt-3 max-h-40 overflow-y-auto rounded-xl border border-white/60 bg-white p-3 text-xs leading-5 text-slate-600">
+                    {PROVIDER_PLEDGE_TEXT.split(/\n\n+/).map((paragraph, idx) => (
+                      <p
+                        key={idx}
+                        className={`mb-2 last:mb-0 ${
+                          idx === 0 ? "font-semibold text-slate-700" : ""
+                        }`}
+                      >
+                        {paragraph}
+                      </p>
+                    ))}
+                  </div>
+                  <label className="mt-3 flex cursor-pointer items-start gap-2">
+                    <input
+                      type="checkbox"
+                      checked={pledgeAccepted}
+                      onChange={(e) => {
+                        setPledgeAccepted(e.target.checked);
+                        if (e.target.checked) setPledgeError(null);
+                      }}
+                      data-testid="kk-pledge-checkbox"
+                      className="mt-0.5 h-4 w-4 cursor-pointer accent-[#003d20]"
+                    />
+                    <span className="text-xs font-semibold text-slate-800">
+                      I have read and accept the Provider Responsibility Pledge.
+                    </span>
+                  </label>
+                  <p
+                    data-testid="kk-pledge-trust-line"
+                    className="ml-6 mt-1 text-[11px] text-slate-500"
+                  >
+                    This helps keep Kaun Karega safe and trustworthy for everyone.
+                  </p>
+                  {pledgeError ? (
+                    <p
+                      data-testid="kk-pledge-error"
+                      className="ml-6 mt-2 text-xs font-medium text-red-600"
+                    >
+                      {pledgeError}
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
 
               {submitError ? (
                 <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{submitError}</div>

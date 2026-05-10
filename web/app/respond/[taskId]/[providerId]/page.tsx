@@ -1,10 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { use, useEffect, useState } from "react";
+import { use, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getAuthSession } from "@/lib/auth";
 import { getTaskDisplayLabel } from "@/lib/taskDisplay";
+import ProviderPledgeModal from "@/components/ProviderPledgeModal";
+import { PROVIDER_PLEDGE_VERSION } from "@/lib/disclaimer";
 
 type PageProps = {
   params: Promise<{ taskId: string; providerId: string }>;
@@ -92,6 +94,14 @@ export default function RespondPage({ params }: PageProps) {
   const [ignoring, setIgnoring] = useState(false);
   const [error, setError] = useState("");
   const [providerMismatch, setProviderMismatch] = useState(false);
+  // Provider Responsibility Pledge — Phase C. Same per-page pattern as
+  // the dashboard / my-jobs / job-requests entry points. Dismiss on this
+  // deeplink page redirects to /provider/dashboard because the page is
+  // otherwise dead-ended once the user backs out of the pledge.
+  const [pledgeOpen, setPledgeOpen] = useState(false);
+  const [pledgeAccepting, setPledgeAccepting] = useState(false);
+  const [pledgeAcceptError, setPledgeAcceptError] = useState<string | null>(null);
+  const pendingChatRef = useRef<(() => Promise<void>) | null>(null);
 
   useEffect(() => {
     if (!taskId || !providerId) {
@@ -221,28 +231,101 @@ export default function RespondPage({ params }: PageProps) {
       //    URL providerId is intentionally not forwarded — the chat action
       //    resolves the provider from the session phone (which has already
       //    been confirmed to match URL providerId via the mismatch guard).
-      const res = await fetch("/api/kk", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "chat_create_or_get_thread",
-          ActorType: "provider",
-          TaskID: taskId,
-          loggedInProviderPhone: trustedProviderPhone,
-        }),
-      });
-      const data = (await res.json()) as CreateThreadResponse;
-      const threadId = extractThreadId(data);
-
-      if (!res.ok || !data?.ok || !threadId) {
-        throw new Error(data?.error || data?.message || "Unable to open chat.");
-      }
-
-      router.replace(`/chat/thread/${encodeURIComponent(threadId)}`);
+      await openThreadAndNavigate(taskId, trustedProviderPhone);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to open chat.");
       setSubmitting(false);
     }
+  };
+
+  // Inner closure — split out so a 403 PLEDGE_REQUIRED response can stash
+  // this exact call into pendingChatRef and re-run it after the provider
+  // accepts the pledge. The implicit /api/tasks/respond above runs once
+  // and is intentionally not part of the retry loop.
+  const openThreadAndNavigate = async (
+    taskIdArg: string,
+    providerPhone: string
+  ): Promise<void> => {
+    const res = await fetch("/api/kk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "chat_create_or_get_thread",
+        ActorType: "provider",
+        TaskID: taskIdArg,
+        loggedInProviderPhone: providerPhone,
+      }),
+    });
+    const data = (await res
+      .json()
+      .catch(() => null)) as CreateThreadResponse | null;
+
+    // Silent provider-pledge gate. Phase B's /api/kk gate returns 403
+    // PLEDGE_REQUIRED for legacy/imported providers; show the modal,
+    // queue the retry, and DO NOT surface the existing error UI.
+    if (res.status === 403 && data?.error === "PLEDGE_REQUIRED") {
+      pendingChatRef.current = () =>
+        openThreadAndNavigate(taskIdArg, providerPhone);
+      setPledgeAcceptError(null);
+      setPledgeOpen(true);
+      // Stop the spinner — the modal is the active surface now. submitting
+      // resumes when the user accepts and the queued closure re-runs.
+      setSubmitting(false);
+      return;
+    }
+
+    const threadId = extractThreadId(data ?? {});
+    if (!res.ok || !data?.ok || !threadId) {
+      throw new Error(data?.error || data?.message || "Unable to open chat.");
+    }
+    router.replace(`/chat/thread/${encodeURIComponent(threadId)}`);
+  };
+
+  const acceptProviderPledge = async () => {
+    setPledgeAccepting(true);
+    setPledgeAcceptError(null);
+    try {
+      const res = await fetch("/api/provider/pledge", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ version: PROVIDER_PLEDGE_VERSION }),
+      });
+      const data = (await res.json().catch(() => null)) as
+        | { ok?: boolean; error?: string }
+        | null;
+      if (!res.ok || !data?.ok) {
+        setPledgeAcceptError("Could not save right now. Please try again.");
+        return;
+      }
+      setPledgeOpen(false);
+      const queued = pendingChatRef.current;
+      pendingChatRef.current = null;
+      if (queued) {
+        // Restore the spinner — the queued closure may take a moment and
+        // we want the same "Opening chat..." feedback.
+        setSubmitting(true);
+        try {
+          await queued();
+        } catch (err) {
+          setError(err instanceof Error ? err.message : "Unable to open chat.");
+          setSubmitting(false);
+        }
+      }
+    } catch {
+      setPledgeAcceptError("Could not save right now. Please try again.");
+    } finally {
+      setPledgeAccepting(false);
+    }
+  };
+
+  const dismissProviderPledge = () => {
+    pendingChatRef.current = null;
+    setPledgeOpen(false);
+    setPledgeAcceptError(null);
+    // Deeplink-only behaviour: page is dead-ended without a chat, so send
+    // the provider home rather than leaving them on a half-loaded screen.
+    router.push("/provider/dashboard");
   };
 
   const handleIgnore = async () => {
@@ -384,6 +467,7 @@ export default function RespondPage({ params }: PageProps) {
             type="button"
             onClick={() => void handleRespond()}
             disabled={submitting || ignoring}
+            data-testid="kk-provider-open-chat"
             className="inline-flex flex-1 items-center justify-center rounded-lg bg-sky-500 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-sky-600 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {submitting ? "Opening chat..." : "Respond / Chat with customer"}
@@ -398,6 +482,13 @@ export default function RespondPage({ params }: PageProps) {
           </button>
         </div>
       </div>
+      <ProviderPledgeModal
+        open={pledgeOpen}
+        onAccept={acceptProviderPledge}
+        onDismiss={dismissProviderPledge}
+        isAccepting={pledgeAccepting}
+        acceptError={pledgeAcceptError}
+      />
     </main>
   );
 }

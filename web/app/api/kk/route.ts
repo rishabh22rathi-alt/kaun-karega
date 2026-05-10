@@ -14,6 +14,7 @@ import {
   listDuplicateNameReviews,
 } from "@/lib/admin/adminProviderReads";
 import { findDuplicateNameProviders } from "@/lib/providerNameNormalize";
+import { PROVIDER_PLEDGE_VERSION, isPledgeAccepted } from "@/lib/disclaimer";
 import {
   getAdminNotificationLogsFromSupabase,
   getAdminNotificationSummaryFromSupabase,
@@ -1465,6 +1466,65 @@ export async function POST(request: NextRequest) {
       );
     }
     if (action === "chat_create_or_get_thread") {
+      // Provider Responsibility Pledge gate. Only fires when the caller
+      // explicitly declares themselves a provider actor AND the resolved
+      // session has a provider row to read pledge_* from. User-actor
+      // chats, sessions without a provider row, and the auto-mode path
+      // (no ActorType in the body) are NOT gated here — they fall
+      // through to the existing resolution / authz inside
+      // createOrGetChatThreadFromSupabase. This matches the four
+      // provider-side UI entry points (dashboard, my-jobs, job-requests,
+      // respond/[taskId]/[providerId]) which all set
+      // ActorType:"provider" explicitly.
+      //
+      // Imported / legacy providers (NULL pledge_*) hit this once and
+      // unblock themselves via POST /api/provider/pledge. Once accepted,
+      // future chats fast-pass — there is no expiry window. The gate
+      // does not affect dashboard browsing, /api/tasks/respond, matching,
+      // notifications, or provider profile updates.
+      //
+      // Fail-closed on DB error so a transient outage returns
+      // PLEDGE_REQUIRED rather than a half-created thread or scary 500.
+      // The frontend's silent modal-reopen path (Phase C) will handle
+      // recovery the same way as a real not-accepted case.
+      const requestedActor = String(
+        (body as { ActorType?: unknown; actorType?: unknown }).ActorType ??
+          (body as { ActorType?: unknown; actorType?: unknown }).actorType ??
+          ""
+      )
+        .toLowerCase()
+        .trim();
+      if (requestedActor === "provider" && chatIdentity?.provider) {
+        const { data: pledgeRow, error: pledgeErr } = await adminSupabase
+          .from("providers")
+          .select("pledge_version, pledge_accepted_at")
+          .eq("provider_id", chatIdentity.provider.providerId)
+          .maybeSingle();
+        if (pledgeErr) {
+          console.warn(
+            "[kk chat_create_or_get_thread] pledge lookup failed; failing closed",
+            pledgeErr.message
+          );
+        }
+        const accepted =
+          !pledgeErr &&
+          isPledgeAccepted({
+            version:
+              (pledgeRow as { pledge_version?: string | null } | null)
+                ?.pledge_version ?? null,
+            acceptedAt:
+              (pledgeRow as { pledge_accepted_at?: string | null } | null)
+                ?.pledge_accepted_at ?? null,
+          });
+        if (!accepted) {
+          return withNoCache(
+            NextResponse.json(
+              { ok: false, error: "PLEDGE_REQUIRED" },
+              { status: 403 }
+            )
+          );
+        }
+      }
       const result = await createOrGetChatThreadFromSupabase(body, chatIdentity!);
       return withNoCache(NextResponse.json(result));
     }
@@ -1680,6 +1740,27 @@ export async function POST(request: NextRequest) {
         );
       }
 
+      // Provider Responsibility Pledge — gated to NEW registrations only.
+      // Placed AFTER the already_registered 409 check so existing /
+      // imported / legacy providers (whose phone is already on file) are
+      // never asked to retroactively accept. Only brand-new phones reach
+      // this point. Hardcoded allowlist keeps the version surface small;
+      // future v2 ships as a single coordinated edit here + in
+      // lib/disclaimer.ts. The frontend deliberately does NOT send a
+      // timestamp — server clamps to nowIso below at insert time.
+      const pledgeVersionRaw =
+        typeof (body as { pledgeVersion?: unknown }).pledgeVersion === "string"
+          ? (body as { pledgeVersion: string }).pledgeVersion.trim()
+          : "";
+      if (pledgeVersionRaw !== PROVIDER_PLEDGE_VERSION) {
+        return withNoCache(
+          NextResponse.json(
+            { ok: false, error: "pledge_required" },
+            { status: 400 }
+          )
+        );
+      }
+
       // Duplicate-name detection: any existing provider whose normalized
       // full_name matches this registration but whose phone differs.
       const duplicateMatches = await findDuplicateNameProviders(name, phone);
@@ -1694,6 +1775,12 @@ export async function POST(request: NextRequest) {
         notes: null,
         status: pendingApproval === "yes" ? "pending" : "active",
         verified: isDuplicateName ? "no" : "yes",
+        // Pledge persistence — version validated above, timestamp is the
+        // server-side `nowIso` (the same value used elsewhere in this
+        // insert) so a single registration is recorded with one coherent
+        // moment in time. Not exposed on edit/update flows.
+        pledge_version: pledgeVersionRaw,
+        pledge_accepted_at: nowIso,
       };
       if (isDuplicateName) {
         providerInsertRow.duplicate_name_review_status = "pending";

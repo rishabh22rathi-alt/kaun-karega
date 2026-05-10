@@ -6,6 +6,7 @@ type AreaSelectionProps = {
   selectedArea: string;
   onSelect: (area: string) => void;
   errorMessage?: string;
+  showQuestionLabel?: boolean;
 };
 
 const POPULAR_1 = "Shastri Nagar";
@@ -44,6 +45,7 @@ export default function AreaSelection({
   selectedArea,
   onSelect,
   errorMessage,
+  showQuestionLabel = true,
 }: AreaSelectionProps) {
   const [lastUsedArea, setLastUsedArea] = useState("");
   const [showAreaInput, setShowAreaInput] = useState(false);
@@ -278,9 +280,11 @@ export default function AreaSelection({
 
   return (
     <div className="w-full">
-      <p className="mb-2 text-sm font-semibold text-[#111827]">
-        Where do you need it?
-      </p>
+      {showQuestionLabel ? (
+        <p className="mb-2 text-sm font-semibold text-[#111827]">
+          Where do you need it?
+        </p>
+      ) : null}
       <div className="flex flex-wrap gap-2">
         {lastUsedArea ? (
           <button

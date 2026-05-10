@@ -108,11 +108,169 @@ export async function POST(request: Request) {
   const aliasRaw = String(body.alias ?? "").trim();
   const reason = String(body.reason ?? "").trim();
 
-  if (!aliasRaw || (action !== "approve" && action !== "reject")) {
+  if (
+    !aliasRaw ||
+    (action !== "approve" && action !== "reject" && action !== "create")
+  ) {
     return NextResponse.json(
       { ok: false, error: "INVALID_ACTION" },
       { status: 400 }
     );
+  }
+
+  // Admin-initiated alias create. Independent code path — it does NOT
+  // share the approve/reject "find existing pending row by alias text"
+  // lookup below, because for `create` no row exists yet. Validation,
+  // collision checks, and insert are inline so the approve/reject paths
+  // stay byte-identical to before this change.
+  if (action === "create") {
+    const canonicalCategoryRaw = String(
+      (body as { canonicalCategory?: unknown }).canonicalCategory ?? ""
+    ).trim();
+    const aliasTypeRaw = String(
+      (body as { aliasType?: unknown }).aliasType ?? ""
+    )
+      .trim()
+      .toLowerCase();
+
+    if (aliasRaw.length > 80) {
+      return NextResponse.json(
+        { ok: false, error: "INVALID_ALIAS" },
+        { status: 400 }
+      );
+    }
+    // Hardcoded allowlist. Anything outside this set is rejected so the
+    // homepage / provider register filters that branch on alias_type stay
+    // stable. Adding a new type is an explicit edit here.
+    const allowedAliasTypes = new Set([
+      "search",
+      "local_name",
+      "work_tag",
+    ]);
+    if (!allowedAliasTypes.has(aliasTypeRaw)) {
+      return NextResponse.json(
+        { ok: false, error: "INVALID_ALIAS_TYPE" },
+        { status: 400 }
+      );
+    }
+    if (!canonicalCategoryRaw) {
+      return NextResponse.json(
+        { ok: false, error: "CANONICAL_NOT_FOUND" },
+        { status: 404 }
+      );
+    }
+
+    // Resolve canonical to its as-stored casing so the inserted row's
+    // canonical_category matches categories.name verbatim. Keeps the
+    // public /api/categories?include=aliases join (which lowercases +
+    // collapses whitespace on both sides) deterministic.
+    const { data: canonicalRow, error: canonicalErr } = await adminSupabase
+      .from("categories")
+      .select("name")
+      .ilike("name", canonicalCategoryRaw)
+      .eq("active", true)
+      .maybeSingle();
+    if (canonicalErr) {
+      console.error(
+        "[admin/aliases POST create] canonical lookup failed",
+        canonicalErr.message
+      );
+      return NextResponse.json(
+        { ok: false, error: "DB_ERROR" },
+        { status: 500 }
+      );
+    }
+    if (!canonicalRow) {
+      return NextResponse.json(
+        { ok: false, error: "CANONICAL_NOT_FOUND" },
+        { status: 404 }
+      );
+    }
+    const canonicalAsStored = String(canonicalRow.name || "");
+
+    // Same two safety checks the approve branch enforces (lines below),
+    // duplicated inline rather than refactored into a shared helper so
+    // the existing approve/reject SQL is untouched.
+    // 1) No active alias row with the same text under any canonical.
+    const { data: dupAlias, error: dupErr } = await adminSupabase
+      .from("category_aliases")
+      .select("alias")
+      .ilike("alias", aliasRaw)
+      .eq("active", true)
+      .limit(1);
+    if (dupErr) {
+      console.error(
+        "[admin/aliases POST create] duplicate-alias lookup failed",
+        dupErr.message
+      );
+      return NextResponse.json(
+        { ok: false, error: "DB_ERROR" },
+        { status: 500 }
+      );
+    }
+    if (dupAlias && dupAlias.length > 0) {
+      return NextResponse.json(
+        { ok: false, error: "DUPLICATE_ACTIVE_ALIAS" },
+        { status: 409 }
+      );
+    }
+
+    // 2) Alias text must not equal an active canonical category name.
+    const { data: canonicalCollision, error: canonicalCollErr } =
+      await adminSupabase
+        .from("categories")
+        .select("name")
+        .ilike("name", aliasRaw)
+        .eq("active", true)
+        .maybeSingle();
+    if (canonicalCollErr) {
+      console.error(
+        "[admin/aliases POST create] canonical collision lookup failed",
+        canonicalCollErr.message
+      );
+      return NextResponse.json(
+        { ok: false, error: "DB_ERROR" },
+        { status: 500 }
+      );
+    }
+    if (canonicalCollision) {
+      return NextResponse.json(
+        { ok: false, error: "ALIAS_COLLIDES_WITH_CANONICAL" },
+        { status: 409 }
+      );
+    }
+
+    // Insert. submitted_by_provider_id stays NULL — admin-initiated rows
+    // are not provider submissions, so the notification fan-out (which
+    // only runs on approve/reject) is deliberately skipped here. The
+    // provider_work_terms table is also intentionally not touched.
+    const { error: insertErr } = await adminSupabase
+      .from("category_aliases")
+      .insert({
+        alias: aliasRaw,
+        canonical_category: canonicalAsStored,
+        alias_type: aliasTypeRaw,
+        active: true,
+        submitted_by_provider_id: null,
+      });
+    if (insertErr) {
+      console.error(
+        "[admin/aliases POST create] insert failed",
+        insertErr.message
+      );
+      return NextResponse.json(
+        { ok: false, error: "DB_ERROR" },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({
+      ok: true,
+      action: "created",
+      alias: aliasRaw,
+      canonicalCategory: canonicalAsStored,
+      aliasType: aliasTypeRaw,
+    });
   }
 
   // Look up the alias row case-insensitively. We need the canonical category

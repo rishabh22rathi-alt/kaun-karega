@@ -1,12 +1,14 @@
 import { NextResponse } from "next/server";
 import { getAuthSession } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
+import { adminSupabase } from "@/lib/supabase/admin";
 // CHANGE: import alias resolver so submitted task category is normalized
 // (e.g. "lohar" → "welder") before the categories-table canonicalization.
 // Detail-aware variant lets us also persist the original alias the user
 // typed (e.g. "dentist") into tasks.work_tag for specialization-aware
 // matching downstream.
 import { resolveCategoryAliasDetailed } from "@/lib/categoryAliases";
+import { isDisclaimerFresh } from "@/lib/disclaimer";
 
 function normalizePhone10(value: unknown): string {
   return String(value || "").replace(/\D/g, "").slice(-10);
@@ -81,6 +83,68 @@ export async function POST(request: Request) {
       return NextResponse.json(
         { error: "Unauthorized" },
         { status: 401 }
+      );
+    }
+
+    // Server-side disclaimer-freshness gate. The homepage modal is the
+    // UX surface; this is the trusted enforcement point. A client that
+    // skipped or stripped the modal cannot submit. profiles.phone is
+    // historically stored in both 10-digit and 12-digit (91-prefixed)
+    // forms depending on which OTP-verify route wrote it, so the lookup
+    // unions both. Service-role client mirrors the my-requests precedent
+    // (profiles is RLS-protected).
+    //
+    // Fail-closed on DB error: a transient Supabase outage returns
+    // DISCLAIMER_REQUIRED rather than 500, so the homepage's silent
+    // modal-reopen path covers the recovery instead of a scary toast.
+    const sessionPhoneRaw = String(session.phone || "");
+    const sessionPhone10 = sessionPhoneRaw.replace(/\D/g, "").slice(-10);
+    const phoneVariants =
+      sessionPhone10.length === 10
+        ? [sessionPhone10, `91${sessionPhone10}`]
+        : sessionPhoneRaw.trim()
+          ? [sessionPhoneRaw.trim()]
+          : [];
+
+    let disclaimerFresh = false;
+    if (phoneVariants.length > 0) {
+      const { data: profileRows, error: profileErr } = await adminSupabase
+        .from("profiles")
+        .select("disclaimer_version, disclaimer_accepted_at")
+        .in("phone", phoneVariants);
+
+      if (profileErr) {
+        console.warn(
+          "[submit-request] disclaimer lookup failed; failing closed",
+          profileErr.message || profileErr
+        );
+      } else {
+        const now = Date.now();
+        for (const raw of profileRows ?? []) {
+          if (
+            isDisclaimerFresh(
+              {
+                disclaimer_version:
+                  (raw as { disclaimer_version?: string | null })
+                    .disclaimer_version ?? null,
+                disclaimer_accepted_at:
+                  (raw as { disclaimer_accepted_at?: string | null })
+                    .disclaimer_accepted_at ?? null,
+              },
+              now
+            )
+          ) {
+            disclaimerFresh = true;
+            break;
+          }
+        }
+      }
+    }
+
+    if (!disclaimerFresh) {
+      return NextResponse.json(
+        { ok: false, error: "DISCLAIMER_REQUIRED" },
+        { status: 403 }
       );
     }
 
