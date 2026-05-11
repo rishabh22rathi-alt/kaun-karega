@@ -88,8 +88,14 @@ export async function GET(request: Request) {
     );
   }
 
-  const [regionsRes, areasRes, aliasesRes, providerAreasRes, providersRes] =
-    await Promise.all([
+  const [
+    regionsRes,
+    areasRes,
+    aliasesRes,
+    providerAreasRes,
+    providersRes,
+    pendingReviewRes,
+  ] = await Promise.all([
       adminSupabase
         .from("service_regions")
         .select("region_code, region_name, active")
@@ -117,6 +123,15 @@ export async function GET(request: Request) {
         .from("providers")
         .select("provider_id, verified")
         .limit(PROVIDERS_LIMIT),
+      adminSupabase
+        .from("area_review_queue")
+        .select(
+          "review_id, raw_area, occurrences, source_ref, source_type, last_seen_at"
+        )
+        .eq("status", "pending")
+        .order("occurrences", { ascending: false })
+        .order("last_seen_at", { ascending: false })
+        .limit(200),
     ]);
 
   // Hard-fail only on the three core tables. Provider-density reads
@@ -144,6 +159,12 @@ export async function GET(request: Request) {
     console.warn(
       "[admin/areas] providers read failed; verified counts will be 0",
       providersRes.error
+    );
+  }
+  if (pendingReviewRes.error) {
+    console.warn(
+      "[admin/areas] area_review_queue read failed; pending list empty",
+      pendingReviewRes.error
     );
   }
 
@@ -337,10 +358,128 @@ export async function GET(request: Request) {
     };
   });
 
+  // Hydrate pending area requests with submitter info. Best-effort
+  // join: providers were already loaded above for the verified set,
+  // but we only kept verified ids. Re-build a quick id → {name, phone}
+  // map from the same providersRes payload to avoid a second query.
+  type ProviderMini = { provider_id: string; full_name?: string; phone?: string };
+  const providerInfoById = new Map<string, ProviderMini>();
+  for (const p of (providersRes.data ?? []) as Array<
+    ProviderMini & { verified: unknown }
+  >) {
+    const id = String(p.provider_id ?? "").trim();
+    if (id) providerInfoById.set(id, p);
+  }
+  // providersRes was selected with only (provider_id, verified). To get
+  // names + phones, do one extra lookup scoped to the ids we actually
+  // need — keeps the GET cheap when the queue is empty.
+  type PendingReviewRow = {
+    review_id: string;
+    raw_area: string | null;
+    occurrences: number | null;
+    source_ref: string | null;
+    source_type: string | null;
+    last_seen_at: string | null;
+  };
+  const pendingRows = (pendingReviewRes.data ?? []) as PendingReviewRow[];
+  const submitterIds = Array.from(
+    new Set(
+      pendingRows
+        .map((r) => String(r.source_ref ?? "").trim())
+        .filter(Boolean)
+    )
+  );
+  if (submitterIds.length > 0) {
+    const { data: submitters } = await adminSupabase
+      .from("providers")
+      .select("provider_id, full_name, phone")
+      .in("provider_id", submitterIds);
+    for (const s of (submitters ?? []) as ProviderMini[]) {
+      const id = String(s.provider_id ?? "").trim();
+      if (id) providerInfoById.set(id, s);
+    }
+  }
+  const pending_area_requests = pendingRows
+    .filter((r) => String(r.raw_area ?? "").trim().length > 0)
+    .map((r) => {
+      const ref = String(r.source_ref ?? "").trim();
+      const info = ref ? providerInfoById.get(ref) : undefined;
+      return {
+        review_id: r.review_id,
+        raw_area: String(r.raw_area ?? "").trim(),
+        occurrences: Number(r.occurrences ?? 0),
+        source_ref: ref || null,
+        source_type: String(r.source_type ?? "").trim() || null,
+        last_seen_at: String(r.last_seen_at ?? "").trim() || null,
+        submitter_name: info?.full_name ?? null,
+        submitter_phone: info?.phone ?? null,
+      };
+    });
+
   return NextResponse.json({
     ok: true,
     regions,
     areas,
     unmapped_provider_areas,
+    pending_area_requests,
   });
+}
+
+// POST /api/admin/areas
+// Single sub-action today: { action: "resolve_review", review_id,
+// resolved_canonical_area } marks an area_review_queue row resolved
+// after the admin has already created the matching area or alias via
+// /api/admin/area-intelligence. Kept narrow so this endpoint stays a
+// pure data-shape utility.
+export async function POST(request: Request) {
+  const auth = await requireAdminSession(request);
+  if (!auth.ok) {
+    return NextResponse.json(
+      { ok: false, error: "Unauthorized" },
+      { status: 401 }
+    );
+  }
+
+  let body: Record<string, unknown>;
+  try {
+    body = (await request.json()) as Record<string, unknown>;
+  } catch {
+    return NextResponse.json(
+      { ok: false, error: "INVALID_JSON_BODY" },
+      { status: 400 }
+    );
+  }
+
+  const action = String(body.action ?? "").toLowerCase();
+  if (action !== "resolve_review") {
+    return NextResponse.json(
+      { ok: false, error: "INVALID_ACTION" },
+      { status: 400 }
+    );
+  }
+
+  const review_id = String(body.review_id ?? "").trim();
+  const resolved_canonical_area = String(body.resolved_canonical_area ?? "").trim();
+  if (!review_id) {
+    return NextResponse.json(
+      { ok: false, error: "REVIEW_ID_REQUIRED" },
+      { status: 400 }
+    );
+  }
+  const { error: updErr } = await adminSupabase
+    .from("area_review_queue")
+    .update({
+      status: "resolved",
+      resolved_canonical_area: resolved_canonical_area || "",
+      resolved_at: new Date().toISOString(),
+    })
+    .eq("review_id", review_id);
+  if (updErr) {
+    return NextResponse.json(
+      { ok: false, error: "DB_ERROR", detail: updErr.message },
+      { status: 500 }
+    );
+  }
+
+  return NextResponse.json({ ok: true, review_id });
 }

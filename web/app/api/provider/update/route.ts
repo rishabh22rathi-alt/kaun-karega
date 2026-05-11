@@ -3,6 +3,7 @@ import { getAuthSession } from "@/lib/auth";
 import { adminSupabase } from "@/lib/supabase/admin";
 import { updateProviderInSupabase } from "@/lib/admin/adminProviderReads";
 import { findDuplicateNameProviders } from "@/lib/providerNameNormalize";
+import { queueUnmappedAreaForReview } from "@/lib/admin/adminUnmappedAreas";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -142,6 +143,74 @@ export async function POST(request: Request) {
     return NextResponse.json(
       { ok: false, error: "UPDATE_FAILED" },
       { status: 500 }
+    );
+  }
+
+  // Queue unknown area strings for admin review — non-fatal. Mirrors the
+  // provider_register flow in /api/kk, with source_type = "provider_update"
+  // so admins can distinguish edit-driven submissions from registration
+  // submissions later. An area is considered "known" if its toAreaKey
+  // matches an active canonical area OR an active alias in the new
+  // service_region_areas / service_region_area_aliases tables (the AreaTab
+  // pending tab consumes this same union). Failures here never roll back
+  // the provider update — Promise.allSettled + soft logging.
+  try {
+    const [canonicalRes, aliasRes] = await Promise.all([
+      adminSupabase
+        .from("service_region_areas")
+        .select("canonical_area")
+        .eq("active", true)
+        .limit(5000),
+      adminSupabase
+        .from("service_region_area_aliases")
+        .select("alias")
+        .eq("active", true)
+        .limit(5000),
+    ]);
+
+    if (!canonicalRes.error && !aliasRes.error) {
+      // Inlined toAreaKey — mirrors lib/admin/adminAreaMappings so the
+      // membership check collapses casing / spacing / punctuation the
+      // same way the rest of the system does.
+      const toAreaKey = (value: unknown) =>
+        String(value ?? "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .toLowerCase()
+          .replace(/[^a-z0-9]/g, "");
+      const knownKeys = new Set<string>();
+      for (const row of canonicalRes.data ?? []) {
+        const k = toAreaKey(
+          (row as { canonical_area?: unknown }).canonical_area
+        );
+        if (k) knownKeys.add(k);
+      }
+      for (const row of aliasRes.data ?? []) {
+        const k = toAreaKey((row as { alias?: unknown }).alias);
+        if (k) knownKeys.add(k);
+      }
+      const unknownAreas = areas.filter((a) => !knownKeys.has(toAreaKey(a)));
+      if (unknownAreas.length > 0) {
+        await Promise.allSettled(
+          unknownAreas.map((rawArea) =>
+            queueUnmappedAreaForReview({
+              rawArea,
+              sourceType: "provider_update",
+              sourceRef: String(providerRow.provider_id),
+            })
+          )
+        );
+      }
+    } else {
+      console.warn(
+        "[provider/update] AI table read failed; skipping queue enqueue",
+        canonicalRes.error || aliasRes.error
+      );
+    }
+  } catch (err) {
+    console.warn(
+      "[provider/update] enqueueUnmapped threw; provider update still succeeded",
+      err
     );
   }
 

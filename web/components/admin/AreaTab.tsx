@@ -48,11 +48,23 @@ type UnmappedProviderArea = {
   provider_count: number;
 };
 
+type PendingAreaRequest = {
+  review_id: string;
+  raw_area: string;
+  occurrences: number;
+  source_ref: string | null;
+  source_type: string | null;
+  last_seen_at: string | null;
+  submitter_name: string | null;
+  submitter_phone: string | null;
+};
+
 type LoadResponse = {
   ok?: boolean;
   regions?: RegionRow[];
   areas?: AreaRow[];
   unmapped_provider_areas?: UnmappedProviderArea[];
+  pending_area_requests?: PendingAreaRequest[];
   error?: string;
 };
 
@@ -147,6 +159,29 @@ export default function AreaTab() {
   const [promoteAliasConfirmedFor, setPromoteAliasConfirmedFor] = useState<
     Set<string>
   >(new Set());
+
+  // Pending Approval tab state — review-queue rows from area_review_queue.
+  // Per-row promote state mirrors the unmapped-section pattern but keyed
+  // by review_id (raw_area is not guaranteed unique across the queue —
+  // dedup is done by normalized_key server-side, not raw text).
+  const [pendingAreaRequests, setPendingAreaRequests] = useState<
+    PendingAreaRequest[]
+  >([]);
+  const [pendingRegionByReview, setPendingRegionByReview] = useState<
+    Record<string, string>
+  >({});
+  const [pendingCanonicalByReview, setPendingCanonicalByReview] = useState<
+    Record<string, string>
+  >({});
+  const [pendingStatusByReview, setPendingStatusByReview] = useState<
+    Record<string, RowStatus>
+  >({});
+  const [pendingAreaConfirmedFor, setPendingAreaConfirmedFor] = useState<
+    Set<string>
+  >(new Set());
+  const [pendingAliasConfirmedFor, setPendingAliasConfirmedFor] = useState<
+    Set<string>
+  >(new Set());
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -223,6 +258,11 @@ export default function AreaTab() {
           setUnmappedProviderAreas(
             Array.isArray(res.unmapped_provider_areas)
               ? res.unmapped_provider_areas
+              : []
+          );
+          setPendingAreaRequests(
+            Array.isArray(res.pending_area_requests)
+              ? res.pending_area_requests
               : []
           );
         } else {
@@ -678,6 +718,203 @@ export default function AreaTab() {
       },
       onSuccess
     );
+  };
+
+  // Best-effort: mark an area_review_queue row resolved after a
+  // successful area/alias create. Failures are non-fatal — the user
+  // already got their area/alias; the queue row will simply remain
+  // pending and can be cleared next round. We surface the error in
+  // the row's status pill so the admin can see it.
+  const resolveReviewRow = async (
+    review_id: string,
+    resolved_canonical_area: string
+  ): Promise<{ ok: boolean; error?: string }> => {
+    try {
+      const res = await fetch("/api/admin/areas", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "resolve_review",
+          review_id,
+          resolved_canonical_area,
+        }),
+      });
+      const json = (await res.json()) as {
+        ok?: boolean;
+        error?: string;
+        detail?: string;
+      };
+      if (!res.ok || !json?.ok) {
+        return {
+          ok: false,
+          error:
+            json?.detail || json?.error || `Resolve failed (${res.status})`,
+        };
+      }
+      return { ok: true };
+    } catch (err: unknown) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : "Network error",
+      };
+    }
+  };
+
+  // Approve a pending review-queue row as a new canonical area in the
+  // admin-picked region. Reuses addAreaCore. After the area is created,
+  // marks the queue row resolved so the row drops out of the pending tab
+  // and the provider's dashboard reflects the mapped outcome on next load.
+  const handleApprovePendingAsArea = (req: PendingAreaRequest) => {
+    const canonical = req.raw_area.trim();
+    const region_code = (pendingRegionByReview[req.review_id] ?? "").trim();
+    if (!canonical) return;
+    if (!region_code) {
+      setPendingStatusByReview((prev) => ({
+        ...prev,
+        [req.review_id]: { state: "error", message: "Pick a region first." },
+      }));
+      return;
+    }
+    const dup = findDuplicateArea(canonical, allAreas, null);
+    const isCrossRegionDup = dup && dup.region_code !== region_code;
+    if (isCrossRegionDup && !pendingAreaConfirmedFor.has(req.review_id)) {
+      setPendingAreaConfirmedFor((prev) => {
+        const next = new Set(prev);
+        next.add(req.review_id);
+        return next;
+      });
+      setPendingStatusByReview((prev) => ({
+        ...prev,
+        [req.review_id]: {
+          state: "error",
+          message: `"${canonical}" also exists in ${dup!.region_code}. Click again to add to ${region_code} anyway.`,
+        },
+      }));
+      return;
+    }
+    setPendingStatusByReview((prev) => ({
+      ...prev,
+      [req.review_id]: { state: "saving" },
+    }));
+    addAreaCore({
+      canonical,
+      region_code,
+      actionKey: `pendingArea::${req.review_id}@${region_code}`,
+      onSuccess: async () => {
+        const resolveRes = await resolveReviewRow(req.review_id, canonical);
+        setPendingAreaRequests((prev) =>
+          prev.filter((r) => r.review_id !== req.review_id)
+        );
+        setPendingAreaConfirmedFor((prev) => {
+          const next = new Set(prev);
+          next.delete(req.review_id);
+          return next;
+        });
+        setPendingStatusByReview((prev) => ({
+          ...prev,
+          [req.review_id]: resolveRes.ok
+            ? {
+                state: "saved",
+                message: `Approved as area in ${region_code}`,
+              }
+            : {
+                state: "error",
+                message: `Area created but queue resolve failed: ${resolveRes.error}`,
+              },
+        }));
+        setExpandedRegions((prev) => {
+          const next = new Set(prev);
+          next.add(region_code);
+          return next;
+        });
+        refresh();
+      },
+    });
+  };
+
+  // Approve a pending review-queue row as an alias of an existing
+  // canonical area in the admin-picked region. Reuses addAliasCore.
+  const handleApprovePendingAsAlias = (req: PendingAreaRequest) => {
+    const aliasText = req.raw_area.trim();
+    const region_code = (pendingRegionByReview[req.review_id] ?? "").trim();
+    const canonical_area = (
+      pendingCanonicalByReview[req.review_id] ?? ""
+    ).trim();
+    if (!aliasText) return;
+    if (!region_code) {
+      setPendingStatusByReview((prev) => ({
+        ...prev,
+        [req.review_id]: { state: "error", message: "Pick a region first." },
+      }));
+      return;
+    }
+    if (!canonical_area) {
+      setPendingStatusByReview((prev) => ({
+        ...prev,
+        [req.review_id]: {
+          state: "error",
+          message: "Pick a canonical area in that region.",
+        },
+      }));
+      return;
+    }
+    const dupAlias = findDuplicateAlias(aliasText, allAreas, null);
+    const isCrossRegionAliasDup =
+      dupAlias && dupAlias.area.region_code !== region_code;
+    if (isCrossRegionAliasDup && !pendingAliasConfirmedFor.has(req.review_id)) {
+      setPendingAliasConfirmedFor((prev) => {
+        const next = new Set(prev);
+        next.add(req.review_id);
+        return next;
+      });
+      setPendingStatusByReview((prev) => ({
+        ...prev,
+        [req.review_id]: {
+          state: "error",
+          message: `Alias "${aliasText}" already used under ${dupAlias!.area.canonical_area} / ${dupAlias!.area.region_code}. Click again to add anyway.`,
+        },
+      }));
+      return;
+    }
+    setPendingStatusByReview((prev) => ({
+      ...prev,
+      [req.review_id]: { state: "saving" },
+    }));
+    addAliasCore({
+      alias: aliasText,
+      canonical_area,
+      region_code,
+      actionKey: `pendingAlias::${req.review_id}@${region_code}`,
+      onSuccess: async () => {
+        const resolveRes = await resolveReviewRow(req.review_id, canonical_area);
+        setPendingAreaRequests((prev) =>
+          prev.filter((r) => r.review_id !== req.review_id)
+        );
+        setPendingAliasConfirmedFor((prev) => {
+          const next = new Set(prev);
+          next.delete(req.review_id);
+          return next;
+        });
+        setPendingStatusByReview((prev) => ({
+          ...prev,
+          [req.review_id]: resolveRes.ok
+            ? {
+                state: "saved",
+                message: `Approved as alias of ${canonical_area} (${region_code})`,
+              }
+            : {
+                state: "error",
+                message: `Alias created but queue resolve failed: ${resolveRes.error}`,
+              },
+        }));
+        setExpandedRegions((prev) => {
+          const next = new Set(prev);
+          next.add(region_code);
+          return next;
+        });
+        refresh();
+      },
+    });
   };
 
   // Promote an unmapped provider_areas string as an alias of an existing
@@ -1446,14 +1683,246 @@ export default function AreaTab() {
           )}
 
           {activeTab === "pending" && (
-            <div className="mt-4 space-y-2">
-              <p className="text-sm text-slate-500">
-                No pending area requests.
-              </p>
-              <p className="text-xs text-slate-400">
-                Provider-submitted area requests are not wired yet; this tab
-                is a placeholder for that future flow.
-              </p>
+            <div className="mt-4 space-y-3">
+              {pendingAreaRequests.length === 0 ? (
+                <p className="text-sm text-slate-500">
+                  No pending area requests.
+                </p>
+              ) : (
+                <section className="overflow-hidden rounded-xl border border-slate-200">
+                  <header className="flex flex-wrap items-baseline justify-between gap-2 border-b border-slate-200 bg-slate-50 px-3 py-2">
+                    <div>
+                      <h3 className="text-sm font-semibold text-slate-800">
+                        Pending Approval ({pendingAreaRequests.length})
+                      </h3>
+                      <p className="text-[11px] text-slate-500">
+                        Provider-submitted area strings awaiting admin
+                        approval. Approving creates a new canonical area or
+                        an alias of an existing one, then marks the queue
+                        row resolved.
+                      </p>
+                    </div>
+                  </header>
+                  <table className="min-w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-slate-200 bg-white text-left text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                        <th className="px-3 py-2">Requested Area</th>
+                        <th className="px-3 py-2">Submitter</th>
+                        <th className="px-3 py-2">Region</th>
+                        <th className="px-3 py-2">Approve as Area</th>
+                        <th className="px-3 py-2">Approve as Alias of…</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pendingAreaRequests.map((req) => {
+                        const selectedRegion =
+                          pendingRegionByReview[req.review_id] ?? "";
+                        const selectedCanonical =
+                          pendingCanonicalByReview[req.review_id] ?? "";
+                        const status = pendingStatusByReview[req.review_id];
+                        const isSaving = status?.state === "saving";
+                        const areaDup = findDuplicateArea(
+                          req.raw_area,
+                          allAreas,
+                          null
+                        );
+                        const areaCrossRegionDup =
+                          areaDup && areaDup.region_code !== selectedRegion;
+                        const areaConfirmRequired =
+                          areaCrossRegionDup &&
+                          !pendingAreaConfirmedFor.has(req.review_id);
+                        const aliasDup = findDuplicateAlias(
+                          req.raw_area,
+                          allAreas,
+                          null
+                        );
+                        const aliasCrossRegionDup =
+                          aliasDup &&
+                          aliasDup.area.region_code !== selectedRegion;
+                        const aliasConfirmRequired =
+                          aliasCrossRegionDup &&
+                          !pendingAliasConfirmedFor.has(req.review_id);
+                        const canonicalsInRegion = selectedRegion
+                          ? (areas ?? []).filter(
+                              (a) =>
+                                a.region_code === selectedRegion && a.active
+                            )
+                          : [];
+                        return (
+                          <tr
+                            key={req.review_id}
+                            className="border-b border-slate-100 align-top last:border-b-0"
+                          >
+                            <td className="px-3 py-2">
+                              <div className="font-medium text-slate-800">
+                                {req.raw_area}
+                              </div>
+                              <div className="mt-0.5 text-[11px] text-slate-500">
+                                <span className="rounded bg-slate-100 px-1.5 py-0.5">
+                                  {req.source_type ?? "unknown"}
+                                </span>
+                                {" · "}
+                                {req.occurrences} occurrence
+                                {req.occurrences === 1 ? "" : "s"}
+                              </div>
+                              {areaDup ? (
+                                <DupWarning
+                                  text={`Same canonical exists in: ${areaDup.region_code} ${areaDup.region_name ?? ""}`}
+                                />
+                              ) : null}
+                              {aliasDup ? (
+                                <DupWarning
+                                  text={`Same alias text exists under: ${aliasDup.area.canonical_area} / ${aliasDup.area.region_code}`}
+                                />
+                              ) : null}
+                            </td>
+                            <td className="px-3 py-2 text-slate-700">
+                              {req.submitter_name ? (
+                                <div className="font-medium">
+                                  {req.submitter_name}
+                                </div>
+                              ) : null}
+                              {req.submitter_phone ? (
+                                <div className="text-xs text-slate-500">
+                                  {req.submitter_phone}
+                                </div>
+                              ) : null}
+                              {!req.submitter_name && !req.submitter_phone ? (
+                                <span className="text-xs text-slate-400">
+                                  {req.source_ref ?? "—"}
+                                </span>
+                              ) : null}
+                            </td>
+                            <td className="px-3 py-2">
+                              <select
+                                value={selectedRegion}
+                                onChange={(e) => {
+                                  const v = e.target.value;
+                                  setPendingRegionByReview((prev) => ({
+                                    ...prev,
+                                    [req.review_id]: v,
+                                  }));
+                                  setPendingCanonicalByReview((prev) => ({
+                                    ...prev,
+                                    [req.review_id]: "",
+                                  }));
+                                  setPendingAreaConfirmedFor((prev) => {
+                                    const next = new Set(prev);
+                                    next.delete(req.review_id);
+                                    return next;
+                                  });
+                                  setPendingAliasConfirmedFor((prev) => {
+                                    const next = new Set(prev);
+                                    next.delete(req.review_id);
+                                    return next;
+                                  });
+                                }}
+                                disabled={isSaving}
+                                className="rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900 outline-none focus:border-[#003d20] focus:ring-1 focus:ring-[#003d20]/20"
+                                aria-label={`Pick region for ${req.raw_area}`}
+                              >
+                                <option value="">— region —</option>
+                                {sortedRegions.map((r) => (
+                                  <option
+                                    key={r.region_code}
+                                    value={r.region_code}
+                                  >
+                                    {r.region_code} — {r.region_name}
+                                  </option>
+                                ))}
+                              </select>
+                            </td>
+                            <td className="px-3 py-2">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleApprovePendingAsArea(req);
+                                }}
+                                disabled={!selectedRegion || isSaving}
+                                className="rounded bg-[#003d20] px-3 py-1 text-xs font-semibold text-white shadow-sm transition hover:bg-[#002a15] disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                {isSaving
+                                  ? "Approving…"
+                                  : areaConfirmRequired
+                                    ? "Approve anyway"
+                                    : "Approve as Area"}
+                              </button>
+                            </td>
+                            <td className="px-3 py-2">
+                              <div className="flex flex-col gap-1">
+                                <select
+                                  value={selectedCanonical}
+                                  onChange={(e) =>
+                                    setPendingCanonicalByReview((prev) => ({
+                                      ...prev,
+                                      [req.review_id]: e.target.value,
+                                    }))
+                                  }
+                                  disabled={!selectedRegion || isSaving}
+                                  className="rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900 outline-none focus:border-[#003d20] focus:ring-1 focus:ring-[#003d20]/20 disabled:cursor-not-allowed disabled:opacity-50"
+                                  aria-label={`Pick canonical for ${req.raw_area}`}
+                                >
+                                  <option value="">
+                                    {selectedRegion
+                                      ? canonicalsInRegion.length === 0
+                                        ? "(no canonicals in region)"
+                                        : "— canonical —"
+                                      : "(pick region first)"}
+                                  </option>
+                                  {canonicalsInRegion.map((a) => (
+                                    <option
+                                      key={a.area_code}
+                                      value={a.canonical_area}
+                                    >
+                                      {a.canonical_area}
+                                    </option>
+                                  ))}
+                                </select>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleApprovePendingAsAlias(req);
+                                  }}
+                                  disabled={
+                                    !selectedRegion ||
+                                    !selectedCanonical ||
+                                    isSaving
+                                  }
+                                  className="rounded border border-[#003d20]/40 bg-white px-3 py-1 text-xs font-semibold text-[#003d20] transition hover:bg-[#003d20]/5 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  {isSaving
+                                    ? "Approving…"
+                                    : aliasConfirmRequired
+                                      ? "Approve anyway"
+                                      : "Approve as Alias"}
+                                </button>
+                                {status?.message ? (
+                                  <span
+                                    className={
+                                      status.state === "error"
+                                        ? "rounded bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-700"
+                                        : "rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-800"
+                                    }
+                                    role={
+                                      status.state === "error"
+                                        ? "alert"
+                                        : undefined
+                                    }
+                                  >
+                                    {status.message}
+                                  </span>
+                                ) : null}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </section>
+              )}
             </div>
           )}
         </div>

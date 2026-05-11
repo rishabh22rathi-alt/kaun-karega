@@ -594,10 +594,15 @@ async function getProviderAreaCoverageFromSupabase(
   let reviewRows: ReviewRow[] = [];
 
   try {
+    // Source filter widened to include the provider self-edit path:
+    // /api/provider/update now also enqueues unknown areas with
+    // source_type="provider_update". Without this widening, edit-time
+    // submissions would never surface on the provider's own dashboard
+    // even though they appear in AreaTab pending approval.
     const { data, error } = await supabase
       .from("area_review_queue")
       .select("raw_area, status, last_seen_at, resolved_canonical_area, resolved_at")
-      .eq("source_type", "provider_register")
+      .in("source_type", ["provider_register", "provider_update"])
       .eq("source_ref", providerId)
       .in("status", ["pending", "resolved"])
       .limit(500);
