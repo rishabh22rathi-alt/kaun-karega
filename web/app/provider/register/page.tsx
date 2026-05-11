@@ -19,8 +19,24 @@ import {
 // constant alone will NOT re-enable multi-category signup — backend caps in
 // /api/kk (provider_register) and /api/provider/update also enforce the limit.
 const MAX_CATEGORIES = 1;
+// Region-based coverage (Phase 1): provider picks exactly 3 regions, the
+// client expands them into the canonical areas underneath and ships the
+// flat list to the existing provider_areas writers — schema and matching
+// stay byte-identical. Custom localities (off-region typed strings) still
+// flow into pendingNewAreas / area_review_queue for the admin approval
+// lifecycle.
+const MIN_REGIONS = 3;
+const MAX_REGIONS = 3;
+// Legacy area-count caps — kept only for any downstream code that still
+// references them; the new flow gates on region count instead.
 const MIN_AREAS = 1;
 const MAX_AREAS = 5;
+
+type RegionOption = {
+  region_code: string;
+  region_name: string;
+  areas: string[];
+};
 
 type RegisterResponse = {
   ok?: boolean;
@@ -218,6 +234,21 @@ function ProviderRegisterPageInner() {
   );
   const [selectedAreas, setSelectedAreas] = useState<string[]>([]);
   const [customAreaKeys, setCustomAreaKeys] = useState<string[]>([]);
+  // Region-based coverage state (Phase 1).
+  // `regionOptions` is the catalog from /api/area-intelligence/regions.
+  // `selectedRegions` is the provider's pick (≤ MAX_REGIONS). `customLocalities`
+  // are typed strings that don't fall inside any region — they still flow
+  // into pendingNewAreas / area_review_queue, preserving the queue lifecycle.
+  const [regionOptions, setRegionOptions] = useState<RegionOption[]>([]);
+  const [isLoadingRegions, setIsLoadingRegions] = useState<boolean>(false);
+  const [regionsError, setRegionsError] = useState<string>("");
+  const [selectedRegions, setSelectedRegions] = useState<string[]>([]);
+  const [customLocalities, setCustomLocalities] = useState<string[]>([]);
+  const [customLocalityInput, setCustomLocalityInput] = useState<string>("");
+  // One-shot flag that gates both the edit-mode inference effect and the
+  // region→area expansion sync effect. Declared up-front because the sync
+  // effect (defined earlier in the file) references it in its deps array.
+  const [hasInferredRegions, setHasInferredRegions] = useState(false);
 
   const [catQuery, setCatQuery] = useState("");
   const [areaSearch, setAreaSearch] = useState("");
@@ -448,6 +479,45 @@ function ProviderRegisterPageInner() {
     loadAreas();
   }, []);
 
+  // Region catalog — drives the new Step 3 region picker.
+  useEffect(() => {
+    const loadRegions = async () => {
+      setIsLoadingRegions(true);
+      setRegionsError("");
+      try {
+        const res = await fetch("/api/area-intelligence/regions", {
+          cache: "no-store",
+        });
+        const data = (await res.json()) as {
+          ok?: boolean;
+          regions?: RegionOption[];
+          error?: string;
+        };
+        if (!res.ok || !data?.ok || !Array.isArray(data.regions)) {
+          throw new Error(data?.error || `HTTP ${res.status}`);
+        }
+        // Only keep regions that have at least one area — empty regions
+        // would produce zero provider_areas rows and confuse the picker.
+        setRegionOptions(
+          data.regions.filter(
+            (r) =>
+              r.region_code &&
+              Array.isArray(r.areas) &&
+              r.areas.length > 0
+          )
+        );
+      } catch (err) {
+        setRegionOptions([]);
+        setRegionsError(
+          err instanceof Error ? err.message : "Failed to load regions"
+        );
+      } finally {
+        setIsLoadingRegions(false);
+      }
+    };
+    loadRegions();
+  }, []);
+
   useEffect(() => {
     if (!isEditMode || !/^\d{10}$/.test(phone) || hasLoadedEditProfile) {
       return;
@@ -482,6 +552,10 @@ function ProviderRegisterPageInner() {
         setSelectedAreas(serviceAreas);
         setCustomCategoryKeys([]);
         setCustomAreaKeys([]);
+        // Region/locality inference is deferred to a separate effect that
+        // waits for both `serviceAreas` (loaded here) and `regionOptions`
+        // (the catalog fetch). Without both, mapping would yield zero
+        // regions and clobber the provider's saved coverage.
       } catch {
         // Keep the form usable even if prefill fails.
       } finally {
@@ -497,6 +571,89 @@ function ProviderRegisterPageInner() {
       ignore = true;
     };
   }, [hasLoadedEditProfile, isEditMode, phone]);
+
+  // Region → area expansion. `selectedAreas` becomes a DERIVED value
+  // (union of all canonical areas inside the selected regions, plus
+  // any custom localities). All downstream submit / count / payload
+  // code keeps working with `selectedAreas` unchanged.
+  //
+  // Skipped while the edit-mode inference effect is still running so
+  // the initial empty regions+localities state doesn't temporarily
+  // clobber the freshly-loaded saved set.
+  useEffect(() => {
+    if (isEditMode && !hasInferredRegions) return;
+    const seen = new Set<string>();
+    const merged: string[] = [];
+    const push = (s: string) => {
+      const t = s.trim();
+      if (!t) return;
+      const k = t.toLowerCase();
+      if (seen.has(k)) return;
+      seen.add(k);
+      merged.push(t);
+    };
+    for (const rc of selectedRegions) {
+      const region = regionOptions.find((r) => r.region_code === rc);
+      if (!region) continue;
+      for (const a of region.areas) push(a);
+    }
+    for (const c of customLocalities) push(c);
+    setSelectedAreas(merged);
+    // Mark custom-locality keys so the existing pendingNewAreas filter
+    // (which checks customAreaKeys.includes) picks them up at submit.
+    setCustomAreaKeys(customLocalities.map((c) => areaKey(c)));
+  }, [
+    selectedRegions,
+    customLocalities,
+    regionOptions,
+    isEditMode,
+    hasInferredRegions,
+  ]);
+
+  // Edit-mode inference — once both the region catalog and the
+  // provider's saved `selectedAreas` are loaded, derive:
+  //   selectedRegions  = regions whose every active canonical_area is in
+  //                       the provider's saved set (case-insensitive).
+  //                       Conservative: only "fully covered" regions are
+  //                       inferred to avoid silently shrinking coverage.
+  //   customLocalities = saved areas not covered by any inferred region.
+  // Runs only once per edit session (gated by hasInferredRegions, which
+  // is declared above with the other Step 3 state).
+  useEffect(() => {
+    if (!isEditMode) return;
+    if (hasInferredRegions) return;
+    if (!hasLoadedEditProfile) return;
+    if (regionOptions.length === 0) return;
+    const norm = (v: string) => v.trim().toLowerCase();
+    const savedSet = new Set(selectedAreas.map(norm).filter(Boolean));
+    if (savedSet.size === 0) {
+      setHasInferredRegions(true);
+      return;
+    }
+    const inferredRegions: string[] = [];
+    const coveredByInferred = new Set<string>();
+    for (const region of regionOptions) {
+      const regionKeys = region.areas.map(norm).filter(Boolean);
+      if (regionKeys.length === 0) continue;
+      const everyAreaSaved = regionKeys.every((k) => savedSet.has(k));
+      if (!everyAreaSaved) continue;
+      inferredRegions.push(region.region_code);
+      for (const k of regionKeys) coveredByInferred.add(k);
+      if (inferredRegions.length >= MAX_REGIONS) break;
+    }
+    setSelectedRegions(inferredRegions);
+    const leftovers = selectedAreas.filter(
+      (a) => !coveredByInferred.has(norm(a))
+    );
+    setCustomLocalities(leftovers);
+    setHasInferredRegions(true);
+  }, [
+    isEditMode,
+    hasInferredRegions,
+    hasLoadedEditProfile,
+    regionOptions,
+    selectedAreas,
+  ]);
 
   useEffect(() => {
     if (!isEditMode || !hasLoadedEditProfile) return;
@@ -641,7 +798,7 @@ function ProviderRegisterPageInner() {
   const canSubmit =
     !!name.trim() &&
     selectedCategories.length >= 1 &&
-    selectedAreas.length >= MIN_AREAS &&
+    selectedRegions.length === MIN_REGIONS &&
     !isSubmitting &&
     !showSuccessCelebration &&
     !showEditSuccessModal;
@@ -1249,103 +1406,188 @@ function ProviderRegisterPageInner() {
                 }}
               >
                 <div className="mb-2 flex items-center justify-between gap-3">
-                  <label className="block text-sm font-semibold text-slate-700">Step 3: Service areas</label>
+                  <label className="block text-sm font-semibold text-slate-700">
+                    Step 3: Service regions — choose {MIN_REGIONS}
+                  </label>
                   <span className="text-xs font-medium text-slate-500">
-                    {selectedAreas.length}/{MAX_AREAS}
+                    {selectedRegions.length}/{MAX_REGIONS}
                   </span>
                 </div>
-                <input
-                  type="text"
-                  value={areaSearch}
-                  onFocus={() => {
-                    if (canAccessAreas) {
-                    setShowAreaSuggestions(true);
-                    }
-                  }}
-                  onChange={(event) => {
-                    if (!canAccessAreas) return;
-                    setAreaSearch(event.target.value);
-                    setAreasLimitError("");
-                    setShowAreaSuggestions(true);
-                  }}
-                  readOnly={!canAccessAreas}
-                  disabled={isMaxAreasReached || showSuccessCelebration || !canAccessAreas}
-                  placeholder={
-                    !canAccessAreas
-                      ? "Select at least 1 category to choose areas"
-                      : isMaxAreasReached
-                      ? "You have chosen the maximum service areas (5)"
-                      : "Search and select areas"
-                  }
-                  className={`w-full rounded-xl border px-4 py-3 text-sm shadow-sm outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-200 ${
-                    canAccessAreas
-                      ? "border-slate-200 bg-white text-slate-900"
-                      : "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-500"
-                  }`}
-                />
-                {isLoadingAreas ? <p className="mt-2 text-xs text-slate-500">Loading areas...</p> : null}
-                {areasError ? <p className="mt-2 text-xs text-red-600">{areasError}</p> : null}
-                {areasLimitError ? <p className="mt-2 text-xs text-red-600">{areasLimitError}</p> : null}
-                <p className="mt-2 text-xs text-slate-500">
-                  Choose approved areas from the list. New areas can be requested and will go for admin approval before becoming active coverage.
+                <p className="mb-3 text-xs text-slate-500">
+                  Pick exactly {MIN_REGIONS} regions you cover. We'll
+                  expand each into the areas inside it for matching.
                 </p>
-                {canAddCustomArea ? (
-                  <div className="mt-2 flex flex-wrap gap-2">
+                {isLoadingRegions ? (
+                  <p className="text-xs text-slate-500">Loading regions…</p>
+                ) : null}
+                {regionsError ? (
+                  <p className="text-xs text-red-600">Error: {regionsError}</p>
+                ) : null}
+                {!isLoadingRegions && !regionsError && regionOptions.length === 0 ? (
+                  <p className="text-xs text-slate-500">No regions available.</p>
+                ) : null}
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {regionOptions.map((region) => {
+                    const isSelected = selectedRegions.includes(region.region_code);
+                    const isAtMax =
+                      !isSelected && selectedRegions.length >= MAX_REGIONS;
+                    const areaPreview = region.areas.slice(0, 6).join(" · ");
+                    const moreCount = Math.max(0, region.areas.length - 6);
+                    return (
+                      <div
+                        key={region.region_code}
+                        className={`rounded-2xl border p-4 shadow-sm transition ${
+                          isSelected
+                            ? "border-emerald-500 bg-emerald-50/70"
+                            : "border-slate-200 bg-white"
+                        } ${isAtMax ? "opacity-60" : ""}`}
+                      >
+                        <div className="flex items-baseline gap-2">
+                          <span className="font-mono text-xs font-bold text-slate-600">
+                            {region.region_code}
+                          </span>
+                          <h3 className="text-sm font-semibold text-slate-900">
+                            {region.region_name || "—"}
+                          </h3>
+                        </div>
+                        <p className="mt-1 text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                          {region.areas.length} area
+                          {region.areas.length === 1 ? "" : "s"}
+                        </p>
+                        <p className="mt-2 text-xs leading-relaxed text-slate-700">
+                          {areaPreview}
+                          {moreCount > 0 ? (
+                            <span className="text-slate-400">
+                              {" "}
+                              · +{moreCount} more
+                            </span>
+                          ) : null}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (!canAccessAreas) {
+                              nudgeSelectCategory();
+                              return;
+                            }
+                            setSelectedRegions((prev) => {
+                              if (prev.includes(region.region_code)) {
+                                return prev.filter(
+                                  (rc) => rc !== region.region_code
+                                );
+                              }
+                              if (prev.length >= MAX_REGIONS) return prev;
+                              return [...prev, region.region_code];
+                            });
+                          }}
+                          disabled={isAtMax || showSuccessCelebration}
+                          className={`mt-3 inline-flex items-center justify-center rounded-lg px-3 py-1.5 text-xs font-bold shadow-sm transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                            isSelected
+                              ? "bg-emerald-600 text-white hover:bg-emerald-700"
+                              : "border border-[#003d20] text-[#003d20] hover:bg-[#003d20]/5"
+                          }`}
+                        >
+                          {isSelected ? "Selected ✓" : "Pick Region"}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Custom locality — preserves the provider → queue →
+                    admin approval lifecycle even in the region-based UI.
+                    Typed strings flow into pendingNewAreas at submit
+                    (registration) or get caught by /api/provider/update's
+                    enqueue (edit). */}
+                <div className="mt-5 rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-4">
+                  <p className="text-sm font-semibold text-slate-700">
+                    Missing your locality?
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Add a custom locality (optional). Admin will review and
+                    map it to a region for future matching. Custom
+                    localities don't count toward your {MIN_REGIONS}-region
+                    requirement.
+                  </p>
+                  <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                    <input
+                      type="text"
+                      value={customLocalityInput}
+                      onChange={(e) => setCustomLocalityInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          const v = customLocalityInput.trim();
+                          if (!v) return;
+                          const key = v.toLowerCase();
+                          if (
+                            customLocalities.some(
+                              (c) => c.toLowerCase() === key
+                            )
+                          )
+                            return;
+                          setCustomLocalities((prev) => [...prev, v]);
+                          setCustomLocalityInput("");
+                        }
+                      }}
+                      placeholder="e.g. Demo Colony"
+                      disabled={!canAccessAreas || showSuccessCelebration}
+                      className="flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-200 disabled:cursor-not-allowed disabled:bg-slate-100"
+                    />
                     <button
                       type="button"
-                      onClick={handleAddCustomArea}
-                      className="inline-flex items-center gap-2 rounded-full border border-sky-700 bg-sky-50 px-3 py-1.5 text-xs font-semibold text-sky-800"
+                      onClick={() => {
+                        const v = customLocalityInput.trim();
+                        if (!v) return;
+                        const key = v.toLowerCase();
+                        if (
+                          customLocalities.some((c) => c.toLowerCase() === key)
+                        )
+                          return;
+                        setCustomLocalities((prev) => [...prev, v]);
+                        setCustomLocalityInput("");
+                      }}
+                      disabled={
+                        !customLocalityInput.trim() ||
+                        !canAccessAreas ||
+                        showSuccessCelebration
+                      }
+                      className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      + Add "{normalizedAreaQuery}" as new area
+                      Add locality
                     </button>
                   </div>
-                ) : null}
-                {showAreaSuggestions &&
-                canAccessAreas &&
-                !isLoadingAreas &&
-                !areasError &&
-                !isMaxAreasReached ? (
-                  <div className="absolute z-20 mt-2 max-h-64 w-full overflow-auto rounded-xl border border-slate-200 bg-white p-2 shadow-lg">
-                    {filteredAreaSuggestions.length === 0 ? (
-                      canAddCustomArea ? null : <p className="px-2 py-1 text-xs text-slate-500">No area match found.</p>
-                    ) : (
-                      filteredAreaSuggestions.map((area) => {
-                        const isLimitReached = selectedAreas.length >= MAX_AREAS;
-                        return (
-                          <button
-                            key={area}
-                            type="button"
-                            onClick={() => addArea(area)}
-                            disabled={isLimitReached}
-                            className="block w-full rounded-lg px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-                          >
-                            {area}
-                          </button>
-                        );
-                      })
-                    )}
-                  </div>
-                ) : null}
-                {selectedAreas.length > 0 ? (
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {selectedAreas.map((area) => (
-                      <button
-                        key={area}
-                        type="button"
-                        onClick={() => removeArea(area)}
-                        className="inline-flex items-center gap-2 rounded-full border border-sky-700 bg-sky-50 px-3 py-1.5 text-xs font-semibold text-sky-800"
-                      >
-                        {area}
-                        {customAreaKeys.includes(areaKey(area)) ? (
+                  {customLocalities.length > 0 ? (
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {customLocalities.map((loc) => (
+                        <span
+                          key={loc}
+                          className="inline-flex items-center gap-2 rounded-full border border-sky-300 bg-sky-50 px-3 py-1 text-xs font-semibold text-sky-800"
+                        >
+                          {loc}
                           <span className="rounded bg-sky-700 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
                             REVIEW
                           </span>
-                        ) : null}
-                        <span aria-hidden="true">x</span>
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setCustomLocalities((prev) =>
+                                prev.filter(
+                                  (c) =>
+                                    c.toLowerCase() !== loc.toLowerCase()
+                                )
+                              )
+                            }
+                            aria-label={`Remove ${loc}`}
+                            className="text-sky-700 hover:text-sky-900"
+                          >
+                            x
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
               </div>
 
               {!isEditMode ? (
