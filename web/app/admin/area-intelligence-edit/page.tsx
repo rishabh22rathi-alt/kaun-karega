@@ -67,6 +67,12 @@ export default function AreaIntelligenceEditPage() {
   );
   const [areaStatus, setAreaStatus] = useState<Record<string, RowStatus>>({});
   const [aliasStatus, setAliasStatus] = useState<Record<string, RowStatus>>({});
+  // Per-area Move state, independent from the per-row Save flow so a
+  // pending move doesn't accidentally fire on Save and vice-versa.
+  const [moveTarget, setMoveTarget] = useState<
+    Record<string, { to_region_code: string; move_aliases: boolean }>
+  >({});
+  const [moveStatus, setMoveStatus] = useState<Record<string, RowStatus>>({});
 
   // Region dropdown source — always the current drafts, sorted by code.
   const regions: Region[] = useMemo(
@@ -472,6 +478,128 @@ export default function AreaIntelligenceEditPage() {
     }
   };
 
+  // ── move area workflow ──
+  const updateMoveTarget = (
+    code: string,
+    patch: Partial<{ to_region_code: string; move_aliases: boolean }>
+  ) => {
+    setMoveTarget((prev) => ({
+      ...prev,
+      [code]: {
+        to_region_code: "",
+        move_aliases: false,
+        ...prev[code],
+        ...patch,
+      },
+    }));
+    setMoveStatus((prev) => ({ ...prev, [code]: { state: "idle" } }));
+  };
+
+  const moveAreaRow = async (code: string) => {
+    const draft = areaDrafts[code];
+    const target = moveTarget[code];
+    if (!draft || !target || !target.to_region_code) return;
+    if (target.to_region_code === draft.region_code) {
+      setMoveStatus((p) => ({
+        ...p,
+        [code]: { state: "error", message: "Destination is the same region." },
+      }));
+      return;
+    }
+
+    setMoveStatus((p) => ({ ...p, [code]: { state: "saving" } }));
+    try {
+      const res = await fetch("/api/admin/area-intelligence", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          target: "move_area",
+          area_code: code,
+          to_region_code: target.to_region_code,
+          move_aliases: target.move_aliases,
+        }),
+      });
+      const data = (await res.json()) as {
+        ok?: boolean;
+        moved_area?: Area;
+        moved_aliases_count?: number;
+        error?: string;
+        detail?: string;
+      };
+      if (!res.ok || !data?.ok || !data.moved_area) {
+        setMoveStatus((p) => ({
+          ...p,
+          [code]: {
+            state: "error",
+            message: data?.detail || data?.error || `HTTP ${res.status}`,
+          },
+        }));
+        return;
+      }
+
+      const moved = data.moved_area;
+      // Reflect the area's new region in local state without a full reload.
+      setAreaDrafts((p) => ({ ...p, [code]: moved }));
+      setAreaBaseline((p) => ({ ...p, [code]: moved }));
+
+      // If aliases were moved, update them in local state too — the
+      // server moved every alias matching (old canonical, old region).
+      const oldRegion = draft.region_code;
+      if (target.move_aliases && (data.moved_aliases_count ?? 0) > 0) {
+        const norm = (v: string) => v.trim().toLowerCase();
+        const matches = Object.values(aliasDrafts).filter(
+          (a) =>
+            norm(a.canonical_area) === norm(draft.canonical_area) &&
+            a.region_code === oldRegion
+        );
+        if (matches.length > 0) {
+          setAliasDrafts((p) => {
+            const next = { ...p };
+            for (const a of matches) {
+              next[a.alias_code] = {
+                ...a,
+                region_code: moved.region_code,
+              };
+            }
+            return next;
+          });
+          setAliasBaseline((p) => {
+            const next = { ...p };
+            for (const a of matches) {
+              next[a.alias_code] = {
+                ...a,
+                region_code: moved.region_code,
+              };
+            }
+            return next;
+          });
+        }
+      }
+
+      setMoveStatus((p) => ({
+        ...p,
+        [code]: {
+          state: "saved",
+          message: `Moved to ${moved.region_code}${
+            target.move_aliases
+              ? ` · ${data.moved_aliases_count ?? 0} aliases moved`
+              : ""
+          }.`,
+        },
+      }));
+      // Reset the per-row move dropdown so it doesn't suggest "move again".
+      setMoveTarget((p) => ({
+        ...p,
+        [code]: { to_region_code: "", move_aliases: false },
+      }));
+    } catch (e: any) {
+      setMoveStatus((p) => ({
+        ...p,
+        [code]: { state: "error", message: e?.message || "Network error" },
+      }));
+    }
+  };
+
   // ── alias row mutations ──
   const updateAliasDraft = (code: string, patch: Partial<AliasDraft>) => {
     setAliasDrafts((prev) => ({
@@ -810,6 +938,7 @@ export default function AreaIntelligenceEditPage() {
             "linked",
             "notes",
             "actions",
+            "move",
           ]}
           rows={areaRows.map((r) => {
             const baseline = areaBaseline[r.area_code];
@@ -905,6 +1034,17 @@ export default function AreaIntelligenceEditPage() {
                   dirty={Boolean(dirty)}
                   status={status}
                   onClick={() => void saveAreaRow(r.area_code)}
+                />,
+                <MoveAreaCell
+                  key="m"
+                  area={r}
+                  regions={regions}
+                  target={moveTarget[r.area_code]}
+                  onChange={(patch) => updateMoveTarget(r.area_code, patch)}
+                  onSubmit={() => void moveAreaRow(r.area_code)}
+                  status={moveStatus[r.area_code]}
+                  linkedAliasCount={stats.total}
+                  linkedAliasActive={stats.active}
                 />,
               ],
             };
@@ -1247,6 +1387,96 @@ function ToggleActive({
         </span>
       )}
     </label>
+  );
+}
+
+function MoveAreaCell({
+  area,
+  regions,
+  target,
+  onChange,
+  onSubmit,
+  status,
+  linkedAliasCount,
+  linkedAliasActive,
+}: {
+  area: Area;
+  regions: Region[];
+  target: { to_region_code: string; move_aliases: boolean } | undefined;
+  onChange: (patch: Partial<{ to_region_code: string; move_aliases: boolean }>) => void;
+  onSubmit: () => void;
+  status: RowStatus | undefined;
+  linkedAliasCount: number;
+  linkedAliasActive: number;
+}) {
+  const to = target?.to_region_code ?? "";
+  const moveAliases = target?.move_aliases ?? false;
+  const differs = to !== "" && to !== area.region_code;
+  const showAliasWarning = differs && !moveAliases && linkedAliasCount > 0;
+
+  return (
+    <div className="flex min-w-[14rem] flex-col gap-1">
+      <select
+        value={to}
+        onChange={(e) => onChange({ to_region_code: e.target.value })}
+        className={inputCls}
+        disabled={status?.state === "saving"}
+      >
+        <option value="">— move to region —</option>
+        {regions
+          .filter((rg) => rg.region_code !== area.region_code)
+          .map((rg) => (
+            <option key={rg.region_code} value={rg.region_code}>
+              {rg.region_code} — {rg.region_name}
+            </option>
+          ))}
+      </select>
+      <label className="flex items-center gap-2 text-[11px] text-slate-700">
+        <input
+          type="checkbox"
+          checked={moveAliases}
+          onChange={(e) => onChange({ move_aliases: e.target.checked })}
+          className="h-3.5 w-3.5 rounded border-slate-300 text-emerald-600 focus:ring-emerald-300"
+          disabled={status?.state === "saving"}
+        />
+        Move linked aliases too
+        {linkedAliasCount > 0 ? (
+          <span className="text-slate-400">
+            ({linkedAliasCount} linked
+            {linkedAliasActive !== linkedAliasCount
+              ? `, ${linkedAliasActive} active`
+              : ""}
+            )
+          </span>
+        ) : null}
+      </label>
+      {showAliasWarning ? (
+        <span className="rounded bg-amber-50 px-2 py-1 text-[11px] leading-tight text-amber-800">
+          This area has linked aliases in the old region.
+        </span>
+      ) : null}
+      {differs ? (
+        <button
+          type="button"
+          onClick={onSubmit}
+          disabled={status?.state === "saving"}
+          className="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-3 py-1 text-xs font-bold text-slate-800 shadow-sm transition hover:bg-slate-50 disabled:opacity-40"
+        >
+          {status?.state === "saving" ? "Moving…" : "Move Area"}
+        </button>
+      ) : null}
+      {status?.message ? (
+        <span
+          className={
+            status.state === "error"
+              ? "text-[11px] text-rose-700"
+              : "text-[11px] text-emerald-700"
+          }
+        >
+          {status.message}
+        </span>
+      ) : null}
+    </div>
   );
 }
 

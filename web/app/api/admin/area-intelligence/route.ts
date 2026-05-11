@@ -105,7 +105,12 @@ export async function PATCH(request: Request) {
   }
 
   const target = String(body.target ?? "").toLowerCase();
-  if (target !== "area" && target !== "alias" && target !== "region") {
+  if (
+    target !== "area" &&
+    target !== "alias" &&
+    target !== "region" &&
+    target !== "move_area"
+  ) {
     return NextResponse.json(
       { ok: false, error: "INVALID_TARGET" },
       { status: 400 }
@@ -114,7 +119,152 @@ export async function PATCH(request: Request) {
 
   if (target === "region") return await patchRegion(body);
   if (target === "area") return await patchArea(body);
+  if (target === "move_area") return await moveArea(body);
   return await patchAlias(body);
+}
+
+async function moveArea(body: Json) {
+  const area_code = trim(body.area_code);
+  const to_region_code = trim(body.to_region_code);
+  const move_aliases = Boolean(body.move_aliases);
+
+  if (!area_code || !to_region_code) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "REQUIRED_FIELDS_MISSING",
+        required: ["area_code", "to_region_code"],
+      },
+      { status: 400 }
+    );
+  }
+
+  // 1) Find the source area.
+  const { data: existing, error: lookupErr } = await adminSupabase
+    .from("service_region_areas")
+    .select("area_code, canonical_area, region_code, active, notes")
+    .eq("area_code", area_code)
+    .maybeSingle();
+  if (lookupErr) {
+    return NextResponse.json(
+      { ok: false, error: "DB_ERROR", detail: lookupErr.message },
+      { status: 500 }
+    );
+  }
+  if (!existing) {
+    return NextResponse.json(
+      { ok: false, error: "AREA_NOT_FOUND" },
+      { status: 404 }
+    );
+  }
+
+  // No-op fast-fail: refuse moves to the same region. Keeps the operation
+  // log clean and avoids any chance of partial side effects.
+  if (existing.region_code === to_region_code) {
+    return NextResponse.json(
+      { ok: false, error: "SAME_REGION" },
+      { status: 400 }
+    );
+  }
+
+  // 2) Destination region must exist.
+  const regOk = await regionExists(to_region_code);
+  if (!regOk) {
+    return NextResponse.json(
+      { ok: false, error: "REGION_NOT_FOUND" },
+      { status: 404 }
+    );
+  }
+
+  // 3) Refuse silent merge — no two areas with the same canonical name
+  //    should coexist in the same region.
+  const { data: collision, error: collErr } = await adminSupabase
+    .from("service_region_areas")
+    .select("area_code")
+    .ilike("canonical_area", existing.canonical_area)
+    .eq("region_code", to_region_code)
+    .limit(1);
+  if (collErr) {
+    return NextResponse.json(
+      { ok: false, error: "DB_ERROR", detail: collErr.message },
+      { status: 500 }
+    );
+  }
+  if (collision && collision.length > 0) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "AREA_ALREADY_EXISTS_IN_TARGET_REGION",
+        detail: `Region ${to_region_code} already has a canonical area "${existing.canonical_area}".`,
+      },
+      { status: 409 }
+    );
+  }
+
+  // 4) Update the area row.
+  const { data: movedArea, error: updErr } = await adminSupabase
+    .from("service_region_areas")
+    .update({ region_code: to_region_code })
+    .eq("area_code", area_code)
+    .select("area_code, canonical_area, region_code, active, notes")
+    .maybeSingle();
+  if (updErr) {
+    return NextResponse.json(
+      { ok: false, error: "DB_ERROR", detail: updErr.message },
+      { status: 500 }
+    );
+  }
+
+  // 5) Optionally move aliases that referenced the old (canonical, region) pair.
+  let moved_aliases_count = 0;
+  if (move_aliases) {
+    // Count first so the response is honest even when no rows match. Using
+    // the exact (not ILIKE) match for canonical here mirrors how aliases
+    // are stored when they were inserted via the editor; if you have alias
+    // rows with whitespace/case drift in canonical_area against this area,
+    // they will NOT be moved — surface that, don't silently rewrite.
+    const { data: aliasMatches, error: countErr } = await adminSupabase
+      .from("service_region_area_aliases")
+      .select("alias_code")
+      .eq("canonical_area", existing.canonical_area)
+      .eq("region_code", existing.region_code)
+      .limit(5000);
+    if (countErr) {
+      return NextResponse.json(
+        { ok: false, error: "DB_ERROR", detail: countErr.message },
+        { status: 500 }
+      );
+    }
+
+    if ((aliasMatches ?? []).length > 0) {
+      const { error: aliasUpdErr } = await adminSupabase
+        .from("service_region_area_aliases")
+        .update({ region_code: to_region_code })
+        .eq("canonical_area", existing.canonical_area)
+        .eq("region_code", existing.region_code);
+      if (aliasUpdErr) {
+        return NextResponse.json(
+          {
+            ok: false,
+            error: "DB_ERROR",
+            detail: aliasUpdErr.message,
+            // The area was already moved at this point. Surface that so
+            // the admin can investigate; we don't try to roll back —
+            // partial state is recoverable from the editor.
+            area_moved: true,
+          },
+          { status: 500 }
+        );
+      }
+      moved_aliases_count = aliasMatches!.length;
+    }
+  }
+
+  return NextResponse.json({
+    ok: true,
+    moved_area: movedArea,
+    moved_aliases_count,
+  });
 }
 
 async function patchRegion(body: Json) {

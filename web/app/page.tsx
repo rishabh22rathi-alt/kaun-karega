@@ -7,6 +7,13 @@ import { Search } from "lucide-react";
 import AreaSelection, {
   normalizeAreaValue,
 } from "@/app/(public)/components/AreaSelection";
+import AreaIntelligenceSandbox from "@/components/AreaIntelligenceSandbox";
+
+// Hardcoded sandbox flag — keep `false` in committed code. Flip locally
+// to preview the experimental Area Intelligence search component on the
+// homepage. Wires only to /api/area-intelligence/{suggest,resolve}; does
+// not affect provider matching, /api/find-provider, or /api/areas.
+const ENABLE_AREA_INTELLIGENCE_SANDBOX = false;
 import WhenNeedIt from "@/app/(public)/components/WhenNeedIt";
 import FirstVisitCoachmark from "@/components/FirstVisitCoachmark";
 import UserDisclaimerModal from "@/components/UserDisclaimerModal";
@@ -1308,6 +1315,12 @@ const hasArea = area.trim() !== "";
 
   return (
     <div className="min-h-screen bg-slate-50">
+
+      {ENABLE_AREA_INTELLIGENCE_SANDBOX ? (
+        <div className="px-4 pt-6">
+          <AreaIntelligenceSandbox />
+        </div>
+      ) : null}
 
       {/* ── HERO ─────────────────────────────────────────────────────── */}
       <section className="relative overflow-hidden bg-white px-4 pb-10 pt-0 text-center md:pt-5">
