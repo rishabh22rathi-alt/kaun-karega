@@ -2,6 +2,7 @@
 
 import ProvidersTab from "@/components/admin/ProvidersTab";
 import CategoryTab from "@/components/admin/CategoryTab";
+import AreaTab from "@/components/admin/AreaTab";
 
 /**
  * /admin/dashboard — fresh workspace.
@@ -24,6 +25,7 @@ export default function AdminDashboard() {
 
       <ProvidersTab />
       <CategoryTab />
+      <AreaTab />
     </div>
   );
 }

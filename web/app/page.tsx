@@ -7,13 +7,6 @@ import { Search } from "lucide-react";
 import AreaSelection, {
   normalizeAreaValue,
 } from "@/app/(public)/components/AreaSelection";
-import AreaIntelligenceSandbox from "@/components/AreaIntelligenceSandbox";
-
-// Hardcoded sandbox flag — keep `false` in committed code. Flip locally
-// to preview the experimental Area Intelligence search component on the
-// homepage. Wires only to /api/area-intelligence/{suggest,resolve}; does
-// not affect provider matching, /api/find-provider, or /api/areas.
-const ENABLE_AREA_INTELLIGENCE_SANDBOX = false;
 import WhenNeedIt from "@/app/(public)/components/WhenNeedIt";
 import FirstVisitCoachmark from "@/components/FirstVisitCoachmark";
 import UserDisclaimerModal from "@/components/UserDisclaimerModal";
@@ -1316,12 +1309,6 @@ const hasArea = area.trim() !== "";
   return (
     <div className="min-h-screen bg-slate-50">
 
-      {ENABLE_AREA_INTELLIGENCE_SANDBOX ? (
-        <div className="px-4 pt-6">
-          <AreaIntelligenceSandbox />
-        </div>
-      ) : null}
-
       {/* ── HERO ─────────────────────────────────────────────────────── */}
       <section className="relative overflow-hidden bg-white px-4 pb-10 pt-0 text-center md:pt-5">
         {/* Very subtle dot-grid texture */}
@@ -1606,8 +1593,25 @@ const hasArea = area.trim() !== "";
           </div>
 
           {/* Step 2: When */}
-          <div data-tour="time" className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="mb-3 flex items-center gap-3">
+          {/*
+            Layout polish on the timing chip row, applied as Tailwind
+            arbitrary-variant overrides on the wrapper:
+            - rely on flex-wrap (no horizontal scroll). Earlier
+              md:flex-nowrap + overflow-x-auto are removed.
+            - tighten row + column gap so wrapped tiles don't sprawl
+            - shrink chip padding and font (px-3 py-1.5 text-xs vs the
+              child's default px-4 py-2 text-sm) so all 5 tiles fit
+              comfortably and wrap cleanly when space is tight.
+            The override targets WhenNeedIt's chip container keyed off
+            its `.flex.flex-wrap.gap-2` classes; durable equivalent
+            would be one line in WhenNeedIt.tsx itself.
+            mb-2 (was mb-3) pulls the tiles closer to the STEP 2 header.
+          */}
+          <div
+            data-tour="time"
+            className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm [&_.flex.flex-wrap.gap-2]:!gap-x-1.5 [&_.flex.flex-wrap.gap-2]:!gap-y-1.5 [&_.flex.flex-wrap.gap-2>button]:!px-3 [&_.flex.flex-wrap.gap-2>button]:!py-1.5 [&_.flex.flex-wrap.gap-2>button]:!text-xs"
+          >
+            <div className="mb-2 flex items-center gap-3">
               <span className="shrink-0 text-xs font-bold uppercase tracking-widest text-orange-600 sm:text-sm">
                 STEP 2
               </span>

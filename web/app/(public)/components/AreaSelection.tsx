@@ -41,6 +41,23 @@ export function normalizeAreaValue(area: string): string {
 const isSameArea = (a: string, b: string) =>
   normalizeAreaValue(a).toLowerCase() === normalizeAreaValue(b).toLowerCase();
 
+// Phase 1 Area Intelligence integration — see /api/area-intelligence/suggest.
+// Critical contract: the value handed to `onSelect` (and therefore the
+// submit payload) MUST be a canonical area present in `/api/areas`. The
+// suggest endpoint may return labels that are aliases (e.g. "HC Road"),
+// or canonicals that don't exist in the live `/api/areas` master list
+// (e.g. placeholder seed data). Both classes are filtered/remapped here
+// before they ever reach onSelect.
+const AI_SUGGEST_DEBOUNCE_MS = 150;
+
+type AiSuggestion = {
+  type?: string;
+  label?: string;
+  canonical_area?: string | null;
+  region_code?: string;
+  region_name?: string;
+};
+
 export default function AreaSelection({
   selectedArea,
   onSelect,
@@ -55,6 +72,15 @@ export default function AreaSelection({
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [showAllMode, setShowAllMode] = useState(false);
   const [inputError, setInputError] = useState("");
+  // Area Intelligence cache. `aiLabels` keeps insertion order for the
+  // dropdown; `aiCanonicalByLabel` is the lookup that maps a clicked
+  // label back to the canonical area string we should submit.
+  // Empty array = "no AI suggestions available, fall through to the
+  // existing client-side filter against allowedAreas".
+  const [aiLabels, setAiLabels] = useState<string[]>([]);
+  const [aiCanonicalByLabel, setAiCanonicalByLabel] = useState<
+    Map<string, string>
+  >(new Map());
   // Original user input that differs (case/spelling) from the canonical
   // area finally selected. Shown beneath the "Selected area" chip so the
   // user sees the canonical their request will use. Cleared on every
@@ -65,8 +91,13 @@ export default function AreaSelection({
   const dropdownRef = useRef<HTMLDivElement | null>(null);
   const blurTimerRef = useRef<number | null>(null);
 
+  // Compact chip sizing — matches the Step 2 timing-tile polish on the
+  // homepage so both step blocks share a visual rhythm. Padding +
+  // font dropped from px-4 py-2 text-sm to px-3 py-1.5 text-xs; the
+  // border + selected/idle palette is unchanged so the selected-state
+  // meaning is preserved.
   const chipClass = (active: boolean) =>
-    `rounded-full px-4 py-2 text-sm font-semibold transition border whitespace-nowrap ${
+    `rounded-full px-3 py-1.5 text-xs font-semibold transition border whitespace-nowrap ${
       active
         ? "bg-[#1B5E20] text-white border-[#1B5E20] shadow-sm"
         : "border-[#1B5E20] text-[#1B5E20] bg-white hover:bg-[#1B5E20]/10"
@@ -85,20 +116,34 @@ export default function AreaSelection({
     const trimmed = typedArea.trim();
     const q = normalizeAreaValue(trimmed).toLowerCase();
 
-    // Show top suggestions in "Show All" mode even if length < 2
-    if (showAllMode && q.length < 2) {
-      return pool.slice(0, MAX_SUGGESTIONS);
+    // Show-All returns the FULL canonical list (no MAX_SUGGESTIONS slice)
+    // so the user can scroll through every area /api/areas serves.
+    // Ordering is whatever `/api/areas` returned. The dropdown's
+    // max-height + overflow keeps it usable on small viewports.
+    // Bypasses the AI path — Show All is an intentional "browse the full
+    // master list" affordance, not a fuzzy-search request.
+    if (showAllMode) {
+      return pool;
     }
 
     // Default threshold for normal typing
     if (q.length < 2) return [];
+
+    // Area Intelligence path: when the AI returned at least one
+    // safety-gated suggestion, surface those instead of the client
+    // filter. Empty AI result falls through to the client filter so
+    // existing canonical-only matches still appear during loading or
+    // when the AI table is incomplete.
+    if (aiLabels.length > 0) {
+      return aiLabels.slice(0, MAX_SUGGESTIONS);
+    }
 
     return pool
       .filter((area) =>
         normalizeAreaValue(area).toLowerCase().includes(q)
       )
       .slice(0, MAX_SUGGESTIONS);
-  }, [typedArea, allowedAreas, showAllMode]);
+  }, [typedArea, allowedAreas, showAllMode, aiLabels]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -129,6 +174,79 @@ export default function AreaSelection({
       .finally(() => setLoadingAreas(false));
     return () => controller.abort();
   }, [showAreaInput, allowedAreas.length]);
+
+  // Area Intelligence suggestions — debounced, AbortController-guarded.
+  // Only fires when:
+  //   - the area input is visible
+  //   - the user has typed ≥ 2 chars
+  //   - the /api/areas master list is loaded (we need it as the safety
+  //     gate; without it we can't tell which AI suggestions are safe).
+  // A suggestion is kept only if its resolved canonical (alias → its
+  // canonical_area; canonical → its own label) appears in allowedAreas
+  // case-insensitively. Region suggestions are dropped entirely; the
+  // submit pipeline has no concept of a region today.
+  useEffect(() => {
+    if (!showAreaInput) return;
+    const q = typedArea.trim();
+    if (q.length < 2 || allowedAreas.length === 0) {
+      setAiLabels([]);
+      setAiCanonicalByLabel(new Map());
+      return;
+    }
+    const ctrl = new AbortController();
+    const t = window.setTimeout(() => {
+      fetch(
+        `/api/area-intelligence/suggest?query=${encodeURIComponent(q)}`,
+        { signal: ctrl.signal, cache: "no-store" }
+      )
+        .then((res) => res.json())
+        .then((data: { ok?: boolean; suggestions?: AiSuggestion[] }) => {
+          if (ctrl.signal.aborted) return;
+          if (!data?.ok || !Array.isArray(data.suggestions)) {
+            setAiLabels([]);
+            setAiCanonicalByLabel(new Map());
+            return;
+          }
+          const allowedSet = new Set(
+            allowedAreas.map((a) => a.trim().toLowerCase())
+          );
+          const labels: string[] = [];
+          const map = new Map<string, string>();
+          const seenLabels = new Set<string>();
+          for (const s of data.suggestions) {
+            if (s?.type === "region") continue;
+            const label = String(s?.label ?? "").trim();
+            if (!label) continue;
+            const canonical =
+              s?.type === "alias"
+                ? String(s?.canonical_area ?? "").trim()
+                : label;
+            if (!canonical) continue;
+            // Safety gate: never surface a label that would submit a
+            // string the live matching layer (provider_areas) can't see.
+            if (!allowedSet.has(canonical.toLowerCase())) continue;
+            const labelKey = label.toLowerCase();
+            if (seenLabels.has(labelKey)) continue;
+            seenLabels.add(labelKey);
+            labels.push(label);
+            map.set(labelKey, canonical);
+          }
+          setAiLabels(labels);
+          setAiCanonicalByLabel(map);
+        })
+        .catch((err: unknown) => {
+          if (err instanceof Error && err.name === "AbortError") return;
+          // Silent fallback — the client filter against allowedAreas will
+          // take over via `filteredSuggestions` below.
+          setAiLabels([]);
+          setAiCanonicalByLabel(new Map());
+        });
+    }, AI_SUGGEST_DEBOUNCE_MS);
+    return () => {
+      ctrl.abort();
+      window.clearTimeout(t);
+    };
+  }, [showAreaInput, typedArea, allowedAreas]);
 
   useEffect(() => {
     const handleOutsideClick = (event: MouseEvent) => {
@@ -242,13 +360,24 @@ export default function AreaSelection({
   };
 
   const handleShowAllAreas = () => {
+    // Clear any typed text + lingering error so the full canonical list
+    // is what the user actually sees. Without this, leftover text in the
+    // input keeps the filter active and Show-All looks broken.
+    setTypedArea("");
+    setInputError("");
     setShowAllMode(true);
     setShowSuggestions(true);
     inputRef.current?.focus();
   };
 
-  const handleSuggestionSelect = (area: string) => {
-    const normalized = normalizeAreaValue(area);
+  const handleSuggestionSelect = (clickedLabel: string) => {
+    // When the clicked entry is an Area Intelligence alias suggestion,
+    // submit its canonical (not the alias text). Plain canonicals and
+    // client-filter results map to themselves.
+    const labelKey = clickedLabel.trim().toLowerCase();
+    const aiCanonical = aiCanonicalByLabel.get(labelKey);
+    const submitString = aiCanonical || clickedLabel;
+    const normalized = normalizeAreaValue(submitString);
     if (!normalized) return;
     if (blurTimerRef.current !== null) {
       window.clearTimeout(blurTimerRef.current);
@@ -258,7 +387,18 @@ export default function AreaSelection({
     setShowSuggestions(false);
     setShowAllMode(false);
     setInputError("");
-    setAliasInput("");
+    // When the user picked an alias label that resolved to a different
+    // canonical, surface that in the existing "Matched from …" hint on
+    // the confirmation card. Same field, same semantics as the existing
+    // typed-and-confirmed flow.
+    if (
+      aiCanonical &&
+      clickedLabel.trim().toLowerCase() !== aiCanonical.trim().toLowerCase()
+    ) {
+      setAliasInput(clickedLabel.trim());
+    } else {
+      setAliasInput("");
+    }
     inputRef.current?.blur();
     onSelect(normalized);
   };
@@ -285,7 +425,7 @@ export default function AreaSelection({
           Where do you need it?
         </p>
       ) : null}
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap gap-x-1.5 gap-y-1.5">
         {lastUsedArea ? (
           <button
             type="button"
@@ -359,7 +499,16 @@ export default function AreaSelection({
           {renderDropdown ? (
             <div
               ref={dropdownRef}
-              className="absolute left-0 right-0 z-50 max-h-48 overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg bottom-full mb-2 md:bottom-auto md:top-full md:mb-0 md:mt-2"
+              // Position below the input on every breakpoint. The previous
+              // `bottom-full mb-2` mobile rule put the dropdown above the
+              // input, which clipped offscreen when the input sat near the
+              // top of the viewport — perceived as "suggestions don't
+              // appear". `top-full` + a margin keeps it on-screen and lets
+              // the keyboard's space below the input host it cleanly.
+              // max-h-80 (~20rem / ~7-8 rows) keeps Show-All scrollable
+              // without dominating the viewport. Internal scroll via
+              // overflow-y-auto.
+              className="absolute left-0 right-0 top-full z-50 mt-2 max-h-80 overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg"
             >
               {filteredSuggestions.map((area) => (
                 <button
