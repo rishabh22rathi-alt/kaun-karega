@@ -409,13 +409,14 @@ export default function CategoryTab() {
             <button
               type="button"
               onClick={() => setActiveTab("pending")}
+              data-testid="kk-admin-category-pending-tab"
               className={`-mb-px border-b-2 px-3 py-2 text-sm font-semibold transition ${
                 activeTab === "pending"
                   ? "border-[#003d20] text-[#003d20]"
                   : "border-transparent text-slate-500 hover:text-slate-800"
               }`}
             >
-              Pending Approval
+              Pending Admin Approval
               {pendingOpenCount > 0 ? (
                 <span className="ml-2 inline-flex items-center justify-center rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-bold text-orange-700">
                   {pendingOpenCount}

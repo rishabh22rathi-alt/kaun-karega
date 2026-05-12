@@ -1822,23 +1822,35 @@ export async function POST(request: NextRequest) {
         await supabase.from("providers").delete().eq("provider_id", providerId);
       };
 
-      const serviceRows = categories.map((category) => ({
-        provider_id: providerId,
-        category: String(category),
-      }));
+      // Filter out custom (not-yet-approved) categories. A custom category
+      // must NOT become an active provider_services row until an admin
+      // approves the pending_category_requests entry — otherwise the
+      // dashboard surfaces the category under "Active Approved Service
+      // Category" before any human review. Approval inserts the
+      // provider_services row in adminCategoryMutations.approveCategoryRequest.
+      const approvedSelectedCategories = categories.filter((category) =>
+        approvedCategoryNames.has(String(category || "").trim().toLowerCase())
+      );
 
-      const { error: servicesError } = await supabase
-        .from("provider_services")
-        .insert(serviceRows);
+      if (approvedSelectedCategories.length > 0) {
+        const serviceRows = approvedSelectedCategories.map((category) => ({
+          provider_id: providerId,
+          category: String(category),
+        }));
 
-      if (servicesError) {
-        await rollbackProvider();
-        return withNoCache(
-          NextResponse.json(
-            { ok: false, error: servicesError.message || "Failed to create provider services" },
-            { status: 500 }
-          )
-        );
+        const { error: servicesError } = await supabase
+          .from("provider_services")
+          .insert(serviceRows);
+
+        if (servicesError) {
+          await rollbackProvider();
+          return withNoCache(
+            NextResponse.json(
+              { ok: false, error: servicesError.message || "Failed to create provider services" },
+              { status: 500 }
+            )
+          );
+        }
       }
 
       const areaRows = areas.map((area) => ({
@@ -1983,13 +1995,29 @@ export async function POST(request: NextRequest) {
       }
 
       // Queue unmapped (custom) categories for admin review — non-fatal.
-      // Mirrors the area queue. Each new category becomes one pending row;
-      // the provider_services row was already inserted above so the provider
-      // is matchable, and the admin approval handler upserts the canonical
-      // categories row when the request is approved.
-      if (pendingNewCategories.length > 0) {
+      // Custom categories are NOT inserted into provider_services here;
+      // they live exclusively in pending_category_requests until an
+      // admin approves them. Server-side derivation from
+      // `approvedCategoryNames` is the source of truth so a client that
+      // forgets to mark `pendingNewCategories` still routes the row to
+      // the queue. Client-provided `pendingNewCategories` is unioned in
+      // for forward compatibility.
+      const serverPendingNewCategories = categories.filter(
+        (category) =>
+          !approvedCategoryNames.has(
+            String(category || "").trim().toLowerCase()
+          )
+      );
+      const effectivePendingNewCategories = Array.from(
+        new Set(
+          [...serverPendingNewCategories, ...pendingNewCategories]
+            .map((c: unknown) => String(c || "").trim())
+            .filter(Boolean)
+        )
+      );
+      if (effectivePendingNewCategories.length > 0) {
         await Promise.allSettled(
-          pendingNewCategories.map((rawCategory: unknown) => {
+          effectivePendingNewCategories.map((rawCategory: unknown) => {
             const requestedCategory = String(rawCategory || "").trim();
             if (!requestedCategory) return Promise.resolve();
             return adminSupabase.from("pending_category_requests").insert({
@@ -2018,7 +2046,7 @@ export async function POST(request: NextRequest) {
           duplicateNameMatches: isDuplicateName
             ? duplicateMatches.map((m) => m.provider_id)
             : [],
-          requestedNewCategories: pendingNewCategories,
+          requestedNewCategories: effectivePendingNewCategories,
           requestedNewAreas: pendingNewAreas,
           provider: {
             ProviderID: providerId,

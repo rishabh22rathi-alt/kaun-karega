@@ -131,11 +131,24 @@ export async function POST(request: Request) {
         );
       })();
 
+  // Custom (not-yet-approved) categories must NOT enter provider_services.
+  // They live exclusively in pending_category_requests until an admin
+  // approves them — at which point adminCategoryMutations.approveCategoryRequest
+  // is responsible for inserting the provider_services row. This filter
+  // prevents the dashboard from surfacing a custom category under
+  // "Active Approved Service Category" before review.
+  const newCustomCategoryKeys = new Set(
+    newCustomCategories.map((c) => c.trim().toLowerCase())
+  );
+  const approvedSelectedCategories = categories.filter(
+    (c) => !newCustomCategoryKeys.has(c.trim().toLowerCase())
+  );
+
   const result = await updateProviderInSupabase({
     id: String(providerRow.provider_id),
     name,
     phone: sessionPhone,
-    categories,
+    categories: approvedSelectedCategories,
     areas,
   });
 

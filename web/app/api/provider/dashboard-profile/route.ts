@@ -272,7 +272,7 @@ async function getProviderMetricsFromSupabase(
 ): Promise<ProviderMetrics> {
   if (!providerId) return EMPTY_PROVIDER_METRICS;
 
-  const categoryList = Array.from(
+  const rawCategoryList = Array.from(
     new Set(
       (categories || [])
         .map((c) => String(c || "").trim())
@@ -286,6 +286,50 @@ async function getProviderMetricsFromSupabase(
         .filter((a) => a.length > 0)
     )
   );
+
+  // Intersect the provider's provider_services categories with the
+  // master active-categories list. Only currently APPROVED categories
+  // drive the metric counts — pending requests, rejected requests, and
+  // legacy leaked provider_services rows must not inflate any tile.
+  // A failed lookup degrades to "no active categories" → 0 metrics
+  // (safer than counting historical matches under an unknown taxonomy).
+  let activeApprovedCategoryList: string[] = [];
+  try {
+    const { data: activeRows, error: activeErr } = await supabase
+      .from("categories")
+      .select("name")
+      .eq("active", true);
+    if (activeErr) {
+      console.warn(
+        "[provider/dashboard-profile] metrics active-categories fetch failed",
+        activeErr.message
+      );
+    } else if (Array.isArray(activeRows)) {
+      const activeKeys = new Set(
+        activeRows
+          .map((row) =>
+            String((row as { name?: unknown }).name || "")
+              .trim()
+              .toLowerCase()
+          )
+          .filter(Boolean)
+      );
+      activeApprovedCategoryList = rawCategoryList.filter((c) =>
+        activeKeys.has(c.toLowerCase())
+      );
+    }
+  } catch (err) {
+    console.warn(
+      "[provider/dashboard-profile] metrics active-categories threw",
+      err instanceof Error ? err.message : err
+    );
+  }
+
+  // `categoryList` is the single source of truth from here down. It
+  // drives both Requests-In-Your-Services (tasks.category) and the
+  // matched/responded/accepted-by-me counts (provider_task_matches.category
+  // — populated at /api/find-provider insert time, so no JOIN needed).
+  const categoryList = activeApprovedCategoryList;
 
   const sinceIso = since ? since.toISOString() : null;
   const sinceMs = since ? since.getTime() : null;
@@ -312,21 +356,34 @@ async function getProviderMetricsFromSupabase(
     return q;
   })();
 
+  // Empty `categoryList` (no currently-approved active category for this
+  // provider) → every metric falls to 0. We short-circuit each promise
+  // so a stale Supabase `.in("category", [])` doesn't degenerate to an
+  // unfiltered count.
+  const emptyCount = Promise.resolve({ count: 0, error: null } as {
+    count: number | null;
+    error: unknown;
+  });
+
   const matchedCountPromise = (() => {
+    if (categoryList.length === 0) return emptyCount;
     let q = supabase
       .from("provider_task_matches")
       .select("task_id", { count: "exact", head: true })
-      .eq("provider_id", providerId);
+      .eq("provider_id", providerId)
+      .in("category", categoryList);
     if (sinceIso) q = q.gte("created_at", sinceIso);
     return q;
   })();
 
   const respondedCountPromise = (() => {
+    if (categoryList.length === 0) return emptyCount;
     let q = supabase
       .from("provider_task_matches")
       .select("task_id", { count: "exact", head: true })
       .eq("provider_id", providerId)
-      .in("match_status", ["responded", "accepted"]);
+      .in("match_status", ["responded", "accepted"])
+      .in("category", categoryList);
     if (sinceIso) q = q.gte("created_at", sinceIso);
     return q;
   })();
@@ -336,11 +393,23 @@ async function getProviderMetricsFromSupabase(
   // included so we can apply the in-window filter for Accepted in memory
   // without a second round-trip; Completed uses the FULL accepted task-id
   // set and is filtered at the DB by tasks.closed_at instead.
-  const acceptedMatchesPromise = supabase
-    .from("provider_task_matches")
-    .select("task_id, created_at")
-    .eq("provider_id", providerId)
-    .in("match_status", ["accepted", "assigned"]);
+  // Filtering by category at the DB so the chained Completed count
+  // inherits the same scope — a category switch must zero this tile
+  // immediately, not after Completed back-fills.
+  const acceptedMatchesPromise = (() => {
+    if (categoryList.length === 0) {
+      return Promise.resolve({ data: [], error: null } as {
+        data: Array<{ task_id: string; created_at: string | null }> | null;
+        error: unknown;
+      });
+    }
+    return supabase
+      .from("provider_task_matches")
+      .select("task_id, created_at")
+      .eq("provider_id", providerId)
+      .in("match_status", ["accepted", "assigned"])
+      .in("category", categoryList);
+  })();
 
   const [
     categoriesCountResult,
@@ -570,17 +639,111 @@ async function getProviderAreaCoverageFromSupabase(
   providerId: string,
   providerAreas: string[]
 ): Promise<ProviderAreaCoverage> {
-  const activeApprovedAreas: ProviderCoverageArea[] = providerAreas
+  // Legacy fallback: raw provider_areas as ActiveApprovedAreas. Used when
+  // the provider has no region overlap (pre-region migration) OR when the
+  // region-derived path errors out.
+  const fallbackActiveAreas: ProviderCoverageArea[] = providerAreas
     .map((area) => String(area || "").trim())
     .filter((area) => area.length > 0)
     .map((area) => ({ Area: area, Status: "active" }));
+
+  // Compute region-derived live coverage. Selected regions are inferred
+  // from provider_areas × service_region_areas (overlap rule: any region
+  // whose canonical_area list intersects this provider's saved areas is
+  // treated as "selected"). The displayed list is the union of CURRENT
+  // canonical_areas under those regions plus any provider_areas entries
+  // that don't belong to any region (legacy custom localities).
+  //
+  // Effect: when an admin adds a new area to a region a provider has
+  // selected, that area surfaces on the provider's dashboard immediately
+  // on next poll — no provider-side write is needed. Matching still
+  // reads provider_areas directly, so a matcher update is out-of-scope
+  // here. See the patch report for the trade-off.
+  let regionDerivedActiveAreas: ProviderCoverageArea[] | null = null;
+  try {
+    const regionRes = await supabase
+      .from("service_region_areas")
+      .select("canonical_area, region_code, active")
+      .eq("active", true)
+      .limit(10000);
+
+    if (regionRes.error) {
+      console.warn(
+        "[provider/dashboard-profile] service_region_areas query failed",
+        regionRes.error.message
+      );
+    } else if (Array.isArray(regionRes.data) && regionRes.data.length > 0) {
+      const providerKeys = new Set(
+        providerAreas.map(normalizeKey).filter((k) => k.length > 0)
+      );
+      const regionToAreas = new Map<string, string[]>();
+      const areaKeyToRegions = new Map<string, Set<string>>();
+      for (const row of regionRes.data as Array<{
+        canonical_area: string | null;
+        region_code: string | null;
+      }>) {
+        const area = String(row.canonical_area || "").trim();
+        const rc = String(row.region_code || "").trim();
+        if (!area || !rc) continue;
+        if (!regionToAreas.has(rc)) regionToAreas.set(rc, []);
+        regionToAreas.get(rc)!.push(area);
+        const key = normalizeKey(area);
+        if (!areaKeyToRegions.has(key))
+          areaKeyToRegions.set(key, new Set());
+        areaKeyToRegions.get(key)!.add(rc);
+      }
+
+      const selectedRegions = new Set<string>();
+      for (const key of providerKeys) {
+        for (const rc of areaKeyToRegions.get(key) || []) {
+          selectedRegions.add(rc);
+        }
+      }
+
+      if (selectedRegions.size > 0) {
+        const derived = new Set<string>();
+        for (const rc of selectedRegions) {
+          for (const a of regionToAreas.get(rc) || []) derived.add(a);
+        }
+        // Keep provider_areas entries that aren't tied to any active
+        // region — these are legacy custom localities the provider still
+        // covers and shouldn't disappear from the dashboard.
+        for (const a of providerAreas) {
+          const key = normalizeKey(a);
+          if (!key) continue;
+          if (!areaKeyToRegions.has(key)) derived.add(String(a).trim());
+        }
+        regionDerivedActiveAreas = Array.from(derived)
+          .filter((a) => a.length > 0)
+          .sort((a, b) => a.localeCompare(b))
+          .map((area) => ({ Area: area, Status: "active" }));
+      }
+    }
+  } catch (err) {
+    console.warn(
+      "[provider/dashboard-profile] region-derived coverage threw",
+      err instanceof Error ? err.message : err
+    );
+  }
+
+  const activeApprovedAreas =
+    regionDerivedActiveAreas && regionDerivedActiveAreas.length > 0
+      ? regionDerivedActiveAreas
+      : fallbackActiveAreas;
 
   if (!providerId) {
     return { ...EMPTY_AREA_COVERAGE, ActiveApprovedAreas: activeApprovedAreas };
   }
 
+  // activeAreaKeys is consumed below by the resolved-outcome
+  // CoverageActive flag. Keep it sourced from the displayed area list so
+  // a "resolved → mapped" outcome under a now-derived region reads as
+  // covered (rather than misleadingly inactive). This does NOT change
+  // matching; matching is still provider_areas based.
   const activeAreaKeys = new Set(
-    providerAreas.map(normalizeKey).filter((key) => key.length > 0)
+    activeApprovedAreas
+      .map((row) => normalizeKey(row.Area))
+      .filter((key) => key.length > 0)
   );
 
   type ReviewRow = {
@@ -1288,9 +1451,11 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const serviceStatusLookupsFailed = Boolean(
-      activeCategoriesError || pendingCategoryRequestsError
-    );
+    // Note: a failure in either lookup leaves the category Sets empty,
+    // which causes every provider_services row to fall back to
+    // Status="inactive" below. That's the correct safe-degraded state —
+    // legacy leaked rows must never silently promote to approved on a
+    // transient DB blip.
     const activeCategoryKeys = new Set(
       (activeCategoriesData || [])
         .map((row) => String((row as { name?: unknown }).name || "").trim().toLowerCase())
@@ -1347,26 +1512,62 @@ export async function GET(request: NextRequest) {
         PendingApproval: String(provider.status || "").trim().toLowerCase() === "pending" ? "yes" : "no",
         Status: String(provider.status || ""),
         DuplicateNameReviewStatus: String(provider.duplicate_name_review_status || ""),
-        Services: Array.isArray(providerServices)
-          ? providerServices.map((item) => {
+        Services: (() => {
+          const out: Array<{
+            Category: string;
+            Status: "approved" | "pending" | "rejected" | "inactive";
+          }> = [];
+          // 1) Emit rows derived from provider_services.
+          //
+          // Default to "inactive". Only categories actually present in
+          // `categories.active=true` get promoted to "approved" — this is
+          // the load-bearing guarantee that closes the legacy auto-
+          // approval leak (pre-governance flows wrote unapproved custom
+          // categories straight into provider_services; those rows must
+          // never surface as approved chips on the dashboard).
+          //
+          // If the active/pending lookups errored, every row falls back
+          // to "inactive" rather than "approved" — a transient DB blip
+          // is best surfaced honestly rather than silently re-promoting
+          // a leaked row.
+          const seen = new Set<string>();
+          if (Array.isArray(providerServices)) {
+            for (const item of providerServices) {
               const category = String(item.category || "");
               const key = category.trim().toLowerCase();
+              if (!key) continue;
               let Status: "approved" | "pending" | "rejected" | "inactive" =
-                "approved";
-              if (!serviceStatusLookupsFailed) {
-                if (activeCategoryKeys.has(key)) {
-                  Status = "approved";
-                } else if (pendingCategoryKeys.has(key)) {
-                  Status = "pending";
-                } else if (rejectedCategoryKeys.has(key)) {
-                  Status = "rejected";
-                } else {
-                  Status = "inactive";
-                }
+                "inactive";
+              if (activeCategoryKeys.has(key)) {
+                Status = "approved";
+              } else if (pendingCategoryKeys.has(key)) {
+                Status = "pending";
+              } else if (rejectedCategoryKeys.has(key)) {
+                Status = "rejected";
               }
-              return { Category: category, Status };
-            })
-          : [],
+              out.push({ Category: category, Status });
+              seen.add(key);
+            }
+          }
+          // 2) Synthesize pending entries for pending_category_requests
+          // rows that have no provider_services row yet. After the policy
+          // change (custom categories no longer pre-insert provider_services
+          // rows), this is the only path that surfaces the request under
+          // the dashboard's "Pending Service Category Requests" block.
+          for (const row of (pendingCategoryRequestsData ||
+            []) as PendingCategoryRow[]) {
+            const status = String(row.status || "")
+              .trim()
+              .toLowerCase();
+            if (status !== "pending") continue;
+            const name = String(row.requested_category || "").trim();
+            const key = name.toLowerCase();
+            if (!name || !key || seen.has(key)) continue;
+            out.push({ Category: name, Status: "pending" });
+            seen.add(key);
+          }
+          return out;
+        })(),
         RejectedCategoryRequests: Array.from(rejectedCategoryDetails.entries())
           .map(([key, detail]) => ({ Key: key, ...detail }))
           // Surface only categories the provider hasn't already had

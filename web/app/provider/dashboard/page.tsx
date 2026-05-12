@@ -17,8 +17,6 @@ import {
   type DashboardMetricsRange,
 } from "@/lib/providerDashboardProfile";
 
-const MAX_SERVICES = 3;
-const MAX_AREAS = 5;
 
 type ProviderMetricSummary = {
   TotalRequestsInMyCategories?: number;
@@ -714,8 +712,6 @@ function ProviderDashboardInner() {
     [categoryDemandByRange, categoryDemandRange]
   );
 
-  const servicesCount = services.length;
-  const areasCount = areas.length;
   const activeCoverageAreas = useMemo(
     () =>
       Array.isArray(areaCoverage.ActiveApprovedAreas) && areaCoverage.ActiveApprovedAreas.length
@@ -1091,11 +1087,8 @@ function ProviderDashboardInner() {
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
-                    Services ({servicesCount}/{MAX_SERVICES})
+                    Service
                   </h2>
-                  {servicesCount === MAX_SERVICES ? (
-                    <p className="mt-1 text-xs text-slate-500">Maximum services selected</p>
-                  ) : null}
                 </div>
                 <Link
                   href="/provider/register?edit=services"
@@ -1158,7 +1151,11 @@ function ProviderDashboardInner() {
               <div className="mt-5 space-y-5">
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
-                    Active Approved Areas ({activeCoverageAreas.length}/{MAX_AREAS})
+                    Areas Under Your Selected Regions
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    These areas update automatically when admin updates
+                    your selected regions.
                   </p>
                   <div className="mt-3 flex flex-wrap gap-2">
                     {activeCoverageAreas.length ? (
@@ -1178,7 +1175,7 @@ function ProviderDashboardInner() {
 
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
-                    Active Approved Service Categories ({approvedServices.length}/{MAX_SERVICES})
+                    Active Approved Service Category
                   </p>
                   <div className="mt-3 flex flex-wrap gap-2">
                     {approvedServices.length ? (

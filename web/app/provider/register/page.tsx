@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { getAuthSession } from "@/lib/auth";
 import confetti from "canvas-confetti";
 import InAppToastStack, { type InAppToast } from "@/components/InAppToastStack";
+import ProviderAliasSubmitter from "@/components/ProviderAliasSubmitter";
 import { PROVIDER_PROFILE_UPDATED_EVENT } from "@/components/sidebarEvents";
 import {
   PROVIDER_PLEDGE_TEXT,
@@ -19,13 +20,14 @@ import {
 // constant alone will NOT re-enable multi-category signup — backend caps in
 // /api/kk (provider_register) and /api/provider/update also enforce the limit.
 const MAX_CATEGORIES = 1;
-// Region-based coverage (Phase 1): provider picks exactly 3 regions, the
-// client expands them into the canonical areas underneath and ships the
-// flat list to the existing provider_areas writers — schema and matching
-// stay byte-identical. Custom localities (off-region typed strings) still
-// flow into pendingNewAreas / area_review_queue for the admin approval
-// lifecycle.
-const MIN_REGIONS = 3;
+// Region-based coverage: provider picks between MIN_REGIONS and
+// MAX_REGIONS regions. The client expands each into the canonical areas
+// underneath and ships the flat list to the existing provider_areas
+// writers — schema and matching stay byte-identical. Custom localities
+// (off-region typed strings) still flow into pendingNewAreas /
+// area_review_queue for the admin approval lifecycle and are explicitly
+// excluded from the region count.
+const MIN_REGIONS = 1;
 const MAX_REGIONS = 3;
 // Legacy area-count caps — kept only for any downstream code that still
 // references them; the new flow gates on region count instead.
@@ -292,6 +294,10 @@ function ProviderRegisterPageInner() {
     setToasts((current) => current.filter((t) => t.id !== id));
   };
   const [hasLoadedEditProfile, setHasLoadedEditProfile] = useState(false);
+  // ProviderID captured from the edit-mode profile load so we can mount
+  // <ProviderAliasSubmitter />. Empty in registration mode (no provider
+  // row exists yet — the alias submit endpoint requires one).
+  const [editingProviderId, setEditingProviderId] = useState("");
 
   const editTarget = searchParams.get("edit");
   const isEditMode = editTarget === "services" || editTarget === "areas";
@@ -552,6 +558,13 @@ function ProviderRegisterPageInner() {
         setSelectedAreas(serviceAreas);
         setCustomCategoryKeys([]);
         setCustomAreaKeys([]);
+        // Capture ProviderID so the work-term panel mounted below in edit
+        // mode can call /api/provider/work-terms + /api/provider/aliases.
+        setEditingProviderId(
+          String(
+            (data.provider as { ProviderID?: unknown }).ProviderID ?? ""
+          ).trim()
+        );
         // Region/locality inference is deferred to a separate effect that
         // waits for both `serviceAreas` (loaded here) and `regionOptions`
         // (the catalog fetch). Without both, mapping would yield zero
@@ -655,10 +668,11 @@ function ProviderRegisterPageInner() {
     selectedAreas,
   ]);
 
-  // Region / locality edits should clear the most recent submit error so a
-  // stale "Please pick exactly 3 regions" message doesn't linger after the
-  // provider takes the corrective action. Mirrors the inline-clear pattern
-  // that toggleCategory / addArea already use for category & area edits.
+  // Region / locality edits should clear the most recent submit error so
+  // a stale "Please pick at least 1 / up to 3" message doesn't linger
+  // after the provider takes the corrective action. Mirrors the inline-
+  // clear pattern toggleCategory / addArea already use for category and
+  // area edits.
   useEffect(() => {
     if (submitError) setSubmitError("");
     // submitError is intentionally NOT in the dep array — including it
@@ -751,10 +765,13 @@ function ProviderRegisterPageInner() {
       out.push({ value: item, display: item, isAlias: false, canonical: item });
     }
 
-    // Default view (no query) — show ONLY canonical chips. Aliases stay
-    // hidden until the provider actively searches; they would otherwise
-    // flood the chip list and obscure the canonical service taxonomy.
-    if (!q) return out;
+    // Default view (no query) — render NOTHING. The full canonical list
+    // overwhelmed first-time providers and obscured the "+ Add as new
+    // service" affordance for off-taxonomy services. Suggestions are
+    // search-driven: the provider types, we show matches; if no match,
+    // the noMatch branch surfaces "+ Add <query> as new service". The
+    // discoverability hint under the input already tells them so.
+    if (!q) return [];
 
     // Search view — alias entries join the pool, displayed as
     // "alias (canonical)" so the provider sees the underlying service.
@@ -1019,14 +1036,15 @@ function ProviderRegisterPageInner() {
     if (!canSubmit || !/^\d{10}$/.test(phone)) return;
 
     // Region-count gate — moved out of `canSubmit` so the button stays
-    // clickable. The product rule today is exactly MIN_REGIONS (== 3)
-    // regions; custom localities are explicitly excluded from this count.
-    // Surface a clear inline error here instead of silently disabling Save.
-    if (selectedRegions.length !== MIN_REGIONS) {
-      setSubmitError(
-        `Please pick exactly ${MIN_REGIONS} service regions before saving. ` +
-          `Custom localities don't count toward this requirement.`
-      );
+    // clickable. Rule: at least MIN_REGIONS (1), at most MAX_REGIONS (3).
+    // Custom localities are explicitly excluded from this count. Surface
+    // a clear inline error instead of silently disabling Save.
+    if (selectedRegions.length < MIN_REGIONS) {
+      setSubmitError("Please pick at least 1 service region before saving.");
+      return;
+    }
+    if (selectedRegions.length > MAX_REGIONS) {
+      setSubmitError(`You can choose up to ${MAX_REGIONS} service regions.`);
       return;
     }
 
@@ -1275,8 +1293,23 @@ function ProviderRegisterPageInner() {
                       ? "You can choose only one main service category"
                       : "Search categories"
                   }
+                  data-testid="kk-category-search"
                   className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 shadow-sm outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-200"
                 />
+                {/* Discoverability hint — the "+ Add as new service"
+                    affordance below only surfaces after 3+ chars with no
+                    match. The chip strip is empty by default (no full
+                    canonical dump) so this hint is the primary cue that
+                    typing is required. */}
+                {!isMaxReached && !isLoadingCategories ? (
+                  <p className="mt-2 text-[11px] text-slate-500">
+                    Start typing your service. Don&apos;t see it? Tap{" "}
+                    <span className="font-semibold text-[#003d20]">
+                      + Add as new service
+                    </span>{" "}
+                    — admin will review it.
+                  </p>
+                ) : null}
                 {isLoadingCategories ? <p className="mt-2 text-xs text-slate-500">Loading categories...</p> : null}
                 {categoriesError ? <p className="mt-2 text-xs text-red-600">{categoriesError}</p> : null}
                 <div
@@ -1324,7 +1357,8 @@ function ProviderRegisterPageInner() {
                         onClick={handleAddCustomCategory}
                         className="inline-flex items-center gap-2 rounded-full border border-green-700 bg-green-50 px-3 py-1.5 text-xs font-semibold text-green-800"
                       >
-                        + Add "{normalizedCatQuery}" as new category
+                        + Add &ldquo;{normalizedCatQuery}&rdquo; as new
+                        service
                       </button>
                     ) : null}
                     </div>
@@ -1406,6 +1440,25 @@ function ProviderRegisterPageInner() {
                       })}
                     </div>
                   ) : null}
+                  {/* Edit-mode work-term panel — reuses the same component
+                      the provider dashboard mounts. It loads approved
+                      work-tag chips for the selected canonical, persists
+                      taps via /api/provider/work-terms, and routes custom
+                      typed terms through /api/provider/aliases (admin
+                      review). Registration mode keeps the inline
+                      selectedWorkTags chips above because the provider row
+                      doesn't exist yet — /api/provider/aliases would 403.
+                      Mounts only when exactly one canonical is selected
+                      AND the providerId has been captured from the edit
+                      profile load. */}
+                  {isEditMode &&
+                  editingProviderId &&
+                  selectedCategories.length === 1 ? (
+                    <ProviderAliasSubmitter
+                      providerId={editingProviderId}
+                      canonicalCategory={selectedCategories[0]}
+                    />
+                  ) : null}
                 </div>
                 {highlightCategories ? (
                   <p className="mt-2 text-xs font-medium text-red-700">
@@ -1437,15 +1490,16 @@ function ProviderRegisterPageInner() {
               >
                 <div className="mb-2 flex items-center justify-between gap-3">
                   <label className="block text-sm font-semibold text-slate-700">
-                    Step 3: Service regions — choose {MIN_REGIONS}
+                    Step 3: Service regions — pick {MIN_REGIONS}–{MAX_REGIONS}
                   </label>
                   <span className="text-xs font-medium text-slate-500">
                     {selectedRegions.length}/{MAX_REGIONS}
                   </span>
                 </div>
                 <p className="mb-3 text-xs text-slate-500">
-                  Pick exactly {MIN_REGIONS} regions you cover. We'll
-                  expand each into the areas inside it for matching.
+                  Pick {MIN_REGIONS} to {MAX_REGIONS} regions you cover.
+                  We&apos;ll expand each into the areas inside it for
+                  matching.
                 </p>
                 {isLoadingRegions ? (
                   <p className="text-xs text-slate-500">Loading regions…</p>
@@ -1536,8 +1590,8 @@ function ProviderRegisterPageInner() {
                   <p className="mt-1 text-xs text-slate-500">
                     Add a custom locality (optional). Admin will review and
                     map it to a region for future matching. Custom
-                    localities don't count toward your {MIN_REGIONS}-region
-                    requirement.
+                    localities don&apos;t count toward your{" "}
+                    {MIN_REGIONS}–{MAX_REGIONS} region selection.
                   </p>
                   <div className="mt-3 flex flex-col gap-2 sm:flex-row">
                     <input

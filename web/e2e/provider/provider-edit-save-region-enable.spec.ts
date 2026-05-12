@@ -1,17 +1,15 @@
 /**
- * Provider Dashboard → "Edit Services" → Save Changes button enable rule.
+ * Provider Dashboard → "Edit Services" → Save Changes button enable rule
+ * + region-count validation.
  *
- * Regression coverage for the bug where Save Changes stayed silently
- * disabled until the inference effect happened to produce exactly 3
- * regions. The fix:
- *   1. Removes `selectedRegions.length === MIN_REGIONS` from `canSubmit`
- *      so the button is clickable whenever name + at least one category
- *      are set.
- *   2. Moves the region-count check into `handleSubmit`, surfacing an
- *      inline error if the count is not exactly 3 (mirrors the
- *      existing pledge-gate pattern).
- *   3. Clears `submitError` whenever selectedRegions / customLocalities
- *      change so the inline error disappears as the provider corrects it.
+ * Region rule today (relaxed from the original "exactly 3"):
+ *   - MIN_REGIONS = 1, MAX_REGIONS = 3.
+ *   - Save Changes is always clickable once name + ≥1 category exist.
+ *   - On submit:
+ *       0 regions → "Please pick at least 1 service region before saving."
+ *       > 3       → "You can choose up to 3 service regions."
+ *       1–3      → submits.
+ *   - Custom localities are excluded from this count.
  *
  * The submit payload (`name`, `categories`, `areas`) is unchanged.
  */
@@ -130,7 +128,7 @@ async function pickRegion(page: Page, regionName: string) {
 }
 
 test.describe("Provider edit: Save Changes enable + region count validation", () => {
-  test("Save Changes is enabled even when inferred regions ≠ 3", async ({
+  test("Save Changes stays enabled regardless of how many regions are picked", async ({
     page,
   }) => {
     // Provider has a single saved area — inference will pick at most one
@@ -144,11 +142,12 @@ test.describe("Provider edit: Save Changes enable + region count validation", ()
     await expect(save).toBeEnabled({ timeout: 5_000 });
   });
 
-  test("clicking Save with <3 regions shows inline error and does not submit", async ({
+  test("clicking Save with 0 regions shows 'at least 1' error and does not submit", async ({
     page,
   }) => {
     let updateCalled = false;
-    await mockProviderEditPage(page, [QA_AREA]);
+    // Start with no saved areas so inference yields 0 regions.
+    await mockProviderEditPage(page, []);
     await mockJson(page, "**/api/provider/update**", () => {
       updateCalled = true;
       return jsonOk({});
@@ -162,7 +161,7 @@ test.describe("Provider edit: Save Changes enable + region count validation", ()
     await save.click();
 
     await expect(
-      page.getByText(/Please pick exactly 3 service regions/i)
+      page.getByText(/Please pick at least 1 service region/i)
     ).toBeVisible({ timeout: 3_000 });
     expect(updateCalled).toBe(false);
   });
@@ -170,31 +169,52 @@ test.describe("Provider edit: Save Changes enable + region count validation", ()
   test("editing region selection clears the stale error and re-enables save", async ({
     page,
   }) => {
-    await mockProviderEditPage(page, [QA_AREA]);
+    await mockProviderEditPage(page, []);
     await gotoPath(page, "/provider/register?edit=services");
     await expect(page.getByText("Edit Provider Profile")).toBeVisible();
 
     const save = await getSaveButton(page);
     await save.click();
     await expect(
-      page.getByText(/Please pick exactly 3 service regions/i)
+      page.getByText(/Please pick at least 1 service region/i)
     ).toBeVisible();
 
     // Toggling any region triggers the submitError-clearing effect.
     await pickRegion(page, "North Jodhpur");
 
     await expect(
-      page.getByText(/Please pick exactly 3 service regions/i)
+      page.getByText(/Please pick at least 1 service region/i)
     ).toHaveCount(0);
     await expect(save).toBeEnabled();
   });
 
-  test("save with exactly 3 regions posts /api/provider/update with merged areas", async ({
+  test("picking 1 region is sufficient and posts merged areas to /api/provider/update", async ({
     page,
   }) => {
     let captured: Record<string, unknown> | null = null;
-    // Start the provider with NO saved areas so inference produces 0
-    // regions; we then click 3 region cards manually.
+    await mockProviderEditPage(page, []);
+    await mockJson(page, "**/api/provider/update**", ({ body }) => {
+      captured = body;
+      return jsonOk({});
+    });
+
+    await gotoPath(page, "/provider/register?edit=services");
+    await expect(page.getByText("Edit Provider Profile")).toBeVisible();
+
+    await pickRegion(page, "Central Jodhpur");
+
+    const save = await getSaveButton(page);
+    await save.click();
+
+    await expect.poll(() => captured, { timeout: 5_000 }).not.toBeNull();
+    const areas = (captured as { areas?: string[] })?.areas ?? [];
+    expect(areas).toEqual(expect.arrayContaining([QA_AREA]));
+  });
+
+  test("picking 3 regions (max) succeeds and submits the union of areas", async ({
+    page,
+  }) => {
+    let captured: Record<string, unknown> | null = null;
     await mockProviderEditPage(page, []);
     await mockJson(page, "**/api/provider/update**", ({ body }) => {
       captured = body;
@@ -209,23 +229,37 @@ test.describe("Provider edit: Save Changes enable + region count validation", ()
     await pickRegion(page, "East Jodhpur");
 
     const save = await getSaveButton(page);
-    await expect(save).toBeEnabled();
     await save.click();
 
     await expect.poll(() => captured, { timeout: 5_000 }).not.toBeNull();
-    expect(captured).toMatchObject({
-      name: expect.any(String),
-      categories: expect.any(Array),
-      areas: expect.any(Array),
-    });
     const areas = (captured as { areas?: string[] })?.areas ?? [];
-    // Each picked region contributes its canonical_area to the union.
     expect(areas).toEqual(
       expect.arrayContaining([QA_AREA, "Shastri Nagar", "Ratanada"])
     );
   });
 
-  test("adding a custom locality enables save without affecting the 3-region rule", async ({
+  test("4th region cannot be picked — cap held by the toggle handler at MAX_REGIONS", async ({
+    page,
+  }) => {
+    await mockProviderEditPage(page, []);
+    await gotoPath(page, "/provider/register?edit=services");
+    await expect(page.getByText("Edit Provider Profile")).toBeVisible();
+
+    await pickRegion(page, "Central Jodhpur");
+    await pickRegion(page, "North Jodhpur");
+    await pickRegion(page, "East Jodhpur");
+
+    // The 4th region card's "Pick Region" button is disabled at this
+    // point — the toggle handler returns prev when prev.length >=
+    // MAX_REGIONS, and the button has `disabled={isAtMax || …}`.
+    const westCard = page.locator("div.rounded-2xl", {
+      has: page.getByRole("heading", { level: 3, name: "West Jodhpur" }),
+    });
+    const westPick = westCard.getByRole("button", { name: /^Pick Region$/ });
+    await expect(westPick).toBeDisabled();
+  });
+
+  test("custom locality alone (no region) still trips 'at least 1' on save", async ({
     page,
   }) => {
     await mockProviderEditPage(page, []);
@@ -243,11 +277,9 @@ test.describe("Provider edit: Save Changes enable + region count validation", ()
     await localityInput.fill("Demo Colony");
     await localityInput.press("Enter");
 
-    // Locality is now in the list; save still enabled; but submit should
-    // still hit the 3-region inline error since custom localities don't
-    // count toward the requirement. The chip renders the locality text
-    // alongside an inline "REVIEW" badge, so we look for the chip's
-    // remove button which is keyed on the locality name.
+    // Locality is in the list; save still enabled; but submit should
+    // still hit the "at least 1 region" inline error since custom
+    // localities don't count toward the region requirement.
     const localityChip = page
       .locator("span", { hasText: "Demo Colony" })
       .filter({ hasText: "REVIEW" });
@@ -255,7 +287,7 @@ test.describe("Provider edit: Save Changes enable + region count validation", ()
     await expect(save).toBeEnabled();
     await save.click();
     await expect(
-      page.getByText(/Please pick exactly 3 service regions/i)
+      page.getByText(/Please pick at least 1 service region/i)
     ).toBeVisible();
   });
 });

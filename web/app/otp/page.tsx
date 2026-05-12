@@ -196,6 +196,21 @@ export default function VerifyPage() {
     setLoading(false);
   };
 
+  // "Wrong number?" — return the user to the phone-entry screen with the
+  // original `next` preserved. No session writes happen before successful
+  // verification, so this never logs anyone out; it just discards the
+  // not-yet-verified phone, requestId, cooldown, OTP digits, and any
+  // error/info messages from local React state.
+  const handleChangeNumber = () => {
+    setOtp("");
+    setRequestId("");
+    setPhone("");
+    setError("");
+    setMessage("");
+    setCooldown(0);
+    router.replace(`/login?next=${encodeURIComponent(nextPath)}`);
+  };
+
   // ---------------------------------------------------
   // OTP BOX HANDLERS
   // ---------------------------------------------------
@@ -235,12 +250,29 @@ export default function VerifyPage() {
         <div className="text-center space-y-1">
           <h1 className="text-2xl font-bold text-slate-900">Verify your number</h1>
           {phone && (
-            <p className="text-sm text-slate-500">
-              Code sent to{" "}
-              <span className="font-semibold text-slate-700">
-                +91 {phone.replace(/\D/g, "").slice(-10)}
-              </span>
-            </p>
+            <>
+              <p className="text-sm text-slate-500">
+                Code sent to{" "}
+                <span className="font-semibold text-slate-700">
+                  +91 {phone.replace(/\D/g, "").slice(-10)}
+                </span>
+              </p>
+              {/* Secondary action under the phone line so a user who
+                  realized they entered the wrong number can return to
+                  the phone-entry screen without logging out or losing
+                  the `next` redirect target. */}
+              <p className="text-xs text-slate-500">
+                Wrong number?{" "}
+                <button
+                  type="button"
+                  onClick={handleChangeNumber}
+                  data-testid="kk-otp-change-number"
+                  className="font-semibold text-green-600 underline-offset-2 hover:text-green-700 hover:underline"
+                >
+                  Change number
+                </button>
+              </p>
+            </>
           )}
         </div>
 
