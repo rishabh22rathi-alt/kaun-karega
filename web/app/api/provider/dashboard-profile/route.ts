@@ -1281,10 +1281,18 @@ export async function GET(request: NextRequest) {
       })(),
       (async () => {
         const t = perfMark();
+        // Fetch BOTH active and inactive canonicals. We need the full
+        // set to distinguish two leakage states on a provider_services
+        // row whose category isn't active:
+        //   - row.active === false → admin explicitly deactivated; the
+        //     dashboard chip should still read "Inactive".
+        //   - no row at all       → legacy custom-category leak from
+        //     pre-governance flows; the dashboard chip should read
+        //     "Under Review" and the entry should surface in the
+        //     Pending Service Category Requests block.
         const v = await adminSupabase
           .from("categories")
-          .select("name")
-          .eq("active", true);
+          .select("name, active");
         recordTiming("active_categories_lookup", t);
         return v;
       })(),
@@ -1458,6 +1466,16 @@ export async function GET(request: NextRequest) {
     // transient DB blip.
     const activeCategoryKeys = new Set(
       (activeCategoriesData || [])
+        .filter((row) => Boolean((row as { active?: unknown }).active))
+        .map((row) => String((row as { name?: unknown }).name || "").trim().toLowerCase())
+        .filter(Boolean)
+    );
+    // Categories that exist at all (any active state). A provider_services
+    // row whose category is NOT in this set is an orphan leak from the
+    // pre-governance flows — those should surface as a synthetic pending
+    // request rather than as a silently-inactive chip.
+    const knownCategoryKeys = new Set(
+      (activeCategoriesData || [])
         .map((row) => String((row as { name?: unknown }).name || "").trim().toLowerCase())
         .filter(Boolean)
     );
@@ -1519,17 +1537,25 @@ export async function GET(request: NextRequest) {
           }> = [];
           // 1) Emit rows derived from provider_services.
           //
-          // Default to "inactive". Only categories actually present in
-          // `categories.active=true` get promoted to "approved" — this is
-          // the load-bearing guarantee that closes the legacy auto-
-          // approval leak (pre-governance flows wrote unapproved custom
-          // categories straight into provider_services; those rows must
-          // never surface as approved chips on the dashboard).
+          // Status derivation in priority order:
+          //   - in active categories         → "approved"
+          //   - in pending_category_requests → "pending"
+          //   - in rejected_category_requests → "rejected"
+          //   - canonical row exists at all but inactive → "inactive"
+          //   - none of the above → "pending" (orphan leak from
+          //     pre-governance flows; treat as a synthetic legacy
+          //     custom-category request awaiting admin review so it
+          //     surfaces in the Pending Service Category Requests
+          //     block instead of going silent under "Inactive")
           //
-          // If the active/pending lookups errored, every row falls back
-          // to "inactive" rather than "approved" — a transient DB blip
-          // is best surfaced honestly rather than silently re-promoting
-          // a leaked row.
+          // A failed `categories` lookup leaves both `activeCategoryKeys`
+          // and `knownCategoryKeys` empty. To avoid that transient blip
+          // mass-flipping every legitimate row to "pending", the orphan
+          // synthesis only fires when the lookup succeeded — detected by
+          // `knownCategoryKeys.size > 0`. When it failed, rows degrade
+          // to "inactive" (safer than auto-promoting to approved or
+          // pending).
+          const knownCategoriesUsable = knownCategoryKeys.size > 0;
           const seen = new Set<string>();
           if (Array.isArray(providerServices)) {
             for (const item of providerServices) {
@@ -1544,6 +1570,12 @@ export async function GET(request: NextRequest) {
                 Status = "pending";
               } else if (rejectedCategoryKeys.has(key)) {
                 Status = "rejected";
+              } else if (knownCategoriesUsable && !knownCategoryKeys.has(key)) {
+                // Orphan leak: provider_services row with no matching
+                // canonical AND no pending/rejected request. Surface as
+                // synthetic pending so the dashboard's Pending block
+                // picks it up via services.filter(s.Status === "pending").
+                Status = "pending";
               }
               out.push({ Category: category, Status });
               seen.add(key);
