@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { requireAdminSession } from "@/lib/adminAuth";
+import { getArchivedCategoryKeys } from "@/lib/admin/adminCategoryMutations";
 import { adminSupabase } from "@/lib/supabase/admin";
 
 // GET /api/admin/categories
@@ -48,7 +49,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
-  const [categoriesRes, aliasesRes] = await Promise.all([
+  const [categoriesRes, aliasesRes, archivedKeys] = await Promise.all([
     adminSupabase
       .from("categories")
       .select("name, active")
@@ -58,6 +59,11 @@ export async function GET(request: Request) {
       .select("id, alias, canonical_category, alias_type, active")
       .eq("active", true)
       .order("alias", { ascending: true }),
+    // Archived categories (status='archived' in category_archive_reviews)
+    // are filtered out of the Approved list further down. Disabled-only
+    // categories (no archive row) still surface with strikethrough, so
+    // the existing Disable/Enable toggle keeps its current behavior.
+    getArchivedCategoryKeys(),
   ]);
 
   if (categoriesRes.error) {
@@ -102,6 +108,11 @@ export async function GET(request: Request) {
     const rawName = String((row as { name?: unknown }).name ?? "").trim();
     if (!rawName) continue;
     const key = rawName.toLowerCase();
+    // Hide archived categories from the Approved list. The archive
+    // table is the single source of truth for "this category should
+    // disappear from active surfaces" — categories.active alone is
+    // ambiguous (it's also the Disable/Enable toggle).
+    if (archivedKeys.has(key)) continue;
     const rowActive = isActiveValue((row as { active?: unknown }).active);
     const existing = grouped.get(key);
     if (existing) {

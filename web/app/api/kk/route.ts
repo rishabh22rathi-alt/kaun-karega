@@ -1021,9 +1021,30 @@ export async function POST(request: NextRequest) {
       }
       const result = await editCategory(oldName, newName);
       if (!result.ok) {
-        return withNoCache(NextResponse.json({ ok: false, error: result.error }, { status: 500 }));
+        // Map known refusals to precise HTTP statuses so the admin UI can
+        // distinguish "name already taken" (recoverable, surface inline)
+        // from a server error.
+        const status =
+          result.code === "CATEGORY_NAME_TAKEN"
+            ? 409
+            : result.code === "CATEGORY_NOT_FOUND"
+              ? 404
+              : 500;
+        return withNoCache(
+          NextResponse.json(
+            { ok: false, error: result.error, code: result.code },
+            { status }
+          )
+        );
       }
-      return withNoCache(NextResponse.json({ ok: true }));
+      return withNoCache(
+        NextResponse.json({
+          ok: true,
+          renamed: result.renamed,
+          updatedAliases: result.updatedAliases,
+          updatedProviderServices: result.updatedProviderServices,
+        })
+      );
     }
     if (action === "toggle_category") {
       const categoryName = typeof body.categoryName === "string" ? body.categoryName.trim() : "";

@@ -1,4 +1,7 @@
 import type { Page } from "@playwright/test";
+import crypto from "crypto";
+import fs from "fs";
+import path from "path";
 
 import {
   QA_ADMIN_NAME,
@@ -16,13 +19,35 @@ type AdminSessionData = {
 };
 
 function encodeAuthSession(phone: string): string {
-  return encodeURIComponent(
-    JSON.stringify({
-      phone,
-      verified: true,
-      createdAt: Date.now(),
-    })
-  );
+  const session = {
+    phone,
+    verified: true,
+    createdAt: Date.now(),
+  };
+  const secret = getAuthSessionSecret();
+  if (!secret) return encodeURIComponent(JSON.stringify(session));
+
+  const payload = Buffer.from(JSON.stringify(session)).toString("base64url");
+  const signature = crypto
+    .createHmac("sha256", secret)
+    .update(payload)
+    .digest("base64url");
+  return encodeURIComponent(`${payload}.${signature}`);
+}
+
+function getAuthSessionSecret(): string {
+  if (process.env.AUTH_SESSION_SECRET) return process.env.AUTH_SESSION_SECRET;
+
+  const envPath = path.resolve(__dirname, "../../.env.local");
+  if (!fs.existsSync(envPath)) return "";
+
+  const line = fs
+    .readFileSync(envPath, "utf8")
+    .split(/\r?\n/)
+    .find((item) => item.trim().startsWith("AUTH_SESSION_SECRET="));
+  if (!line) return "";
+
+  return line.slice(line.indexOf("=") + 1).trim().replace(/^["']|["']$/g, "");
 }
 
 async function setAuthCookie(page: Page, phone: string): Promise<void> {

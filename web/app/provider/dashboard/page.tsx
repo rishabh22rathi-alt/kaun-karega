@@ -117,6 +117,11 @@ type ProviderProfile = {
   LastLoginAt?: string;
   PendingApproval?: string;
   Status?: string;
+  // True when the provider has zero provider_services rows. Set by the
+  // dashboard-profile API after admin removes the provider's last
+  // category. The dashboard renders a dedicated re-registration warning
+  // + CTA instead of the generic "Pending Admin Approval" badge.
+  needsServiceReRegistration?: boolean;
   Services?: {
     Category: string;
     Status?: "approved" | "pending" | "rejected" | "inactive";
@@ -500,6 +505,10 @@ function ProviderDashboardInner() {
     () => String(profile?.PendingApproval || "").trim().toLowerCase() === "yes",
     [profile]
   );
+  const needsServiceReRegistration = useMemo(
+    () => Boolean(profile?.needsServiceReRegistration),
+    [profile]
+  );
   const services = useMemo(
     () => (Array.isArray(profile?.Services) ? profile?.Services : []),
     [profile]
@@ -742,11 +751,17 @@ function ProviderDashboardInner() {
         : [],
     [profile]
   );
-  const statusLabel = verified
-    ? "Phone Verified"
-    : pendingApproval
-      ? "Pending Admin Approval"
-      : "Not Verified";
+  // The re-registration label overrides the generic "Pending Admin
+  // Approval" copy so the provider sees the actual reason for the
+  // banner (admin removed their last category) instead of a vague
+  // pending status.
+  const statusLabel = needsServiceReRegistration
+    ? "Service category rejected / needs re-registration"
+    : verified
+      ? "Phone Verified"
+      : pendingApproval
+        ? "Pending Admin Approval"
+        : "Not Verified";
   const maxDemandCount = useMemo(
     () => areaDemand.reduce((max, item) => Math.max(max, Number(item.RequestCount || 0)), 0),
     [areaDemand]
@@ -964,6 +979,29 @@ function ProviderDashboardInner() {
             </div>
           </div>
         </section>
+
+        {needsServiceReRegistration && (
+          <section
+            data-testid="service-reregistration-warning"
+            aria-live="polite"
+            className="rounded-2xl border border-rose-300 bg-rose-50 px-5 py-4 text-sm text-rose-800 shadow-sm"
+          >
+            <p className="text-base font-semibold text-rose-900">
+              Service category rejected / needs re-registration
+            </p>
+            <p className="mt-1 text-sm leading-snug text-rose-800">
+              Your service category was removed by admin. Please re-register
+              your service category to start receiving work again.
+            </p>
+            <Link
+              href="/provider/register?edit=services"
+              data-testid="service-reregistration-cta"
+              className="mt-3 inline-flex items-center justify-center rounded-xl bg-rose-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-rose-800"
+            >
+              Register service again
+            </Link>
+          </section>
+        )}
 
         <section
           aria-label="Open requests waiting"

@@ -31,8 +31,21 @@ const PAGE_SIZE = 1000;
 
 type FilterFn = (q: unknown) => unknown;
 
+type ActiveCategory = {
+  displayName: string;
+  suggestionKey: string;
+};
+
 function normalizePhone(value: unknown): string {
   return String(value ?? "").replace(/\D/g, "").slice(-10);
+}
+
+function normalizeCategoryKey(value: unknown): string {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function normalizeSuggestionKey(value: unknown): string {
+  return normalizeCategoryKey(value).replace(/\s+/g, " ");
 }
 
 async function fetchAllRows<T>(
@@ -54,6 +67,20 @@ async function fetchAllRows<T>(
     if (data.length < PAGE_SIZE) break;
   }
   return all;
+}
+
+function getSuggestedCategory(
+  rawCategory: string,
+  activeCategories: Map<string, ActiveCategory>
+): string {
+  const rawSuggestionKey = normalizeSuggestionKey(rawCategory);
+  if (!rawSuggestionKey) return "";
+
+  for (const active of activeCategories.values()) {
+    if (active.suggestionKey === rawSuggestionKey) return active.displayName;
+  }
+
+  return "";
 }
 
 export async function GET(request: Request) {
@@ -112,8 +139,27 @@ export async function GET(request: Request) {
     }
 
     // ─── Step 2: per-category counts via provider_services ───────────────
+    const categoryRows = await fetchAllRows<{
+      name: string | null;
+      active: boolean | string | null;
+    }>("categories", "name, active", (q) =>
+      (q as { eq: (col: string, val: boolean) => unknown }).eq("active", true)
+    );
+
+    const activeCategories = new Map<string, ActiveCategory>();
+    for (const row of categoryRows) {
+      const displayName = String(row.name ?? "").trim();
+      const key = normalizeCategoryKey(displayName);
+      if (!displayName || !key || activeCategories.has(key)) continue;
+      activeCategories.set(key, {
+        displayName,
+        suggestionKey: normalizeSuggestionKey(displayName),
+      });
+    }
+
     const seenCategoryKeys = new Set<string>();
     const categoryCounts = new Map<string, number>();
+    const unmappedProviderIdsByRawCategory = new Map<string, Set<string>>();
     const serviceRows = await fetchAllRows<{
       provider_id: string | null;
       category: string | null;
@@ -123,10 +169,22 @@ export async function GET(request: Request) {
       const category = String(row.category ?? "").trim();
       if (!providerId || !category) continue;
       if (!targetProviderIds.has(providerId)) continue;
-      const key = `${providerId}::${category}`;
+      const categoryKey = normalizeCategoryKey(category);
+      const activeCategory = activeCategories.get(categoryKey);
+      if (!activeCategory) {
+        const rawProviderIds =
+          unmappedProviderIdsByRawCategory.get(category) ?? new Set<string>();
+        rawProviderIds.add(providerId);
+        unmappedProviderIdsByRawCategory.set(category, rawProviderIds);
+        continue;
+      }
+      const key = `${providerId}::${categoryKey}`;
       if (seenCategoryKeys.has(key)) continue;
       seenCategoryKeys.add(key);
-      categoryCounts.set(category, (categoryCounts.get(category) ?? 0) + 1);
+      categoryCounts.set(
+        activeCategory.displayName,
+        (categoryCounts.get(activeCategory.displayName) ?? 0) + 1
+      );
     }
 
     const byCategory = Array.from(categoryCounts.entries())
@@ -136,7 +194,23 @@ export async function GET(request: Request) {
           b.count - a.count || a.category.localeCompare(b.category)
       );
 
-    return NextResponse.json({ ok: true, data: { byCategory } });
+    const unmappedCategories = Array.from(
+      unmappedProviderIdsByRawCategory.entries()
+    )
+      .map(([category, providerIds]) => ({
+        category,
+        count: providerIds.size,
+        suggestedCategory: getSuggestedCategory(category, activeCategories),
+      }))
+      .sort(
+        (a, b) =>
+          b.count - a.count || a.category.localeCompare(b.category)
+      );
+
+    return NextResponse.json({
+      ok: true,
+      data: { byCategory, unmappedCategories },
+    });
   } catch (err: unknown) {
     return NextResponse.json(
       {

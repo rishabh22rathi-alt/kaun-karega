@@ -1,10 +1,35 @@
 "use client";
 
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, Pencil, X } from "lucide-react";
+
+// Window event dispatched by ProvidersTab when admin clicks "Manage
+// category" on a drilldown row. Kept in sync with ProvidersTab's
+// MANAGE_CATEGORY_EVENT — duplicated as a string (instead of imported)
+// to keep CategoryTab free of cross-component imports.
+const MANAGE_CATEGORY_EVENT = "kk-admin-manage-category";
+// Mirror of ProvidersTab.CATEGORY_CHANGED_EVENT. Dispatched after
+// archive / restore success so the Providers tile (which is now gated
+// on "has an active approved category") refreshes without forcing the
+// admin to close + reopen the section.
+const CATEGORY_CHANGED_EVENT = "kk-admin-category-changed";
+
+function dispatchCategoryChanged(): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent(CATEGORY_CHANGED_EVENT));
+}
+// How long the highlighted row stays ringed before the effect clears
+// itself. Matches the spec window (2–4s).
+const HIGHLIGHT_DURATION_MS = 3000;
+// Visible duration of the "Category not found" banner.
+const NOT_FOUND_DURATION_MS = 4000;
 
 type AliasRow = { id: string; alias: string; aliasType: string | null };
 type CategoryRow = { name: string; active: boolean; aliases: AliasRow[] };
+type CategoryProviderCountRow = { category: string; count: number };
+type CategoryBreakdownResponse = {
+  byCategory: CategoryProviderCountRow[];
+};
 
 type PendingRequest = {
   RequestID: string;
@@ -17,7 +42,21 @@ type PendingRequest = {
   CreatedAt: string;
 };
 
-type ActiveTab = "approved" | "pending";
+type CategoryArchiveRow = {
+  id: string;
+  categoryName: string;
+  providerCount: number;
+  aliasCount: number;
+  archivedBy: string | null;
+  archivedAt: string;
+  status: string;
+  reviewedAt: string | null;
+};
+
+type ActiveTab = "approved" | "pending" | "archived";
+
+const ARCHIVE_CONFIRM_MESSAGE =
+  "This will hide the category from users/providers and move it to archive review. Provider mappings will be kept for review. Continue?";
 
 function getAdminActor(): { name: string; phone: string } {
   if (typeof window === "undefined") return { name: "", phone: "" };
@@ -47,12 +86,27 @@ export default function CategoryTab() {
   // effect's deps don't include `categories` — without this key, calling
   // refreshCategories() would silently no-op and the table would stay stale.
   const [categoriesRefreshKey, setCategoriesRefreshKey] = useState(0);
+  // Provider counts per category, keyed by name.trim().toLowerCase() so a
+  // case-drifted category row still resolves to its real count. Loaded
+  // lazily from provider-stats/by-category — failure to load is non-fatal
+  // (column shows "—") so the rename / toggle UX is never blocked.
+  const [providerCountsByCategoryKey, setProviderCountsByCategoryKey] =
+    useState<Record<string, number> | null>(null);
+  const [providerCountsLoaded, setProviderCountsLoaded] = useState(false);
 
   // Pending tab data
   const [pending, setPending] = useState<PendingRequest[] | null>(null);
   const [pendingLoading, setPendingLoading] = useState(false);
   const [pendingError, setPendingError] = useState<string | null>(null);
   const [pendingRefreshKey, setPendingRefreshKey] = useState(0);
+
+  // Archived tab data — read from /api/admin/categories/archive. A
+  // successful archive on the Approved tab bumps both keys so the next
+  // switch to Archived is fresh.
+  const [archives, setArchives] = useState<CategoryArchiveRow[] | null>(null);
+  const [archivesLoading, setArchivesLoading] = useState(false);
+  const [archivesError, setArchivesError] = useState<string | null>(null);
+  const [archivesRefreshKey, setArchivesRefreshKey] = useState(0);
 
   // Approved tab UI state
   const [newCategoryName, setNewCategoryName] = useState("");
@@ -76,6 +130,15 @@ export default function CategoryTab() {
 
   // Pending tab UI state
   const [expandedRequest, setExpandedRequest] = useState<string | null>(null);
+
+  // Bridge from ProvidersTab — the normalized category key the admin
+  // asked to manage, the inline "not found" message (when the key has
+  // no matching approved row), and ref map for scroll-into-view.
+  const [highlightCategoryKey, setHighlightCategoryKey] = useState<string | null>(
+    null
+  );
+  const [bridgeMessage, setBridgeMessage] = useState<string | null>(null);
+  const categoryRowRefs = useRef(new Map<string, HTMLTableRowElement>());
 
   // Action plumbing
   const [actionInProgress, setActionInProgress] = useState<string | null>(null);
@@ -103,6 +166,46 @@ export default function CategoryTab() {
       })
       .finally(() => {
         if (!cancelled) setCategoriesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, activeTab, categoriesRefreshKey]);
+
+  // Lazy fetch — provider counts per approved category. Same lifecycle
+  // as the categories fetch: re-runs on tab open or refresh-key bump so
+  // counts stay in sync after a rename. Non-fatal — a failed fetch just
+  // leaves the column showing "—" without blocking other actions.
+  useEffect(() => {
+    if (!isOpen) return;
+    if (activeTab !== "approved") return;
+    let cancelled = false;
+    fetch("/api/admin/provider-stats/by-category")
+      .then((r) => r.json())
+      .then(
+        (res: {
+          ok?: boolean;
+          data?: CategoryBreakdownResponse;
+          error?: string;
+        }) => {
+          if (cancelled) return;
+          if (res?.ok && res.data && Array.isArray(res.data.byCategory)) {
+            const next: Record<string, number> = {};
+            for (const row of res.data.byCategory) {
+              const key = String(row.category ?? "").trim().toLowerCase();
+              if (key) next[key] = Number(row.count) || 0;
+            }
+            setProviderCountsByCategoryKey(next);
+          }
+          // Mark "loaded" even on error so the column shows "—" instead
+          // of a permanent loading dash. A reload will retry.
+          setProviderCountsLoaded(true);
+        }
+      )
+      .catch(() => {
+        if (cancelled) return;
+        setProviderCountsLoaded(true);
       });
     return () => {
       cancelled = true;
@@ -146,11 +249,106 @@ export default function CategoryTab() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, activeTab, pendingRefreshKey]);
 
+  // Lazy fetch — archived categories. Same shape as the pending fetch.
+  useEffect(() => {
+    if (!isOpen) return;
+    if (activeTab !== "archived") return;
+    let cancelled = false;
+    setArchivesLoading(true);
+    setArchivesError(null);
+    fetch("/api/admin/categories/archive?status=all")
+      .then((r) => r.json())
+      .then(
+        (res: {
+          ok?: boolean;
+          archives?: CategoryArchiveRow[];
+          error?: string;
+        }) => {
+          if (cancelled) return;
+          if (res?.ok && Array.isArray(res.archives)) {
+            setArchives(res.archives);
+          } else {
+            setArchivesError(res?.error || "Failed to load archives");
+          }
+        }
+      )
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setArchivesError(err instanceof Error ? err.message : "Network error");
+      })
+      .finally(() => {
+        if (!cancelled) setArchivesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, activeTab, archivesRefreshKey]);
+
+  // Bridge listener — ProvidersTab dispatches MANAGE_CATEGORY_EVENT when
+  // the admin clicks "Manage category". We open the accordion, force the
+  // approved tab, and store the normalized key so the highlight effect
+  // below can scroll into view once the categories table renders.
+  // Re-dispatching for the same key still re-triggers the scroll because
+  // we always set a fresh state object via setHighlightCategoryKey(null)
+  // first when the keys match.
+  useEffect(() => {
+    function handle(event: Event) {
+      const detail = (event as CustomEvent<{ category?: unknown }>).detail;
+      const raw = String(detail?.category ?? "").trim();
+      if (!raw) return;
+      const key = raw.toLowerCase();
+      setIsOpen(true);
+      setActiveTab("approved");
+      setBridgeMessage(null);
+      // Force a state change even if the key is unchanged, so back-to-back
+      // clicks on the same category re-scroll/re-highlight.
+      setHighlightCategoryKey(null);
+      // Schedule the actual highlight on the next tick so the null→key
+      // transition produces a fresh effect run.
+      queueMicrotask(() => setHighlightCategoryKey(key));
+    }
+    window.addEventListener(MANAGE_CATEGORY_EVENT, handle);
+    return () => window.removeEventListener(MANAGE_CATEGORY_EVENT, handle);
+  }, []);
+
+  // After categories load (or change), match the requested key, scroll
+  // it into view, and auto-clear the highlight after HIGHLIGHT_DURATION_MS.
+  // If no match exists, surface the not-found banner instead.
+  useEffect(() => {
+    if (!highlightCategoryKey) return;
+    if (categoriesLoading) return;
+    if (!categories) return;
+    const match = categories.find(
+      (cat) => cat.name.trim().toLowerCase() === highlightCategoryKey
+    );
+    if (!match) {
+      setBridgeMessage("Category not found in approved list.");
+      const t = setTimeout(() => {
+        setBridgeMessage(null);
+        setHighlightCategoryKey(null);
+      }, NOT_FOUND_DURATION_MS);
+      return () => clearTimeout(t);
+    }
+    const node = categoryRowRefs.current.get(highlightCategoryKey);
+    if (node && typeof node.scrollIntoView === "function") {
+      node.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+    const t = setTimeout(
+      () => setHighlightCategoryKey(null),
+      HIGHLIGHT_DURATION_MS
+    );
+    return () => clearTimeout(t);
+  }, [highlightCategoryKey, categories, categoriesLoading]);
+
   const refreshCategories = () => {
     setCategoriesRefreshKey((prev) => prev + 1);
   };
   const refreshPending = () => {
     setPendingRefreshKey((prev) => prev + 1);
+  };
+  const refreshArchives = () => {
+    setArchivesRefreshKey((prev) => prev + 1);
   };
 
   const callKk = async (
@@ -220,6 +418,66 @@ export default function CategoryTab() {
       },
       () => refreshCategories()
     );
+  };
+
+  const handleArchive = async (name: string) => {
+    // Hard confirm gate — archive is reversible but the snapshot fan-out
+    // is expensive and the side effects (suggestions disappearing) are
+    // user-visible immediately. Mirror confirm copy verbatim with the
+    // spec so admins reading the prompt see the exact contract.
+    if (
+      typeof window !== "undefined" &&
+      !window.confirm(ARCHIVE_CONFIRM_MESSAGE)
+    ) {
+      return;
+    }
+    const actionKey = `archive::${name}`;
+    setActionInProgress(actionKey);
+    setActionError(null);
+    try {
+      const res = await fetch("/api/admin/categories/archive", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ categoryName: name }),
+      });
+      const json = (await res.json()) as { ok?: boolean; error?: string };
+      if (!res.ok || !json?.ok) {
+        setActionError(json?.error || `Archive failed (${res.status})`);
+        return;
+      }
+      refreshCategories();
+      refreshArchives();
+      dispatchCategoryChanged();
+    } catch (err: unknown) {
+      setActionError(err instanceof Error ? err.message : "Network error");
+    } finally {
+      setActionInProgress(null);
+    }
+  };
+
+  const handleRestoreArchive = async (archiveId: string) => {
+    const actionKey = `restore::${archiveId}`;
+    setActionInProgress(actionKey);
+    setActionError(null);
+    try {
+      const res = await fetch("/api/admin/categories/restore", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ archiveId }),
+      });
+      const json = (await res.json()) as { ok?: boolean; error?: string };
+      if (!res.ok || !json?.ok) {
+        setActionError(json?.error || `Restore failed (${res.status})`);
+        return;
+      }
+      refreshArchives();
+      refreshCategories();
+      dispatchCategoryChanged();
+    } catch (err: unknown) {
+      setActionError(err instanceof Error ? err.message : "Network error");
+    } finally {
+      setActionInProgress(null);
+    }
   };
 
   const handleSaveAlias = async (aliasId: string, originalAlias: string) => {
@@ -423,6 +681,18 @@ export default function CategoryTab() {
                 </span>
               ) : null}
             </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("archived")}
+              data-testid="kk-admin-category-archived-tab"
+              className={`-mb-px border-b-2 px-3 py-2 text-sm font-semibold transition ${
+                activeTab === "archived"
+                  ? "border-[#003d20] text-[#003d20]"
+                  : "border-transparent text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              Archived Categories
+            </button>
           </div>
 
           {actionError && (
@@ -433,6 +703,16 @@ export default function CategoryTab() {
 
           {activeTab === "approved" && (
             <div className="mt-4 space-y-4">
+              {bridgeMessage && (
+                <p
+                  role="status"
+                  aria-live="polite"
+                  data-testid="category-bridge-message"
+                  className="rounded-lg border border-orange-200 bg-orange-50 px-3 py-2 text-sm text-orange-700"
+                >
+                  {bridgeMessage}
+                </p>
+              )}
               <div className="flex flex-col gap-2 sm:flex-row">
                 <input
                   type="text"
@@ -481,6 +761,7 @@ export default function CategoryTab() {
                       <thead>
                         <tr className="border-b border-slate-200 bg-slate-50 text-left text-[11px] font-bold uppercase tracking-wider text-slate-500">
                           <th className="px-3 py-2">Category</th>
+                          <th className="px-3 py-2 text-right">Providers</th>
                           <th className="px-3 py-2">Aliases / Work Tags</th>
                           <th className="px-3 py-2 text-right">Actions</th>
                         </tr>
@@ -490,10 +771,32 @@ export default function CategoryTab() {
                           const isEditing = editingCategoryName === cat.name;
                           const toggleKey = `toggle::${cat.name}`;
                           const editKey = `edit::${cat.name}`;
+                          const providerCountKey = cat.name.trim().toLowerCase();
+                          const providerCount =
+                            providerCountsByCategoryKey?.[providerCountKey];
+                          const isHighlighted =
+                            highlightCategoryKey === providerCountKey;
                           return (
                             <tr
                               key={`${cat.name}-${catIndex}`}
-                              className="border-b border-slate-100 align-top last:border-b-0"
+                              ref={(node) => {
+                                if (node)
+                                  categoryRowRefs.current.set(
+                                    providerCountKey,
+                                    node
+                                  );
+                                else
+                                  categoryRowRefs.current.delete(
+                                    providerCountKey
+                                  );
+                              }}
+                              data-testid={`category-row-${providerCountKey}`}
+                              data-highlighted={isHighlighted ? "true" : undefined}
+                              className={`border-b border-slate-100 align-top last:border-b-0 transition-colors ${
+                                isHighlighted
+                                  ? "bg-orange-50 ring-2 ring-orange-300"
+                                  : ""
+                              }`}
                             >
                               <td className="px-3 py-2 font-medium text-slate-800">
                                 {isEditing ? (
@@ -540,6 +843,15 @@ export default function CategoryTab() {
                                   <span className={cat.active ? "" : "text-slate-400 line-through"}>
                                     {cat.name}
                                   </span>
+                                )}
+                              </td>
+                              <td className="px-3 py-2 text-right font-semibold text-slate-900">
+                                {providerCount !== undefined ? (
+                                  providerCount.toLocaleString()
+                                ) : providerCountsLoaded ? (
+                                  <span className="text-slate-400">0</span>
+                                ) : (
+                                  <span className="text-slate-400">—</span>
                                 )}
                               </td>
                               <td className="px-3 py-2 text-slate-700">
@@ -775,6 +1087,20 @@ export default function CategoryTab() {
                                         ? "Disable"
                                         : "Enable"}
                                   </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleArchive(cat.name)}
+                                    disabled={
+                                      actionInProgress === `archive::${cat.name}`
+                                    }
+                                    data-testid={`archive-category-${cat.name}`}
+                                    title="Archive — hides from users/providers and snapshots the mappings for review"
+                                    className="rounded border border-rose-300 px-2 py-1 text-xs font-medium text-rose-700 hover:bg-rose-50 disabled:opacity-50"
+                                  >
+                                    {actionInProgress === `archive::${cat.name}`
+                                      ? "…"
+                                      : "Archive"}
+                                  </button>
                                 </div>
                               </td>
                             </tr>
@@ -963,6 +1289,124 @@ export default function CategoryTab() {
                                 </tr>
                               )}
                             </Fragment>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+            </div>
+          )}
+
+          {activeTab === "archived" && (
+            <div className="mt-4 space-y-2">
+              {archivesLoading && (
+                <p className="text-sm text-slate-500">Loading archives…</p>
+              )}
+              {archivesError && !archivesLoading && (
+                <p className="text-sm text-red-600">Error: {archivesError}</p>
+              )}
+              {archives &&
+                !archivesLoading &&
+                !archivesError &&
+                archives.length === 0 && (
+                  <p className="text-sm text-slate-500">
+                    No archived categories yet.
+                  </p>
+                )}
+              {archives &&
+                !archivesLoading &&
+                !archivesError &&
+                archives.length > 0 && (
+                  <div className="overflow-x-auto rounded-xl border border-slate-200">
+                    <table className="min-w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-slate-200 bg-slate-50 text-left text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                          <th className="px-3 py-2">Category</th>
+                          <th className="px-3 py-2 text-right">Providers</th>
+                          <th className="px-3 py-2 text-right">Aliases</th>
+                          <th className="px-3 py-2">Archived</th>
+                          <th className="px-3 py-2">Status</th>
+                          <th className="px-3 py-2 text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {archives.map((row, rowIndex) => {
+                          const restoreKey = `restore::${row.id}`;
+                          const isRestored = row.status === "restored";
+                          return (
+                            <tr
+                              key={`${row.id || row.categoryName}-${rowIndex}`}
+                              data-testid={`archive-row-${row.categoryName
+                                .trim()
+                                .toLowerCase()}`}
+                              className="border-b border-slate-100 align-top last:border-b-0"
+                            >
+                              <td className="px-3 py-2 font-medium text-slate-800">
+                                {row.categoryName || "—"}
+                              </td>
+                              <td className="px-3 py-2 text-right font-semibold text-slate-900">
+                                {row.providerCount.toLocaleString()}
+                              </td>
+                              <td className="px-3 py-2 text-right font-semibold text-slate-900">
+                                {row.aliasCount.toLocaleString()}
+                              </td>
+                              <td className="px-3 py-2 text-slate-700">
+                                {row.archivedAt
+                                  ? new Date(row.archivedAt).toLocaleString()
+                                  : "—"}
+                                {row.archivedBy ? (
+                                  <span className="ml-1 text-xs text-slate-500">
+                                    by {row.archivedBy}
+                                  </span>
+                                ) : null}
+                              </td>
+                              <td className="px-3 py-2">
+                                <span
+                                  className={`inline-block rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                                    isRestored
+                                      ? "bg-green-100 text-[#003d20]"
+                                      : "bg-rose-100 text-rose-700"
+                                  }`}
+                                >
+                                  {row.status}
+                                </span>
+                              </td>
+                              <td className="px-3 py-2 text-right">
+                                {isRestored ? (
+                                  <span
+                                    className="text-[11px] text-slate-400"
+                                    title="Already restored"
+                                  >
+                                    —
+                                  </span>
+                                ) : (
+                                  <div className="inline-flex flex-wrap justify-end gap-2">
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        void handleRestoreArchive(row.id)
+                                      }
+                                      disabled={
+                                        actionInProgress === restoreKey
+                                      }
+                                      data-testid={`restore-archive-${row.id}`}
+                                      className="rounded border border-[#003d20]/40 px-2 py-1 text-xs font-semibold text-[#003d20] hover:bg-green-50 disabled:opacity-50"
+                                    >
+                                      {actionInProgress === restoreKey
+                                        ? "…"
+                                        : "Restore"}
+                                    </button>
+                                    <span
+                                      className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-500"
+                                      title="Permanent delete review is a future step"
+                                    >
+                                      Review later
+                                    </span>
+                                  </div>
+                                )}
+                              </td>
+                            </tr>
                           );
                         })}
                       </tbody>

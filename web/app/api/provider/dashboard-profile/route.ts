@@ -1517,6 +1517,21 @@ export async function GET(request: NextRequest) {
     recordTiming("handler_total", handlerStart);
 
     const responseAssemblyStart = perfMark();
+    // Derived signal for the provider dashboard. The re-registration
+    // warning fires when the provider has no provider_services rows at
+    // all — the unambiguous "admin removed my last category" state.
+    // We intentionally do NOT trigger on status="pending" alone: a
+    // newly registered provider with one service is also "pending"
+    // (awaiting initial admin approval), and showing them a "category
+    // was removed" message would be wrong. status="pending" set by
+    // /api/admin/providers/remove-category always coincides with zero
+    // service rows, so this check covers that path correctly.
+    const providerStatusKey = String(provider.status || "")
+      .trim()
+      .toLowerCase();
+    const hasAnyService =
+      Array.isArray(providerServices) && providerServices.length > 0;
+    const needsServiceReRegistration = !hasAnyService;
     const responseBody = {
       ok: true,
       provider: {
@@ -1527,9 +1542,10 @@ export async function GET(request: NextRequest) {
         OtpVerified: "yes",
         OtpVerifiedAt: new Date(session.createdAt).toISOString(),
         LastLoginAt: String(provider.created_at || ""),
-        PendingApproval: String(provider.status || "").trim().toLowerCase() === "pending" ? "yes" : "no",
+        PendingApproval: providerStatusKey === "pending" ? "yes" : "no",
         Status: String(provider.status || ""),
         DuplicateNameReviewStatus: String(provider.duplicate_name_review_status || ""),
+        needsServiceReRegistration,
         Services: (() => {
           const out: Array<{
             Category: string;
