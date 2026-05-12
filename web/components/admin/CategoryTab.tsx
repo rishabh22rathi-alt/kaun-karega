@@ -475,7 +475,7 @@ export default function CategoryTab() {
                 !categoriesLoading &&
                 !categoriesError &&
                 categories.length > 0 && (
-                  <div className="overflow-hidden rounded-xl border border-slate-200">
+                  <div className="overflow-x-auto rounded-xl border border-slate-200">
                     <table className="min-w-full text-sm">
                       <thead>
                         <tr className="border-b border-slate-200 bg-slate-50 text-left text-[11px] font-bold uppercase tracking-wider text-slate-500">
@@ -810,7 +810,7 @@ export default function CategoryTab() {
                 !pendingLoading &&
                 !pendingError &&
                 pending.length > 0 && (
-                  <div className="overflow-hidden rounded-xl border border-slate-200">
+                  <div className="overflow-x-auto rounded-xl border border-slate-200">
                     <table className="min-w-full text-sm">
                       <thead>
                         <tr className="border-b border-slate-200 bg-slate-50 text-left text-[11px] font-bold uppercase tracking-wider text-slate-500">

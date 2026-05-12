@@ -1471,6 +1471,10 @@ export default function AreaTab() {
                       </p>
                     </div>
                   </header>
+                  {/* Wrap the table only (not the header) so narrow
+                      viewports get horizontal scroll on the 5-col table
+                      without breaking the section's rounded corners. */}
+                  <div className="overflow-x-auto">
                   <table className="min-w-full text-sm">
                     <thead>
                       <tr className="border-b border-slate-200 bg-white text-left text-[11px] font-bold uppercase tracking-wider text-slate-500">
@@ -1677,6 +1681,7 @@ export default function AreaTab() {
                       })}
                     </tbody>
                   </table>
+                  </div>
                 </section>
               ) : null}
             </div>
@@ -1703,6 +1708,9 @@ export default function AreaTab() {
                       </p>
                     </div>
                   </header>
+                  {/* Wrap the table only (not the header) so narrow
+                      viewports get horizontal scroll on the 5-col table. */}
+                  <div className="overflow-x-auto">
                   <table className="min-w-full text-sm">
                     <thead>
                       <tr className="border-b border-slate-200 bg-white text-left text-[11px] font-bold uppercase tracking-wider text-slate-500">
@@ -1921,6 +1929,7 @@ export default function AreaTab() {
                       })}
                     </tbody>
                   </table>
+                  </div>
                 </section>
               )}
             </div>

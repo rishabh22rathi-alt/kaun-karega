@@ -91,14 +91,17 @@ export default function UserDisclaimerModal({
             {acceptError}
           </p>
         )}
-        <div className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-100 px-5 py-3">
+        {/* Mobile: stacked, full-width buttons so the touch target spans
+            the modal width and the labels render crisply at min-44px
+            height. Desktop (≥sm): inline-right with the original gap. */}
+        <div className="flex flex-col-reverse gap-2 border-t border-slate-100 px-5 py-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
           {!isBlocking && (
             <button
               type="button"
               onClick={onDismiss}
               disabled={isAccepting}
               data-testid="kk-disclaimer-later"
-              className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              className="w-full rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 sm:w-auto"
             >
               Later
             </button>
@@ -109,7 +112,7 @@ export default function UserDisclaimerModal({
             disabled={isAccepting}
             autoFocus
             data-testid="kk-disclaimer-accept"
-            className="rounded-lg bg-[#003d20] px-4 py-2 text-sm font-bold text-white shadow-sm transition hover:bg-[#002a15] disabled:cursor-not-allowed disabled:opacity-60"
+            className="w-full rounded-lg bg-[#003d20] px-4 py-2 text-sm font-bold text-white shadow-sm transition hover:bg-[#002a15] disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
           >
             {isAccepting ? "Saving…" : "I Understand & Continue"}
           </button>

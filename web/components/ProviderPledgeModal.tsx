@@ -106,14 +106,17 @@ export default function ProviderPledgeModal({
           </p>
         )}
 
-        <div className="flex items-center justify-end gap-2 border-t border-slate-100 px-5 py-3">
+        {/* Mobile: full-width accept button so the touch target spans
+            the modal width and renders crisply. Desktop (≥sm): inline-
+            right with the original gap. */}
+        <div className="flex flex-col gap-2 border-t border-slate-100 px-5 py-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
           <button
             type="button"
             onClick={onAccept}
             disabled={isAccepting}
             autoFocus
             data-testid="kk-pledge-accept"
-            className="rounded-lg bg-[#003d20] px-4 py-2 text-sm font-bold text-white shadow-sm transition hover:bg-[#002a15] disabled:cursor-not-allowed disabled:opacity-60"
+            className="w-full rounded-lg bg-[#003d20] px-4 py-2 text-sm font-bold text-white shadow-sm transition hover:bg-[#002a15] disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
           >
             {isAccepting ? "Saving…" : "Accept & Continue"}
           </button>
