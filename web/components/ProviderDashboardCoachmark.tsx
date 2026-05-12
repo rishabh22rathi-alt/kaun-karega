@@ -1,10 +1,15 @@
 "use client";
 
-// TODO: Switch to one-time localStorage gate after QA approval. For now this
-// coachmark renders on every dashboard mount so testers can validate the flow
-// repeatedly without clearing storage.
+// One-time display: the coachmark renders only on a provider's first visit
+// to the dashboard per browser/device. The "seen" flag lives in
+// localStorage under STORAGE_KEY and is written when the user reaches the
+// final step, hits Skip, or otherwise dismisses the guide. To re-show the
+// guide for QA: clear the key in DevTools (Application → Local Storage →
+// remove kk_provider_dashboard_coachmark_seen_v1) and reload.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+
+const STORAGE_KEY = "kk_provider_dashboard_coachmark_seen_v1";
 
 type TourStep = {
   key: string;
@@ -59,7 +64,12 @@ export default function ProviderDashboardCoachmark() {
   const isFirstStep = stepIndex === 0;
 
   const finish = useCallback(() => {
-    // TODO: Persist a "seen" flag here once QA approves the flow.
+    try {
+      window.localStorage.setItem(STORAGE_KEY, "true");
+    } catch {
+      // Ignore storage failures (private mode, quota, etc.) — dismissing
+      // the guide should still close it for this session.
+    }
     setIsVisible(false);
   }, []);
 
@@ -90,6 +100,13 @@ export default function ProviderDashboardCoachmark() {
   }, [step.selector]);
 
   useEffect(() => {
+    try {
+      if (window.localStorage.getItem(STORAGE_KEY) === "true") return;
+    } catch {
+      // If storage is unavailable (private mode, disabled, etc.), still
+      // show the guide for this session — better to show twice than not
+      // at all.
+    }
     const timer = window.setTimeout(() => setIsVisible(true), 700);
     return () => window.clearTimeout(timer);
   }, []);

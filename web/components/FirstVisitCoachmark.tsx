@@ -2,7 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-const STORAGE_KEY = "kk_first_visit_guide_seen_v1";
+// One-time-display gate. Renamed from kk_first_visit_guide_seen_v1 to
+// align with the shared coachmark naming scheme; bumping to v1 of the new
+// key intentionally re-shows the guide to users on their next visit so the
+// fresh copy/steps are surfaced once.
+const STORAGE_KEY = "kk_home_coachmark_seen_v1";
 
 type TourStep = {
   key: string;

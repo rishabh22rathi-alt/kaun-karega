@@ -655,6 +655,18 @@ function ProviderRegisterPageInner() {
     selectedAreas,
   ]);
 
+  // Region / locality edits should clear the most recent submit error so a
+  // stale "Please pick exactly 3 regions" message doesn't linger after the
+  // provider takes the corrective action. Mirrors the inline-clear pattern
+  // that toggleCategory / addArea already use for category & area edits.
+  useEffect(() => {
+    if (submitError) setSubmitError("");
+    // submitError is intentionally NOT in the dep array — including it
+    // would re-run on the same setState and is unnecessary; we only want
+    // edits to regions/localities to trigger the clear.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedRegions, customLocalities]);
+
   useEffect(() => {
     if (!isEditMode || !hasLoadedEditProfile) return;
 
@@ -795,10 +807,16 @@ function ProviderRegisterPageInner() {
     filteredAreaSuggestions.length === 0 &&
     selectedAreas.length < MAX_AREAS;
   const isMaxAreasReached = selectedAreas.length >= MAX_AREAS;
+  // canSubmit deliberately does NOT include the exact-3-regions rule. We
+  // keep the submit button clickable so the provider can ALWAYS save a
+  // change once name+category basics are in place; the 3-region check is
+  // enforced in handleSubmit with an inline error (same pattern as the
+  // pledge gate documented near line 1006). Without this relaxation the
+  // button stays silently disabled for any provider whose region
+  // inference produced ≠3 regions, which is the reported Save-Changes bug.
   const canSubmit =
     !!name.trim() &&
     selectedCategories.length >= 1 &&
-    selectedRegions.length === MIN_REGIONS &&
     !isSubmitting &&
     !showSuccessCelebration &&
     !showEditSuccessModal;
@@ -999,6 +1017,18 @@ function ProviderRegisterPageInner() {
 
   const handleSubmit = async () => {
     if (!canSubmit || !/^\d{10}$/.test(phone)) return;
+
+    // Region-count gate — moved out of `canSubmit` so the button stays
+    // clickable. The product rule today is exactly MIN_REGIONS (== 3)
+    // regions; custom localities are explicitly excluded from this count.
+    // Surface a clear inline error here instead of silently disabling Save.
+    if (selectedRegions.length !== MIN_REGIONS) {
+      setSubmitError(
+        `Please pick exactly ${MIN_REGIONS} service regions before saving. ` +
+          `Custom localities don't count toward this requirement.`
+      );
+      return;
+    }
 
     // Pledge gate — NEW-registration path only. Edit mode (provider_update
     // flow below) skips this entirely so existing / imported / legacy
