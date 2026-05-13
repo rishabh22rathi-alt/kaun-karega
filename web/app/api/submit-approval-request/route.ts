@@ -97,9 +97,13 @@ export async function POST(request: Request) {
       created_at: new Date().toISOString(),
     };
 
-    const { error: pcrError } = await adminSupabase
+    // Select the inserted row's id so the matching admin_notifications
+    // row can carry it as `related_id` for dedupe.
+    const { data: pcrInsertData, error: pcrError } = await adminSupabase
       .from("pending_category_requests")
-      .insert(pcrPayload);
+      .insert(pcrPayload)
+      .select("id")
+      .maybeSingle();
 
     if (pcrError) {
       // Surface every field of the Supabase error — message/details/hint/code
@@ -115,6 +119,59 @@ export async function POST(request: Request) {
       console.log("PENDING CATEGORY INSERT SUCCESS", {
         requested_category: pcrPayload.requested_category,
       });
+
+      // 3. Admin in-app notification — Phase 1 bell feed. Dedupe is
+      //    enforced two ways:
+      //      a) explicit pre-existence check on (type, related_id) so
+      //         a retry that races doesn't double-insert;
+      //      b) the partial unique index added by
+      //         supabase/migrations/20260515120000_admin_notifications.sql
+      //         (type, related_id) where related_id is not null.
+      //    Both are non-fatal on the user response path — the request
+      //    is already queued; the notification is best-effort.
+      const relatedId =
+        (pcrInsertData as { id?: string } | null)?.id ?? taskId;
+      if (relatedId) {
+        try {
+          const { count: existingCount } = await adminSupabase
+            .from("admin_notifications")
+            .select("id", { count: "exact", head: true })
+            .eq("type", "new_category_request")
+            .eq("related_id", relatedId);
+          if (!existingCount) {
+            const { error: notifErr } = await adminSupabase
+              .from("admin_notifications")
+              .insert({
+                type: "new_category_request",
+                title: "New service category requested",
+                message: `${rawCategoryInput} was requested and needs admin review.`,
+                severity: "warning",
+                source: "pending_category_requests",
+                related_id: relatedId,
+                action_url: "/admin/dashboard?tab=category",
+              });
+            if (notifErr) {
+              // Unique-constraint hits land in code 23505 — those mean
+              // another request inserted a notification milliseconds
+              // ago. Suppress the warn log so the path stays quiet
+              // under concurrent retries.
+              if (notifErr.code !== "23505") {
+                console.warn(
+                  "[submit-approval-request] admin_notifications insert failed",
+                  notifErr.message
+                );
+              }
+            }
+          }
+        } catch (notifException) {
+          console.warn(
+            "[submit-approval-request] admin_notifications path threw",
+            notifException instanceof Error
+              ? notifException.message
+              : notifException
+          );
+        }
+      }
     }
 
     const displayId =
