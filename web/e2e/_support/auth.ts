@@ -58,6 +58,23 @@ async function setAuthCookie(page: Page, phone: string): Promise<void> {
       url: appUrl("/"),
       sameSite: "Lax",
     },
+    // Companion `kk_session_user` cookie — this is the client-side UI
+    // hint that `getAuthSession()` reads when called without a cookie
+    // header. Without it, client pages that gate on
+    // `getAuthSession()?.phone` (e.g. /chat/thread/[threadId]) treat
+    // the bootstrap as logged-out and redirect to /login. The shape
+    // matches `parseUserHintCookie` in lib/auth.ts:
+    //   { phone, verified: true, createdAt: number }
+    {
+      name: "kk_session_user",
+      value: JSON.stringify({
+        phone,
+        verified: true,
+        createdAt: Date.now(),
+      }),
+      url: appUrl("/"),
+      sameSite: "Lax",
+    },
   ]);
 }
 

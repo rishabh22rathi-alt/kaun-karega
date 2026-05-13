@@ -8,8 +8,9 @@
  *   - Reprocess Kaam button on flagged rows — POSTs /api/admin/kaam/reprocess
  *     and triggers a refetch of /api/admin/kaam.
  *   - Category-not-approved branch surfaces a precise error message.
- *   - Analytics block: 4 stat cards + monthly bar chart + category
- *     donut chart, all rendered above the table.
+ *   - Analytics block: 4 stat cards + monthly bar chart, rendered above
+ *     the table. (The Category-wise Kaam Allocation donut moved to the
+ *     Reports tab — see admin-reports-tab.spec.ts.)
  *   - Empty + error fallbacks for the table.
  *
  * No mutation assertions on tasks/chat/categories — the spec exercises
@@ -385,35 +386,40 @@ test.describe("Admin: Kaam tab (lifecycle + reprocess + analytics)", () => {
       "+51"
     );
 
-    // Monthly chart — section visible with all three month bars.
-    const monthlyChart = page.getByTestId("kaam-monthly-chart");
-    await expect(monthlyChart).toBeVisible();
-    await expect(monthlyChart).toContainText(
-      "Month-wise Kaam Generated"
-    );
-    for (const m of MONTHLY) {
-      await expect(
-        page.getByTestId(`kaam-monthly-bar-${m.monthKey}`)
-      ).toBeVisible();
-      await expect(monthlyChart).toContainText(m.month);
-      await expect(monthlyChart).toContainText(String(m.count));
-    }
+    // Month-wise Kaam Generated chart is intentionally NOT rendered in
+    // the Kaam tab anymore — the four stat cards (Total / This Month /
+    // Last Month / Growth) cover the trend, so the chart was removed
+    // to keep the dashboard compact. Confirm its absence here so a
+    // future regression that reintroduces it would fail this test.
+    await expect(
+      kaamBody.getByTestId("kaam-monthly-chart")
+    ).toHaveCount(0);
+    await expect(
+      kaamBody.getByText("Month-wise Kaam Generated")
+    ).toHaveCount(0);
+    // The stat cards already surface the per-month month name and
+    // count via "This Month" + "Last Month" — assert those values
+    // come through correctly from MONTHLY.
+    const thisMonthPoint = MONTHLY[MONTHLY.length - 1];
+    const lastMonthPoint = MONTHLY[MONTHLY.length - 2];
+    await expect(
+      page.getByTestId("kaam-stat-this-month").locator(".."),
+    ).toContainText(thisMonthPoint.month);
+    await expect(
+      page.getByTestId("kaam-stat-last-month").locator(".."),
+    ).toContainText(lastMonthPoint.month);
 
-    // Category donut — section visible with legend entries.
-    const categoryChart = page.getByTestId("kaam-category-chart");
-    await expect(categoryChart).toBeVisible();
-    await expect(categoryChart).toContainText(
-      "Category-wise Kaam Allocation"
-    );
-    for (const c of CATEGORY) {
-      const legendItem = page.getByTestId(
-        `kaam-category-legend-${c.category}`
-      );
-      await expect(legendItem).toBeVisible();
-      await expect(legendItem).toContainText(c.category);
-      await expect(legendItem).toContainText(String(c.count));
-      await expect(legendItem).toContainText(`${c.percentage}%`);
-    }
+    // Category-wise Kaam Allocation donut is intentionally NOT rendered
+    // in the Kaam tab anymore — it moved to the Reports tab. Confirm
+    // its absence so a future regression that reintroduces it here
+    // would fail this test. (Coverage for the donut now lives in
+    // admin-reports-tab.spec.ts.)
+    await expect(
+      kaamBody.getByTestId("kaam-category-chart")
+    ).toHaveCount(0);
+    await expect(
+      kaamBody.getByText("Category-wise Kaam Allocation")
+    ).toHaveCount(0);
 
     // Area-wise Category Demand matrix is intentionally NOT rendered
     // anymore — confirm its absence so future regressions reintroducing
@@ -616,9 +622,12 @@ test.describe("Admin: Kaam tab (lifecycle + reprocess + analytics)", () => {
     await expect(page.getByTestId("kaam-stat-total")).toHaveText("0");
     await expect(kaamBody.getByText("No Kaam found yet.")).toBeVisible();
     await expect(tableRows).toHaveCount(0);
-    // Charts show their own empty states.
-    await expect(kaamBody.getByText("No monthly data yet.")).toBeVisible();
-    await expect(kaamBody.getByText("No category data yet.")).toBeVisible();
+    // With no data, the This-Month/Last-Month stat cards still render
+    // with a 0 count and no month caption. The monthly chart's old
+    // "No monthly data yet." empty state was removed along with the
+    // chart itself.
+    await expect(page.getByTestId("kaam-stat-this-month")).toHaveText("0");
+    await expect(page.getByTestId("kaam-stat-last-month")).toHaveText("0");
     console.log("[PHASE 5] PASS");
 
     // ─── PHASE 6 — error state ───────────────────────────────────────
@@ -800,32 +809,38 @@ test.describe("Admin: Kaam tab (lifecycle + reprocess + analytics)", () => {
     };
 
     // ─── PHASE 1 — Baseline ─────────────────────────────────────────
+    // Both the category-donut and the monthly bar chart have moved /
+    // been removed from the Kaam tab, so this test now exercises only
+    // the Kaam-tab–owned analytics: the four stat cards. Dynamic
+    // coverage for the donut lives in admin-reports-tab.spec.ts.
     console.log("[PHASE 1] Baseline analytics");
     await gotoPath(page, "/admin/dashboard");
     await openKaam("Phase 1");
 
     await expect(page.getByTestId("kaam-stat-total")).toHaveText("2");
-    for (const m of BASELINE.monthlyKaam) {
-      await expect(
-        page.getByTestId(`kaam-monthly-bar-${m.monthKey}`)
-      ).toBeVisible();
-      await expect(kaamBody).toContainText(m.month);
-    }
-    for (const c of BASELINE.categoryKaam) {
-      await expect(
-        page.getByTestId(`kaam-category-legend-${c.category}`)
-      ).toBeVisible();
-    }
-    // Anti-hardcoding: "Solar Panel Repair" / "Chopasni" must NOT
-    // appear in the baseline — only the later phases' API snapshots
-    // include them.
+    // This-Month / Last-Month counts + month captions surface the
+    // monthlyKaam tail dynamically from /api/admin/kaam.
+    const baselineThis = BASELINE.monthlyKaam[BASELINE.monthlyKaam.length - 1];
+    const baselineLast = BASELINE.monthlyKaam[BASELINE.monthlyKaam.length - 2];
+    await expect(page.getByTestId("kaam-stat-this-month")).toHaveText(
+      String(baselineThis.count)
+    );
+    await expect(page.getByTestId("kaam-stat-last-month")).toHaveText(
+      String(baselineLast.count)
+    );
+    await expect(kaamBody).toContainText(baselineThis.month);
+    await expect(kaamBody).toContainText(baselineLast.month);
+    // Category donut and monthly chart intentionally no longer
+    // rendered in the Kaam tab.
     await expect(
-      kaamBody.getByText("Solar Panel Repair", { exact: false })
+      kaamBody.getByTestId("kaam-category-chart")
     ).toHaveCount(0);
     await expect(
-      kaamBody.getByText("Chopasni", { exact: false })
+      kaamBody.getByTestId("kaam-monthly-chart")
     ).toHaveCount(0);
-    console.log("[PHASE 1] PASS — baseline rendered, unseen names absent");
+    console.log(
+      "[PHASE 1] PASS — baseline rendered, removed charts absent from tab"
+    );
 
     // ─── PHASE 2 — Counts increment after a new Kaam ────────────────
     console.log("[PHASE 2] Simulate new Kaam → counts increment");
@@ -833,38 +848,21 @@ test.describe("Admin: Kaam tab (lifecycle + reprocess + analytics)", () => {
     await page.reload({ waitUntil: "domcontentloaded" });
     await openKaam("Phase 2");
     await expect(page.getByTestId("kaam-stat-total")).toHaveText("3");
-    const mayBar = page.getByTestId("kaam-monthly-bar-2026-05");
-    await expect(mayBar).toContainText("2");
-    const electricianLegend = page.getByTestId(
-      "kaam-category-legend-Electrician"
-    );
-    await expect(electricianLegend).toContainText("2");
-    console.log("[PHASE 2] PASS — totals + month + category updated");
+    // INCREMENTED.monthlyKaam[last] is May 2026 with count 2 — verify
+    // the This-Month stat picked up the new value.
+    await expect(page.getByTestId("kaam-stat-this-month")).toHaveText("2");
+    console.log("[PHASE 2] PASS — totals + this-month updated");
 
-    // ─── PHASE 3 — Brand new category surfaces ──────────────────────
+    // ─── PHASE 3 — Snapshot with brand-new data still drives the tab ─
     console.log(
-      "[PHASE 3] Simulate new category + new unmapped area → appear in UI"
+      "[PHASE 3] Simulate new category + new unmapped area → totals roll up"
     );
     snapshot = NEW_CATEGORY;
     await page.reload({ waitUntil: "domcontentloaded" });
     await openKaam("Phase 3");
     await expect(page.getByTestId("kaam-stat-total")).toHaveText("4");
-    await expect(
-      page.getByTestId("kaam-category-legend-Solar Panel Repair")
-    ).toBeVisible();
     console.log(
-      "[PHASE 3] PASS — new category surfaced from API response"
+      "[PHASE 3] PASS — total updated from API response"
     );
-
-    // ─── PHASE 4 — Dynamic-source invariants ────────────────────────
-    // Two consecutive snapshots ago, "Solar Panel Repair" wasn't in
-    // the API response and therefore wasn't visible. After PHASE 3
-    // it IS in the response and IS visible. Combining PHASE 1's
-    // absence with PHASE 3's presence is the proof that the UI is
-    // sourced from the API, not from a hardcoded list.
-    await expect(
-      kaamBody.getByText("Solar Panel Repair").first()
-    ).toBeVisible();
-    console.log("[PHASE 4] PASS — dynamic-source invariants hold");
   });
 });

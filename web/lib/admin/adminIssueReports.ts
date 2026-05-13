@@ -313,7 +313,16 @@ export async function updateIssueReportStatusFromSupabase(
     if (!issueId) {
       return { ok: false, status: "error", error: "IssueID required" };
     }
-    if (!["open", "in_progress", "resolved", "rejected"].includes(nextStatus)) {
+    // `closed` is the canonical admin-driven terminal state introduced
+    // alongside the IssueReportsTab admin actions. `rejected` is kept
+    // in the whitelist so pre-existing rows continue to round-trip
+    // through the update endpoint without breaking — the UI buckets
+    // both `rejected` and `closed` into the same Closed badge.
+    if (
+      !["open", "in_progress", "resolved", "closed", "rejected"].includes(
+        nextStatus
+      )
+    ) {
       return { ok: false, status: "error", error: "Invalid status" };
     }
 

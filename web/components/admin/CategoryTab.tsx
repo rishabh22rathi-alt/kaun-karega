@@ -2,6 +2,13 @@
 
 import { Fragment, useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, Pencil, X } from "lucide-react";
+import UnreadBadge, { type UnreadIndicator } from "./UnreadBadge";
+
+type CategoryTabProps = {
+  // Wired by the dashboard page (see useAdminUnread).
+  unread?: UnreadIndicator | null;
+  onMarkRead?: () => void;
+};
 
 // Window event dispatched by ProvidersTab when admin clicks "Manage
 // category" on a drilldown row. Kept in sync with ProvidersTab's
@@ -42,6 +49,21 @@ type PendingRequest = {
   CreatedAt: string;
 };
 
+// Mirror of /api/admin/aliases?status=pending response shape. Pending
+// custom work-tags / aliases live in `category_aliases` with active=false
+// and are surfaced here so the admin can approve / reject them from the
+// same Pending Admin Approval tab as category requests.
+type PendingAliasRequest = {
+  alias: string;
+  canonicalCategory: string;
+  aliasType: string | null;
+  active: boolean;
+  createdAt: string | null;
+  submittedByProviderId: string | null;
+  submittedByName: string | null;
+  submittedByPhone: string | null;
+};
+
 type CategoryArchiveRow = {
   id: string;
   categoryName: string;
@@ -73,9 +95,22 @@ function getAdminActor(): { name: string; phone: string } {
   }
 }
 
-export default function CategoryTab() {
+export default function CategoryTab({
+  unread,
+  onMarkRead,
+}: CategoryTabProps = {}) {
   const [isOpen, setIsOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<ActiveTab>("approved");
+  const markReadFiredRef = useRef(false);
+  useEffect(() => {
+    if (!isOpen) {
+      markReadFiredRef.current = false;
+      return;
+    }
+    if (markReadFiredRef.current) return;
+    markReadFiredRef.current = true;
+    onMarkRead?.();
+  }, [isOpen, onMarkRead]);
 
   // Approved tab data
   const [categories, setCategories] = useState<CategoryRow[] | null>(null);
@@ -99,6 +134,18 @@ export default function CategoryTab() {
   const [pendingLoading, setPendingLoading] = useState(false);
   const [pendingError, setPendingError] = useState<string | null>(null);
   const [pendingRefreshKey, setPendingRefreshKey] = useState(0);
+
+  // Pending alias / work-tag submissions — second list rendered under the
+  // same Pending Admin Approval tab. Sourced from /api/admin/aliases?
+  // status=pending and approved/rejected through the existing POST
+  // /api/admin/aliases endpoint. Reuses pendingRefreshKey so any action
+  // bumps both fetches together.
+  const [pendingAliases, setPendingAliases] = useState<
+    PendingAliasRequest[] | null
+  >(null);
+  const [pendingAliasesError, setPendingAliasesError] = useState<string | null>(
+    null
+  );
 
   // Archived tab data — read from /api/admin/categories/archive. A
   // successful archive on the Approved tab bumps both keys so the next
@@ -213,14 +260,22 @@ export default function CategoryTab() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, activeTab, categoriesRefreshKey]);
 
-  // Lazy fetch — pending requests. Same key-bump pattern as above.
+  // Lazy fetch — pending requests AND pending aliases. Both lists are
+  // surfaced under the same Pending Admin Approval tab. They are fetched
+  // in parallel so opening the tab pays the network cost once, and the
+  // shared pendingRefreshKey re-fires both on approve / reject of either
+  // type. The two lists feed two separate render sections so the data
+  // never mixes — a category request and a work-tag are different
+  // entities even though they share the same admin queue.
   useEffect(() => {
     if (!isOpen) return;
     if (activeTab !== "pending") return;
     let cancelled = false;
     setPendingLoading(true);
     setPendingError(null);
-    fetch("/api/admin/pending-category-requests")
+    setPendingAliasesError(null);
+
+    const categoryRequestsP = fetch("/api/admin/pending-category-requests")
       .then((r) => r.json())
       .then(
         (res: {
@@ -239,10 +294,39 @@ export default function CategoryTab() {
       .catch((err: unknown) => {
         if (cancelled) return;
         setPendingError(err instanceof Error ? err.message : "Network error");
-      })
-      .finally(() => {
-        if (!cancelled) setPendingLoading(false);
       });
+
+    const aliasesP = fetch("/api/admin/aliases?status=pending")
+      .then((r) => r.json())
+      .then(
+        (res: {
+          ok?: boolean;
+          aliases?: PendingAliasRequest[];
+          error?: string;
+        }) => {
+          if (cancelled) return;
+          if (res?.ok && Array.isArray(res.aliases)) {
+            setPendingAliases(res.aliases);
+          } else {
+            // Independent error track — a failure here MUST NOT clear
+            // or block the category-requests list. They surface
+            // separately under the alias section.
+            setPendingAliasesError(
+              res?.error || "Failed to load pending work terms"
+            );
+          }
+        }
+      )
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setPendingAliasesError(
+          err instanceof Error ? err.message : "Network error"
+        );
+      });
+
+    Promise.allSettled([categoryRequestsP, aliasesP]).finally(() => {
+      if (!cancelled) setPendingLoading(false);
+    });
     return () => {
       cancelled = true;
     };
@@ -623,8 +707,72 @@ export default function CategoryTab() {
     );
   };
 
-  const pendingOpenCount =
+  // Approve / reject for pending custom work-tags. Both flow through the
+  // existing /api/admin/aliases POST endpoint, which is already gated by
+  // requireAdminSession and which we kept untouched in this slice. On
+  // success we bump pendingRefreshKey so BOTH the category-request list
+  // and the alias list refetch — and the approved alias also disappears
+  // from the pending list because the endpoint flips active=true.
+  const handleAliasApprove = async (alias: string) => {
+    const actionKey = `approveAlias::${alias.toLowerCase()}`;
+    setActionInProgress(actionKey);
+    setActionError(null);
+    try {
+      const res = await fetch("/api/admin/aliases", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "approve", alias }),
+      });
+      const json = (await res.json()) as { ok?: boolean; error?: string };
+      if (!res.ok || !json?.ok) {
+        setActionError(json?.error || `Approve failed (${res.status})`);
+        return;
+      }
+      refreshPending();
+      refreshCategories();
+    } catch (err: unknown) {
+      setActionError(err instanceof Error ? err.message : "Network error");
+    } finally {
+      setActionInProgress(null);
+    }
+  };
+
+  const handleAliasReject = async (alias: string) => {
+    const actionKey = `rejectAlias::${alias.toLowerCase()}`;
+    setActionInProgress(actionKey);
+    setActionError(null);
+    try {
+      const res = await fetch("/api/admin/aliases", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "reject",
+          alias,
+          reason: "Rejected by admin",
+        }),
+      });
+      const json = (await res.json()) as { ok?: boolean; error?: string };
+      if (!res.ok || !json?.ok) {
+        setActionError(json?.error || `Reject failed (${res.status})`);
+        return;
+      }
+      refreshPending();
+    } catch (err: unknown) {
+      setActionError(err instanceof Error ? err.message : "Network error");
+    } finally {
+      setActionInProgress(null);
+    }
+  };
+
+  // Header pending count includes BOTH lists so the admin sees a single
+  // accurate number on the section chip. Category requests count only the
+  // ones with Status="pending" (the list also carries rejected rows for
+  // history). Aliases are always pending by definition of the endpoint
+  // filter (`?status=pending` → active=false rows only).
+  const pendingCategoryCount =
     pending?.filter((r) => String(r.Status).toLowerCase() === "pending").length ?? 0;
+  const pendingAliasCount = pendingAliases?.length ?? 0;
+  const pendingOpenCount = pendingCategoryCount + pendingAliasCount;
   const summary = `Category approvals and alias/work-tag management${
     pendingOpenCount > 0 ? ` · ${pendingOpenCount} pending` : ""
   }`;
@@ -639,7 +787,10 @@ export default function CategoryTab() {
         className="flex w-full items-center justify-between gap-3 px-5 py-4 text-left transition hover:bg-slate-50"
       >
         <div className="min-w-0">
-          <p className="text-base font-semibold text-slate-900">Category</p>
+          <p className="flex items-center text-base font-semibold text-slate-900">
+            Category
+            <UnreadBadge unread={unread} testId="category-unread-badge" />
+          </p>
           <p className="mt-0.5 text-xs text-slate-500">{summary}</p>
         </div>
         <ChevronDown
@@ -1138,6 +1289,9 @@ export default function CategoryTab() {
                 !pendingError &&
                 pending.length > 0 && (
                   <div className="overflow-x-auto rounded-xl border border-slate-200">
+                    <p className="border-b border-slate-200 bg-slate-50 px-3 py-2 text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                      Pending Category Requests
+                    </p>
                     <table className="min-w-full text-sm">
                       <thead>
                         <tr className="border-b border-slate-200 bg-slate-50 text-left text-[11px] font-bold uppercase tracking-wider text-slate-500">
@@ -1295,6 +1449,120 @@ export default function CategoryTab() {
                     </table>
                   </div>
                 )}
+
+              {/* Pending Custom Work Terms — second list under the same
+                  Pending Admin Approval tab. Approve/Reject calls hit the
+                  existing /api/admin/aliases POST (admin-gated). Each row
+                  shows the alias text, the canonical it maps to, the
+                  submitter (provider name + phone when available), and a
+                  created-at timestamp. Failures render in a small error
+                  strip but do not unmount the section. */}
+              <div
+                className="mt-4 space-y-2"
+                data-testid="kk-admin-pending-work-terms"
+              >
+                <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                  Pending Custom Work Terms
+                </p>
+                {pendingAliasesError && (
+                  <p className="text-sm text-red-600">
+                    Error: {pendingAliasesError}
+                  </p>
+                )}
+                {pendingAliases &&
+                  !pendingAliasesError &&
+                  pendingAliases.length === 0 && (
+                    <p className="text-sm text-slate-500">
+                      No pending custom work terms.
+                    </p>
+                  )}
+                {pendingAliases &&
+                  !pendingAliasesError &&
+                  pendingAliases.length > 0 && (
+                    <div className="overflow-x-auto rounded-xl border border-slate-200">
+                      <table className="min-w-full text-sm">
+                        <thead>
+                          <tr className="border-b border-slate-200 bg-slate-50 text-left text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                            <th className="px-3 py-2">Work Term</th>
+                            <th className="px-3 py-2">Canonical Category</th>
+                            <th className="px-3 py-2">Submitted By</th>
+                            <th className="px-3 py-2">Created</th>
+                            <th className="px-3 py-2 text-right">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {pendingAliases.map((row) => {
+                            const aliasKey = `${row.alias}`.toLowerCase();
+                            const approveKey = `approveAlias::${aliasKey}`;
+                            const rejectKey = `rejectAlias::${aliasKey}`;
+                            return (
+                              <tr
+                                key={`${row.alias}-${row.canonicalCategory}`}
+                                className="border-b border-slate-100"
+                                data-testid={`kk-admin-pending-alias-row-${aliasKey}`}
+                              >
+                                <td className="px-3 py-2 font-medium text-slate-800">
+                                  {row.alias}
+                                  {row.aliasType ? (
+                                    <span className="ml-2 inline-block rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600">
+                                      {row.aliasType}
+                                    </span>
+                                  ) : null}
+                                </td>
+                                <td className="px-3 py-2 text-slate-700">
+                                  {row.canonicalCategory || "—"}
+                                </td>
+                                <td className="px-3 py-2 text-slate-700">
+                                  <div className="font-medium">
+                                    {row.submittedByName || "—"}
+                                  </div>
+                                  <div className="text-xs text-slate-500">
+                                    {row.submittedByPhone || "—"}
+                                  </div>
+                                </td>
+                                <td className="px-3 py-2 text-xs text-slate-600">
+                                  {row.createdAt
+                                    ? new Date(row.createdAt).toLocaleString()
+                                    : "—"}
+                                </td>
+                                <td className="px-3 py-2 text-right">
+                                  <div className="inline-flex flex-wrap justify-end gap-2">
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        void handleAliasApprove(row.alias)
+                                      }
+                                      disabled={actionInProgress === approveKey}
+                                      data-testid={`kk-admin-alias-approve-${aliasKey}`}
+                                      className="rounded border border-[#003d20]/40 px-2 py-1 text-xs font-semibold text-[#003d20] hover:bg-green-50 disabled:opacity-50"
+                                    >
+                                      {actionInProgress === approveKey
+                                        ? "…"
+                                        : "Approve"}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        void handleAliasReject(row.alias)
+                                      }
+                                      disabled={actionInProgress === rejectKey}
+                                      data-testid={`kk-admin-alias-reject-${aliasKey}`}
+                                      className="rounded border border-orange-300 px-2 py-1 text-xs font-semibold text-orange-700 hover:bg-orange-50 disabled:opacity-50"
+                                    >
+                                      {actionInProgress === rejectKey
+                                        ? "…"
+                                        : "Reject"}
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+              </div>
             </div>
           )}
 

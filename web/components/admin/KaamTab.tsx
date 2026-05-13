@@ -1,7 +1,16 @@
 "use client";
 
-import { useEffect, useState, type ReactElement } from "react";
+import { useEffect, useRef, useState, type ReactElement } from "react";
 import { ChevronDown } from "lucide-react";
+import UnreadBadge, { type UnreadIndicator } from "./UnreadBadge";
+
+type KaamTabProps = {
+  // Wired by the dashboard page (see useAdminUnread). Optional so
+  // standalone embeds — no current callers, but easy to add later —
+  // still work without the indicator.
+  unread?: UnreadIndicator | null;
+  onMarkRead?: () => void;
+};
 
 // Kaam accordion for /admin/dashboard.
 //
@@ -36,12 +45,6 @@ type MonthlyKaamPoint = {
   count: number;
 };
 
-type CategoryKaamPoint = {
-  category: string;
-  count: number;
-  percentage: number;
-};
-
 type KaamRow = {
   taskId: string;
   kaamNo: string | null;
@@ -62,7 +65,6 @@ type LoadResponse = {
   success?: boolean;
   totalKaam?: number;
   monthlyKaam?: MonthlyKaamPoint[];
-  categoryKaam?: CategoryKaamPoint[];
   analyticsTruncated?: boolean;
   kaam?: KaamRow[];
   error?: string;
@@ -128,48 +130,23 @@ function stepTextClass(row: KaamRow): string {
 }
 
 // ───────────────────────────────────────────────────────────────────
-// Analytics block — 4 summary cards + monthly bar chart + category
-// donut chart. CSS-only (no recharts/d3) because the repo has no
-// chart dependency installed and the spec asked for native SVG/CSS
-// when none exists.
+// Analytics block — 4 summary cards (Total / This Month / Last Month
+// / Growth) sourced from /api/admin/kaam. The monthly bar chart and
+// the Category-wise Kaam Allocation donut that used to live here are
+// gone: the donut now renders inside ReportsTab via
+// CategoryKaamAllocationCard, and the monthly bars were removed
+// because the stat cards already convey the same trend at a glance.
+// The monthlyKaam array is still consumed here to compute the
+// "This Month", "Last Month", and "Growth" values.
 // ───────────────────────────────────────────────────────────────────
-
-const DONUT_SLICE_COLORS = [
-  "#003d20", // Kaun Karega green
-  "#f97316", // orange
-  "#0ea5e9", // cyan
-  "#6366f1", // indigo
-  "#22c55e", // green
-  "#eab308", // yellow
-  "#ec4899", // pink
-  "#64748b", // slate
-];
-
-function describeArc(
-  cx: number,
-  cy: number,
-  r: number,
-  startAngle: number,
-  endAngle: number
-): string {
-  // Donut math — angles are in radians, clockwise from -π/2 (12 o'clock).
-  const startX = cx + r * Math.cos(startAngle);
-  const startY = cy + r * Math.sin(startAngle);
-  const endX = cx + r * Math.cos(endAngle);
-  const endY = cy + r * Math.sin(endAngle);
-  const largeArc = endAngle - startAngle > Math.PI ? 1 : 0;
-  return `M ${startX} ${startY} A ${r} ${r} 0 ${largeArc} 1 ${endX} ${endY}`;
-}
 
 function KaamAnalytics({
   totalKaam,
   monthlyKaam,
-  categoryKaam,
   analyticsTruncated,
 }: {
   totalKaam: number | null;
   monthlyKaam: MonthlyKaamPoint[];
-  categoryKaam: CategoryKaamPoint[];
   analyticsTruncated: boolean;
 }): ReactElement {
   const thisMonth = monthlyKaam.length > 0
@@ -202,43 +179,6 @@ function KaamAnalytics({
       : growthAbs < 0
         ? "text-red-700"
         : "text-slate-700";
-
-  // Donut geometry.
-  const donutSize = 160;
-  const donutCx = donutSize / 2;
-  const donutCy = donutSize / 2;
-  const donutR = 64;
-  const donutStrokeWidth = 24;
-  const donutTotal = categoryKaam.reduce((sum, c) => sum + c.count, 0);
-  // Pre-compute each slice's [start, end] cumulatively before mapping
-  // to path strings — avoids the let-reassign-during-render warning.
-  const sliceAngles: Array<{ start: number; end: number }> = [];
-  categoryKaam.forEach((slice, i) => {
-    const prevEnd =
-      i === 0 ? -Math.PI / 2 : sliceAngles[i - 1].end;
-    const fraction = donutTotal > 0 ? slice.count / donutTotal : 0;
-    sliceAngles.push({
-      start: prevEnd,
-      end: prevEnd + fraction * Math.PI * 2,
-    });
-  });
-  const donutSlices = categoryKaam.map((slice, i) => ({
-    d: describeArc(
-      donutCx,
-      donutCy,
-      donutR,
-      sliceAngles[i].start,
-      sliceAngles[i].end
-    ),
-    color: DONUT_SLICE_COLORS[i % DONUT_SLICE_COLORS.length],
-    slice,
-  }));
-
-  // Monthly bar geometry — normalise to the largest bar.
-  const monthlyMax = monthlyKaam.reduce(
-    (m, p) => (p.count > m ? p.count : m),
-    0
-  );
 
   return (
     <div className="mb-5 space-y-4">
@@ -302,143 +242,6 @@ function KaamAnalytics({
           rows fall outside the scan limit.
         </p>
       )}
-
-
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-5">
-        <section
-          data-testid="kaam-monthly-chart"
-          className="rounded-xl border border-slate-200 bg-white p-4 md:col-span-3"
-        >
-          <h3 className="text-sm font-semibold text-slate-900">
-            Month-wise Kaam Generated
-          </h3>
-          <p className="mt-0.5 text-xs text-slate-500">
-            Bars scaled to the busiest month in view.
-          </p>
-          {monthlyKaam.length === 0 ? (
-            <p className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-3 py-6 text-center text-xs text-slate-500">
-              No monthly data yet.
-            </p>
-          ) : (
-            <div className="mt-4 flex h-40 items-end gap-2">
-              {monthlyKaam.map((point) => {
-                const heightPct =
-                  monthlyMax > 0
-                    ? Math.max(4, Math.round((point.count / monthlyMax) * 100))
-                    : 0;
-                return (
-                  <div
-                    key={point.monthKey}
-                    className="flex min-w-0 flex-1 flex-col items-center gap-1"
-                    data-testid={`kaam-monthly-bar-${point.monthKey}`}
-                  >
-                    <span className="text-[11px] font-semibold text-slate-700">
-                      {point.count}
-                    </span>
-                    <div className="flex h-full w-full items-end">
-                      <div
-                        className="w-full rounded-t bg-[#003d20]"
-                        style={{ height: `${heightPct}%` }}
-                        aria-label={`${point.month}: ${point.count} Kaam`}
-                      />
-                    </div>
-                    <span className="truncate text-[10px] text-slate-500">
-                      {point.month}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </section>
-
-        <section
-          data-testid="kaam-category-chart"
-          className="rounded-xl border border-slate-200 bg-white p-4 md:col-span-2"
-        >
-          <h3 className="text-sm font-semibold text-slate-900">
-            Category-wise Kaam Allocation
-          </h3>
-          <p className="mt-0.5 text-xs text-slate-500">
-            Share by total Kaam volume.
-          </p>
-          {categoryKaam.length === 0 ? (
-            <p className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-3 py-6 text-center text-xs text-slate-500">
-              No category data yet.
-            </p>
-          ) : (
-            <div className="mt-4 flex flex-col items-start gap-4 sm:flex-row sm:items-center">
-              <svg
-                width={donutSize}
-                height={donutSize}
-                viewBox={`0 0 ${donutSize} ${donutSize}`}
-                role="img"
-                aria-label="Category-wise Kaam donut chart"
-                className="shrink-0"
-              >
-                <circle
-                  cx={donutCx}
-                  cy={donutCy}
-                  r={donutR}
-                  fill="none"
-                  stroke="#e2e8f0"
-                  strokeWidth={donutStrokeWidth}
-                />
-                {donutSlices.map((s, i) => (
-                  <path
-                    key={`${s.slice.category}-${i}`}
-                    d={s.d}
-                    stroke={s.color}
-                    strokeWidth={donutStrokeWidth}
-                    fill="none"
-                    strokeLinecap="butt"
-                  />
-                ))}
-                <text
-                  x={donutCx}
-                  y={donutCy - 4}
-                  textAnchor="middle"
-                  className="fill-slate-900 text-[15px] font-bold"
-                >
-                  {donutTotal}
-                </text>
-                <text
-                  x={donutCx}
-                  y={donutCy + 12}
-                  textAnchor="middle"
-                  className="fill-slate-500 text-[10px] uppercase tracking-wide"
-                >
-                  total
-                </text>
-              </svg>
-              <ul className="min-w-0 flex-1 space-y-1.5">
-                {categoryKaam.map((c, i) => (
-                  <li
-                    key={c.category}
-                    className="flex items-center gap-2 text-xs text-slate-700"
-                    data-testid={`kaam-category-legend-${c.category}`}
-                  >
-                    <span
-                      aria-hidden="true"
-                      className="h-2.5 w-2.5 shrink-0 rounded-full"
-                      style={{
-                        backgroundColor:
-                          DONUT_SLICE_COLORS[i % DONUT_SLICE_COLORS.length],
-                      }}
-                    />
-                    <span className="min-w-0 flex-1 truncate font-medium text-slate-900">
-                      {c.category}
-                    </span>
-                    <span className="tabular-nums text-slate-600">
-                      {c.count} · {c.percentage}%
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </section>
-      </div>
 
       {/*
         Area-wise Category Demand matrix is intentionally not rendered
@@ -709,12 +512,17 @@ function MonthlyReportPanel(): ReactElement {
   );
 }
 
-export default function KaamTab() {
+export default function KaamTab({
+  unread,
+  onMarkRead,
+}: KaamTabProps = {}) {
+  // Open-transition guard so mark-read fires exactly once per
+  // closed → open cycle, not on every re-render while open.
+  const markReadFiredRef = useRef(false);
   const [isOpen, setIsOpen] = useState(false);
   const [kaam, setKaam] = useState<KaamRow[] | null>(null);
   const [totalKaam, setTotalKaam] = useState<number | null>(null);
   const [monthlyKaam, setMonthlyKaam] = useState<MonthlyKaamPoint[]>([]);
-  const [categoryKaam, setCategoryKaam] = useState<CategoryKaamPoint[]>([]);
   const [analyticsTruncated, setAnalyticsTruncated] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -738,6 +546,16 @@ export default function KaamTab() {
   }, [isOpen]);
 
   useEffect(() => {
+    if (!isOpen) {
+      markReadFiredRef.current = false;
+      return;
+    }
+    if (markReadFiredRef.current) return;
+    markReadFiredRef.current = true;
+    onMarkRead?.();
+  }, [isOpen, onMarkRead]);
+
+  useEffect(() => {
     if (!isOpen) return;
     let cancelled = false;
     setLoading(true);
@@ -755,7 +573,6 @@ export default function KaamTab() {
           setKaam([]);
           setTotalKaam(0);
           setMonthlyKaam([]);
-          setCategoryKaam([]);
           setAnalyticsTruncated(false);
           return;
         }
@@ -766,9 +583,6 @@ export default function KaamTab() {
         setMonthlyKaam(
           Array.isArray(json.monthlyKaam) ? json.monthlyKaam : []
         );
-        setCategoryKaam(
-          Array.isArray(json.categoryKaam) ? json.categoryKaam : []
-        );
         setAnalyticsTruncated(Boolean(json.analyticsTruncated));
       })
       .catch((err: unknown) => {
@@ -777,7 +591,6 @@ export default function KaamTab() {
         setKaam([]);
         setTotalKaam(0);
         setMonthlyKaam([]);
-        setCategoryKaam([]);
         setAnalyticsTruncated(false);
       })
       .finally(() => {
@@ -873,7 +686,10 @@ export default function KaamTab() {
         className="flex w-full items-center justify-between gap-3 px-5 py-4 text-left transition hover:bg-slate-50"
       >
         <div className="min-w-0">
-          <p className="text-base font-semibold text-slate-900">Kaam</p>
+          <p className="flex items-center text-base font-semibold text-slate-900">
+            Kaam
+            <UnreadBadge unread={unread} testId="kaam-unread-badge" />
+          </p>
           <p className="mt-0.5 text-xs text-slate-500">{summary}</p>
         </div>
         <ChevronDown
@@ -889,7 +705,6 @@ export default function KaamTab() {
           <KaamAnalytics
             totalKaam={totalKaam}
             monthlyKaam={monthlyKaam}
-            categoryKaam={categoryKaam}
             analyticsTruncated={analyticsTruncated}
           />
           <MonthlyReportPanel />

@@ -205,9 +205,16 @@ test.describe("Blocked Provider Exclusion", () => {
     await notifWaiter;
     await page.waitForTimeout(300);
 
-    // Notification was called with the correct taskId
+    // Notification was called with the correct taskId. The narrow
+    // below tells TypeScript that any assigned value is a record-
+    // shape; without it TS infers the let-binding as `never` past
+    // the closure boundary because the `Record<string, unknown> |
+    // null` declaration isn't preserved through the route handler.
     expect(notifCallCount).toBe(1);
-    expect(notifCapturedBody?.taskId).toBe(ZZ_TASK_ID);
+    const capturedNotif = notifCapturedBody as
+      | Record<string, unknown>
+      | null;
+    expect(capturedNotif?.taskId).toBe(ZZ_TASK_ID);
 
     // Page must not crash or show error text when matchedProviders=0
     await expect(page).toHaveURL(/\/success/);

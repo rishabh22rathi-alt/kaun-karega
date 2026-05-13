@@ -2,8 +2,15 @@
 
 import type { ReactElement } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { ChevronLeft, ChevronRight, PanelLeftClose, X } from "lucide-react";
+import { usePathname, useSearchParams } from "next/navigation";
+import {
+  ChevronLeft,
+  ChevronRight,
+  MessageSquare,
+  MessageSquareWarning,
+  PanelLeftClose,
+  X,
+} from "lucide-react";
 
 type AdminSidebarProps = {
   isOpen: boolean;
@@ -19,14 +26,21 @@ type NavItem = {
   href: string;
   icon: ReactElement;
   requiredPermission?: string;
+  // Optional `?tab=` query value associated with this item. When set,
+  // the item is highlighted active only while the current URL carries
+  // the same `?tab=` value. Items without `tabKey` are active only
+  // when the current URL has no `?tab=` query at all. This lets
+  // /admin/dashboard and /admin/dashboard?tab=reports own distinct
+  // sidebar rows even though they share a pathname.
+  tabKey?: string;
 };
 
-// Admin sidebar nav. Trimmed to a single "Dashboard" entry while the
-// broader admin redesign is in progress. Existing pages (Providers, Tasks,
-// Task Monitor, Needs, Chat Rooms, Logs, Reviews, Analytics) remain on
-// disk and reachable by direct URL — only their sidebar entries are
-// hidden until each is rewired/redesigned and added back here one at
-// a time. Add new modules by appending NavItem entries to this array.
+// Admin sidebar nav. Trimmed to a small set of entries while the broader
+// admin redesign is in progress. Existing pages (Providers, Tasks, Task
+// Monitor, Needs, Chat Rooms, Logs, Reviews, Analytics) remain on disk
+// and reachable by direct URL — only their sidebar entries are hidden
+// until each is rewired/redesigned and added back here one at a time.
+// Add new modules by appending NavItem entries to this array.
 const navItems: NavItem[] = [
   {
     label: "Dashboard",
@@ -48,6 +62,18 @@ const navItems: NavItem[] = [
       </svg>
     ),
   },
+  {
+    label: "Reports",
+    href: "/admin/dashboard?tab=reports",
+    tabKey: "reports",
+    icon: <MessageSquareWarning className="h-5 w-5" aria-hidden="true" />,
+  },
+  {
+    label: "Chats",
+    href: "/admin/dashboard?tab=chats",
+    tabKey: "chats",
+    icon: <MessageSquare className="h-5 w-5" aria-hidden="true" />,
+  },
 ];
 
 export default function AdminSidebar({
@@ -59,6 +85,8 @@ export default function AdminSidebar({
   onCollapseToggle,
 }: AdminSidebarProps) {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const currentTab = (searchParams?.get("tab") ?? "").toLowerCase();
 
   const visibleItems = navItems.filter((item) => {
     if (item.requiredPermission) {
@@ -66,6 +94,15 @@ export default function AdminSidebar({
     }
     return true;
   });
+
+  // Strip any query off an item href so we can compare against the
+  // current pathname (which never carries `?…`). The tab-aware
+  // highlight logic below uses `tabKey` to discriminate between items
+  // that share a pathname.
+  const itemPathOf = (href: string): string => {
+    const q = href.indexOf("?");
+    return q >= 0 ? href.slice(0, q) : href;
+  };
 
   return (
     <>
@@ -127,10 +164,20 @@ export default function AdminSidebar({
 
         <nav className={`flex-1 space-y-1 overflow-y-auto py-4 ${isCollapsed ? "px-2" : "px-3"}`}>
           {visibleItems.map((item) => {
-            const active =
-              item.href === "/admin"
+            const itemPath = itemPathOf(item.href);
+            const pathMatches =
+              itemPath === "/admin"
                 ? pathname === "/admin"
-                : pathname.startsWith(item.href);
+                : pathname.startsWith(itemPath);
+            // Tab-aware active calc: an item with `tabKey` is active
+            // only when `?tab=` matches; an item without is active
+            // only when the URL has no `?tab=` query. This keeps
+            // Dashboard (no tab) and Reports (tab=reports) from
+            // double-lighting on /admin/dashboard?tab=reports.
+            const tabMatches = item.tabKey
+              ? currentTab === item.tabKey
+              : currentTab === "";
+            const active = pathMatches && tabMatches;
             return (
               <Link
                 key={item.href}

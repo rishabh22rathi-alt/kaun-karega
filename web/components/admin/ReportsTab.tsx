@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { ChevronDown } from "lucide-react";
+import CategoryKaamAllocationCard from "@/components/admin/CategoryKaamAllocationCard";
 
 // Reports accordion for /admin/dashboard.
 //
@@ -262,7 +263,9 @@ export default function ReportsTab() {
         className="flex w-full items-center justify-between gap-3 px-5 py-4 text-left transition hover:bg-slate-50"
       >
         <div className="min-w-0">
-          <p className="text-base font-semibold text-slate-900">Reports</p>
+          <p className="text-base font-semibold text-slate-900">
+            Report Generation
+          </p>
           <p className="mt-0.5 text-xs text-slate-500">
             Generate PDF reports from Supabase data
           </p>
@@ -459,6 +462,10 @@ export default function ReportsTab() {
               )}
             </div>
           )}
+
+          <div className="mt-4">
+            <CategoryKaamAllocationCard />
+          </div>
         </div>
       )}
     </section>

@@ -10,6 +10,9 @@
  *     not crash (PDF file generation happens client-side via jsPDF;
  *     we accept the click as success when the button transitions
  *     through the "Preparing PDF…" label without setting an error).
+ *   - Category-wise Kaam Allocation donut card (moved here from the
+ *     Kaam tab) renders inside the Reports tab body, sourced from
+ *     /api/admin/kaam.
  */
 
 import { bootstrapAdminSession } from "./_support/auth";
@@ -139,12 +142,36 @@ function buildReport(type: ReportType): ReportPayload {
   };
 }
 
+const CATEGORY_KAAM = [
+  { category: "Electrician", count: 30, percentage: 39.5 },
+  { category: "Plumber", count: 20, percentage: 26.3 },
+  { category: "Carpenter", count: 10, percentage: 13.2 },
+];
+
 test.describe("Admin: Reports tab (preview + PDF)", () => {
   test("renders accordion, generates preview, switches type, allows PDF", async ({
     page,
   }) => {
     await bootstrapAdminSession(page);
     await mockAdminDashboardApis(page);
+
+    // The Category-wise Kaam Allocation card (rendered inside the
+    // Reports tab body) calls /api/admin/kaam on mount. Mock it here
+    // so the donut + legend render deterministically.
+    await mockJson(page, "**/api/admin/kaam", {
+      status: 200,
+      body: {
+        success: true,
+        totalKaam: 60,
+        monthlyKaam: [],
+        categoryKaam: CATEGORY_KAAM,
+        areaCategoryDemand: [],
+        regionsCovered: 0,
+        areasCovered: 0,
+        analyticsTruncated: false,
+        kaam: [],
+      } as Record<string, unknown>,
+    });
 
     const reportCalls: Array<{ type: string; from: string; to: string }> = [];
     let mode: "success" | "fail" = "success";
@@ -201,6 +228,25 @@ test.describe("Admin: Reports tab (preview + PDF)", () => {
     expect(reportCalls[reportCalls.length - 1].type).toBe(
       "monthly_business_summary"
     );
+
+    // ─── Category-wise Kaam Allocation donut ────────────────────────
+    // The card moved here from the Kaam tab. It lives in the Reports
+    // tab body, scoped below the report's summary/stat cards. The
+    // donut sources its data from /api/admin/kaam (mocked above).
+    const categoryChart = body.getByTestId("kaam-category-chart");
+    await expect(categoryChart).toBeVisible();
+    await expect(categoryChart).toContainText(
+      "Category-wise Kaam Allocation"
+    );
+    for (const c of CATEGORY_KAAM) {
+      const legendItem = body.getByTestId(
+        `kaam-category-legend-${c.category}`
+      );
+      await expect(legendItem).toBeVisible();
+      await expect(legendItem).toContainText(c.category);
+      await expect(legendItem).toContainText(String(c.count));
+      await expect(legendItem).toContainText(`${c.percentage}%`);
+    }
 
     // ─── PHASE 3 — Switching type triggers new API call ─────────────
     console.log("[PHASE 3] Switch to Kaam Demand → new API call + content");

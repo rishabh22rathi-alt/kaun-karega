@@ -88,11 +88,22 @@ test("provider respond page — full flow", async ({ page }) => {
   const isSuccess = await successEl.isVisible().catch(() => false);
 
   console.log("\n[Step 5] Success message visible:", isSuccess);
-  console.log("[Step 5] /api/tasks/respond success field:", respondBody ? (respondBody as { success?: boolean }).success : "not captured");
+  // Route through `unknown` so the narrow holds even when TS has
+  // lost track of the closure-assigned union and inferred the
+  // let-binding as `null` at this point in the control-flow graph.
+  const respondShape =
+    respondBody as unknown as { success?: boolean } | null;
+  console.log(
+    "[Step 5] /api/tasks/respond success field:",
+    respondShape ? respondShape.success : "not captured"
+  );
 
   expect(isSuccess, "Success message not shown on page").toBe(true);
   expect(respondBody, "/api/tasks/respond response not captured").not.toBeNull();
-  expect((respondBody as { success?: boolean }).success, `/api/tasks/respond returned success=false. Body: ${JSON.stringify(respondBody)}`).toBe(true);
+  expect(
+    respondShape?.success,
+    `/api/tasks/respond returned success=false. Body: ${JSON.stringify(respondBody)}`
+  ).toBe(true);
 
   console.log("\n✅ PASS: Provider response flow works end to end.");
 });

@@ -1,5 +1,6 @@
 import { adminSupabase } from "../supabase/admin";
 import { appendNotificationLog } from "../notificationLogStore";
+import { phonesEqualLast10 } from "../phone";
 import {
   sendProviderUserRepliedNotification,
   sendUserFirstProviderMessageNotification,
@@ -614,10 +615,14 @@ function buildChatActorForThread(
   thread: ChatThreadRow,
   hint: { actorType?: unknown; senderName?: unknown }
 ): { ok: true; actor: Extract<ChatActor, { ok: true }> } | { ok: false; error: string } {
-  const threadUserPhone10 = normalizePhone10(thread.user_phone);
   const threadProviderId = trimString(thread.provider_id);
 
-  const canBeUser = !!threadUserPhone10 && identity.sessionPhone === threadUserPhone10;
+  // Strict comparator from lib/phone — refuses to authorize when either
+  // side reduces to <10 digits. Defends against the "empty session phone
+  // matches empty thread phone" failure mode if any upstream guard ever
+  // regresses (today the gate above enforces 10 digits, but the strict
+  // check here means a future bug can't silently widen access).
+  const canBeUser = phonesEqualLast10(thread.user_phone, identity.sessionPhone);
   const canBeProvider =
     !!identity.provider &&
     !!threadProviderId &&
@@ -1825,9 +1830,16 @@ function resolveNeedChatActorRole(
 ):
   | { ok: true; role: "poster" | "responder" }
   | { ok: false; error: string } {
-  const sessionPhone = identity.sessionPhone;
-  const isPoster = normalizePhone10(thread.poster_phone) === sessionPhone;
-  const isResponder = normalizePhone10(thread.responder_phone) === sessionPhone;
+  // Use the strict last-10 comparator so an empty session phone or an
+  // empty thread phone cannot match. The upstream identity resolver
+  // already validates `sessionPhone.length === 10`, but pairing every
+  // ownership comparison with `phonesEqualLast10` keeps the guarantee
+  // local to the call site.
+  const isPoster = phonesEqualLast10(thread.poster_phone, identity.sessionPhone);
+  const isResponder = phonesEqualLast10(
+    thread.responder_phone,
+    identity.sessionPhone
+  );
   const hint = trimString(hintRole).toLowerCase();
 
   if (hint === "poster") {

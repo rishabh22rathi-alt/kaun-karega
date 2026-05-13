@@ -65,7 +65,12 @@ const state = {
       (a) => a.CanonicalArea.trim().toLowerCase() === name.trim().toLowerCase()
     );
     if (existing) return { ok: false, error: "Area already exists" };
-    this.areas.push({ CanonicalArea: name.trim(), Active: "yes", Aliases: [] });
+    this.areas.push({
+      CanonicalArea: name.trim(),
+      Active: "yes",
+      Aliases: [],
+      AliasCount: 0,
+    });
     return { ok: true };
   },
 

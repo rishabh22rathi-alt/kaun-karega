@@ -6,6 +6,42 @@ import { ChevronDown } from "lucide-react";
 type ProviderStats = {
   total: number;
   verified: number;
+  // Distinct provider count with at least one open admin-review item
+  // (pending category request, pending custom work-term alias, or
+  // pending provider-sourced area review). The same providers are
+  // excluded from `verified` so the three tiles stay coherent.
+  underReview: number;
+};
+
+type PendingCategoryReviewItem = {
+  kind: "category";
+  requestId: string;
+  requestedCategory: string;
+  createdAt: string | null;
+};
+type PendingWorkTermReviewItem = {
+  kind: "alias";
+  alias: string;
+  canonicalCategory: string;
+  aliasType: string | null;
+  createdAt: string | null;
+};
+type PendingAreaReviewItem = {
+  kind: "area";
+  reviewId: string;
+  rawArea: string;
+  sourceType: string;
+  createdAt: string | null;
+};
+
+type ProviderReviewGroup = {
+  providerId: string;
+  providerName: string;
+  phone: string;
+  eligibleVerified: boolean;
+  pendingCategories: PendingCategoryReviewItem[];
+  pendingWorkTerms: PendingWorkTermReviewItem[];
+  pendingAreas: PendingAreaReviewItem[];
 };
 
 type CategoryRow = {
@@ -40,7 +76,7 @@ type CategoryProvidersResponse = {
 };
 
 type SortMode = "countDesc" | "countAsc" | "nameAsc" | "nameDesc";
-type ActiveBreakdown = "total" | "verified" | null;
+type ActiveBreakdown = "total" | "verified" | "underReview" | null;
 
 const SORT_OPTIONS: { value: SortMode; label: string }[] = [
   { value: "countDesc", label: "Providers (high to low)" },
@@ -109,6 +145,31 @@ export default function ProvidersTab() {
   >(null);
   const [verifiedLoading, setVerifiedLoading] = useState(false);
   const [verifiedError, setVerifiedError] = useState<string | null>(null);
+
+  // Under-review tile state. Loaded lazily on first click (mirrors
+  // the total / verified breakdown lazy-load pattern above). Bumping
+  // `underReviewRefreshKey` re-fetches the grouped list — used after
+  // a successful approve / reject / resolve so the affected provider
+  // either disappears (no more items) or shows the reduced count.
+  const [underReviewProviders, setUnderReviewProviders] = useState<
+    ProviderReviewGroup[] | null
+  >(null);
+  const [underReviewLoading, setUnderReviewLoading] = useState(false);
+  const [underReviewError, setUnderReviewError] = useState<string | null>(null);
+  const [underReviewRefreshKey, setUnderReviewRefreshKey] = useState(0);
+  // Per-provider expand state (one provider row open at a time keeps
+  // the surface scannable on tall lists).
+  const [expandedUnderReviewProvider, setExpandedUnderReviewProvider] =
+    useState<string | null>(null);
+  // Per-item action plumbing — keyed by an action-id string so a
+  // double-click can't fire two approves back-to-back, and an error
+  // message can be surfaced inline next to the item that failed.
+  const [reviewActionInProgress, setReviewActionInProgress] = useState<
+    string | null
+  >(null);
+  const [reviewActionErrors, setReviewActionErrors] = useState<
+    Record<string, string>
+  >({});
 
   const [searchQuery, setSearchQuery] = useState("");
   const [sortMode, setSortMode] = useState<SortMode>("countDesc");
@@ -269,8 +330,195 @@ export default function ProvidersTab() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeBreakdown]);
 
+  // Under-review aggregated list — lazy on first tile click, plus
+  // re-fetched any time underReviewRefreshKey bumps (after a
+  // successful approve / reject / resolve via the existing endpoints).
+  useEffect(() => {
+    if (activeBreakdown !== "underReview") return;
+    let cancelled = false;
+    setUnderReviewLoading(true);
+    setUnderReviewError(null);
+    fetch("/api/admin/providers-under-review")
+      .then((r) => r.json())
+      .then(
+        (res: {
+          ok?: boolean;
+          providers?: ProviderReviewGroup[];
+          totalUnderReview?: number;
+          error?: string;
+        }) => {
+          if (cancelled) return;
+          if (res?.ok && Array.isArray(res.providers)) {
+            setUnderReviewProviders(res.providers);
+          } else {
+            setUnderReviewError(
+              res?.error || "Failed to load providers under review"
+            );
+          }
+        }
+      )
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setUnderReviewError(
+          err instanceof Error ? err.message : "Network error"
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setUnderReviewLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeBreakdown, underReviewRefreshKey]);
+
+  // Action handler used by every approve / reject / resolve button on
+  // the under-review list. Wraps the fetch with the in-progress flag,
+  // surfaces inline errors keyed by `actionKey`, and on success bumps
+  // BOTH the under-review refresh AND the stats refresh so all three
+  // tiles re-align after the lifecycle change.
+  async function runReviewAction(params: {
+    actionKey: string;
+    url: string;
+    body: Record<string, unknown>;
+  }): Promise<void> {
+    setReviewActionInProgress(params.actionKey);
+    setReviewActionErrors((prev) => {
+      if (!(params.actionKey in prev)) return prev;
+      const next = { ...prev };
+      delete next[params.actionKey];
+      return next;
+    });
+    try {
+      const res = await fetch(params.url, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params.body),
+      });
+      const json = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+      };
+      if (!res.ok || !json?.ok) {
+        setReviewActionErrors((prev) => ({
+          ...prev,
+          [params.actionKey]:
+            json?.error || `Action failed (${res.status})`,
+        }));
+        return;
+      }
+      // Trigger a full re-aggregation so the affected provider either
+      // disappears (no more open items) or shows the reduced count.
+      // Stats bump keeps Total / Under Review / Verified coherent.
+      setUnderReviewRefreshKey((v) => v + 1);
+      setStatsRefreshKey((v) => v + 1);
+    } catch (err) {
+      setReviewActionErrors((prev) => ({
+        ...prev,
+        [params.actionKey]:
+          err instanceof Error ? err.message : "Network error",
+      }));
+    } finally {
+      setReviewActionInProgress(null);
+    }
+  }
+
+  function getAdminActor(): { name: string; phone: string } {
+    if (typeof window === "undefined") return { name: "", phone: "" };
+    try {
+      const raw = window.localStorage.getItem("kk_admin_session");
+      if (!raw) return { name: "", phone: "" };
+      const parsed = JSON.parse(raw) as {
+        name?: unknown;
+        phone?: unknown;
+      };
+      return {
+        name: typeof parsed.name === "string" ? parsed.name : "",
+        phone: typeof parsed.phone === "string" ? parsed.phone : "",
+      };
+    } catch {
+      return { name: "", phone: "" };
+    }
+  }
+
+  const handleApproveCategoryRequest = (
+    providerId: string,
+    item: PendingCategoryReviewItem
+  ) => {
+    const actor = getAdminActor();
+    void runReviewAction({
+      actionKey: `cat-approve::${item.requestId}`,
+      url: "/api/kk",
+      body: {
+        action: "approve_category_request",
+        requestId: item.requestId,
+        categoryName: item.requestedCategory,
+        AdminActorName: actor.name,
+        AdminActorPhone: actor.phone,
+        adminActionReason: "",
+      },
+    });
+  };
+  const handleRejectCategoryRequest = (
+    providerId: string,
+    item: PendingCategoryReviewItem
+  ) => {
+    const actor = getAdminActor();
+    void runReviewAction({
+      actionKey: `cat-reject::${item.requestId}`,
+      url: "/api/kk",
+      body: {
+        action: "reject_category_request",
+        requestId: item.requestId,
+        reason: "Rejected by admin",
+        AdminActorName: actor.name,
+        AdminActorPhone: actor.phone,
+      },
+    });
+  };
+  const handleApproveWorkTerm = (
+    providerId: string,
+    item: PendingWorkTermReviewItem
+  ) => {
+    void runReviewAction({
+      actionKey: `alias-approve::${providerId}::${item.alias.toLowerCase()}`,
+      url: "/api/admin/aliases",
+      body: { action: "approve", alias: item.alias },
+    });
+  };
+  const handleRejectWorkTerm = (
+    providerId: string,
+    item: PendingWorkTermReviewItem
+  ) => {
+    void runReviewAction({
+      actionKey: `alias-reject::${providerId}::${item.alias.toLowerCase()}`,
+      url: "/api/admin/aliases",
+      body: { action: "reject", alias: item.alias, reason: "Rejected by admin" },
+    });
+  };
+  const handleResolveAreaReview = (
+    providerId: string,
+    item: PendingAreaReviewItem
+  ) => {
+    // The "map" path requires a canonical_area + alias text the admin
+    // must select — that lives in AreaTab. Here we only expose the
+    // safe "resolve without creating" action so admins can clear the
+    // queue entry for a provider. Promotion-to-alias stays the
+    // AreaTab governance flow.
+    void runReviewAction({
+      actionKey: `area-resolve::${item.reviewId}`,
+      url: "/api/kk",
+      body: {
+        action: "admin_resolve_unmapped_area",
+        reviewId: item.reviewId,
+        resolvedCanonicalArea: "",
+      },
+    });
+  };
+
   const summary = data
-    ? `${data.total.toLocaleString()} total · ${data.verified.toLocaleString()} verified`
+    ? `${data.total.toLocaleString()} total · ${data.underReview.toLocaleString()} under review · ${data.verified.toLocaleString()} verified`
     : "Provider import and verification overview";
 
   const activeRows =
@@ -326,11 +574,13 @@ export default function ProvidersTab() {
     return sorted;
   }, [activeRows, searchQuery, sortMode]);
 
-  const toggleTile = (mode: "total" | "verified") => {
+  const toggleTile = (mode: "total" | "verified" | "underReview") => {
     setActiveBreakdown((prev) => (prev === mode ? null : mode));
     // Collapse any open drilldown when the breakdown mode changes — the
-    // cache survives but the user starts fresh visually.
+    // cache survives but the user starts fresh visually. Also collapse
+    // the per-provider expand on the under-review surface.
     setExpandedKey(null);
+    setExpandedUnderReviewProvider(null);
   };
 
   // Remove a wrongly-mapped provider from a category. Optimistically
@@ -694,12 +944,13 @@ export default function ProvidersTab() {
           )}
           {data && !loading && !error && data.total > 0 && (
             <>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <button
                   type="button"
                   onClick={() => toggleTile("total")}
                   aria-expanded={activeBreakdown === "total"}
                   aria-controls="providers-breakdown"
+                  data-testid="kk-admin-providers-total-tile"
                   className={`rounded-xl border px-4 py-3 text-left shadow-sm transition focus:outline-none focus:ring-2 ${
                     activeBreakdown === "total"
                       ? "border-slate-500 bg-slate-100 ring-2 ring-slate-400"
@@ -726,9 +977,42 @@ export default function ProvidersTab() {
                 </button>
                 <button
                   type="button"
+                  onClick={() => toggleTile("underReview")}
+                  aria-expanded={activeBreakdown === "underReview"}
+                  aria-controls="providers-breakdown"
+                  data-testid="kk-admin-providers-under-review-tile"
+                  className={`rounded-xl border px-4 py-3 text-left shadow-sm transition focus:outline-none focus:ring-2 ${
+                    activeBreakdown === "underReview"
+                      ? "border-amber-500 bg-amber-100 ring-2 ring-amber-400"
+                      : "border-amber-300 bg-amber-50 hover:border-amber-400 hover:bg-amber-100 hover:shadow focus:ring-amber-400"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-[11px] font-bold uppercase tracking-wider text-amber-800">
+                      Providers Under Review / Approval
+                    </p>
+                    <ChevronDown
+                      aria-hidden="true"
+                      className={`h-4 w-4 shrink-0 text-amber-700 transition-transform ${
+                        activeBreakdown === "underReview"
+                          ? "rotate-180"
+                          : "rotate-0"
+                      }`}
+                    />
+                  </div>
+                  <p className="mt-1 text-2xl font-bold text-amber-900">
+                    {data.underReview.toLocaleString()}
+                  </p>
+                  <p className="mt-1 text-[10px] text-amber-800/80">
+                    Category, work-term, or area changes waiting for admin
+                  </p>
+                </button>
+                <button
+                  type="button"
                   onClick={() => toggleTile("verified")}
                   aria-expanded={activeBreakdown === "verified"}
                   aria-controls="providers-breakdown"
+                  data-testid="kk-admin-providers-verified-tile"
                   className={`rounded-xl border px-4 py-3 text-left shadow-sm transition focus:outline-none focus:ring-2 ${
                     activeBreakdown === "verified"
                       ? "border-[#003d20]/60 bg-green-200/70 ring-2 ring-[#003d20]/40"
@@ -750,12 +1034,12 @@ export default function ProvidersTab() {
                     {data.verified.toLocaleString()}
                   </p>
                   <p className="mt-1 text-[10px] text-slate-500">
-                    Registered + login last 30 days
+                    Active category + login last 30 days (excludes under review)
                   </p>
                 </button>
               </div>
 
-              {activeBreakdown && (
+              {(activeBreakdown === "total" || activeBreakdown === "verified") && (
                 <div id="providers-breakdown" className="mt-5">
                   <p className="text-sm font-semibold text-slate-900">
                     {activeTitle}
@@ -1014,6 +1298,343 @@ export default function ProvidersTab() {
                             </tbody>
                           </table>
                         </div>
+                      </div>
+                    )}
+                </div>
+              )}
+
+              {activeBreakdown === "underReview" && (
+                <div
+                  id="providers-breakdown"
+                  className="mt-5"
+                  data-testid="kk-admin-providers-under-review-panel"
+                >
+                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                    <p className="text-sm font-semibold text-slate-900">
+                      Providers Under Review / Approval
+                    </p>
+                    <p className="text-[11px] text-slate-500">
+                      Approve, reject, or resolve items below — actions use
+                      the same lifecycle endpoints as the Category and Area
+                      governance tabs.
+                    </p>
+                  </div>
+
+                  {underReviewLoading && (
+                    <p className="mt-3 text-sm text-slate-500">
+                      Loading providers under review…
+                    </p>
+                  )}
+                  {underReviewError && !underReviewLoading && (
+                    <p className="mt-3 text-sm text-red-600">
+                      Error: {underReviewError}
+                    </p>
+                  )}
+                  {underReviewProviders &&
+                    !underReviewLoading &&
+                    !underReviewError &&
+                    underReviewProviders.length === 0 && (
+                      <p className="mt-3 rounded-lg border border-slate-200 bg-white px-3 py-4 text-sm text-slate-500">
+                        No providers waiting for review right now.
+                      </p>
+                    )}
+
+                  {underReviewProviders &&
+                    !underReviewLoading &&
+                    !underReviewError &&
+                    underReviewProviders.length > 0 && (
+                      <div className="mt-3 space-y-2">
+                        {underReviewProviders.map((group) => {
+                          const isExpanded =
+                            expandedUnderReviewProvider === group.providerId;
+                          const catCount = group.pendingCategories.length;
+                          const aliasCount = group.pendingWorkTerms.length;
+                          const areaCount = group.pendingAreas.length;
+                          return (
+                            <div
+                              key={group.providerId}
+                              data-testid={`kk-admin-under-review-${group.providerId}`}
+                              className="overflow-hidden rounded-xl border border-amber-200 bg-white"
+                            >
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setExpandedUnderReviewProvider((prev) =>
+                                    prev === group.providerId
+                                      ? null
+                                      : group.providerId
+                                  )
+                                }
+                                aria-expanded={isExpanded}
+                                className="flex w-full items-start justify-between gap-3 px-3 py-3 text-left transition hover:bg-amber-50/60"
+                              >
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <p className="truncate font-semibold text-slate-900">
+                                      {group.providerName ||
+                                        group.providerId ||
+                                        "Provider"}
+                                    </p>
+                                    <span
+                                      className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                                        group.eligibleVerified
+                                          ? "border-[#003d20]/40 bg-green-100 text-[#003d20]"
+                                          : "border-slate-300 bg-slate-100 text-slate-600"
+                                      }`}
+                                    >
+                                      {group.eligibleVerified
+                                        ? "Eligible Verified"
+                                        : "Unverified"}
+                                    </span>
+                                  </div>
+                                  <p className="mt-0.5 font-mono text-xs text-slate-600">
+                                    {group.phone || "—"}
+                                  </p>
+                                  <div className="mt-2 flex flex-wrap gap-1.5">
+                                    {catCount > 0 && (
+                                      <span className="inline-flex items-center rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800">
+                                        Categories · {catCount}
+                                      </span>
+                                    )}
+                                    {aliasCount > 0 && (
+                                      <span className="inline-flex items-center rounded-full border border-blue-300 bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-800">
+                                        Work Terms · {aliasCount}
+                                      </span>
+                                    )}
+                                    {areaCount > 0 && (
+                                      <span className="inline-flex items-center rounded-full border border-indigo-300 bg-indigo-50 px-2 py-0.5 text-[11px] font-semibold text-indigo-800">
+                                        Areas · {areaCount}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                                <ChevronDown
+                                  aria-hidden="true"
+                                  className={`mt-1 h-4 w-4 shrink-0 text-amber-700 transition-transform ${
+                                    isExpanded ? "rotate-180" : "rotate-0"
+                                  }`}
+                                />
+                              </button>
+
+                              {isExpanded && (
+                                <div className="border-t border-amber-200 bg-amber-50/40 px-3 py-3">
+                                  {catCount > 0 && (
+                                    <section className="mb-3">
+                                      <p className="text-[11px] font-bold uppercase tracking-wider text-slate-600">
+                                        Pending categories
+                                      </p>
+                                      <ul className="mt-1 space-y-1.5">
+                                        {group.pendingCategories.map((item) => {
+                                          const approveKey = `cat-approve::${item.requestId}`;
+                                          const rejectKey = `cat-reject::${item.requestId}`;
+                                          const err =
+                                            reviewActionErrors[approveKey] ||
+                                            reviewActionErrors[rejectKey];
+                                          return (
+                                            <li
+                                              key={item.requestId}
+                                              className="flex flex-wrap items-center gap-2 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs"
+                                            >
+                                              <span className="font-semibold text-slate-800">
+                                                {item.requestedCategory}
+                                              </span>
+                                              <span className="ml-auto inline-flex flex-wrap gap-1.5">
+                                                <button
+                                                  type="button"
+                                                  onClick={() =>
+                                                    handleApproveCategoryRequest(
+                                                      group.providerId,
+                                                      item
+                                                    )
+                                                  }
+                                                  disabled={
+                                                    reviewActionInProgress ===
+                                                    approveKey
+                                                  }
+                                                  className="rounded border border-[#003d20]/40 px-2 py-1 text-[11px] font-semibold text-[#003d20] hover:bg-green-50 disabled:opacity-50"
+                                                >
+                                                  {reviewActionInProgress ===
+                                                  approveKey
+                                                    ? "…"
+                                                    : "Approve"}
+                                                </button>
+                                                <button
+                                                  type="button"
+                                                  onClick={() =>
+                                                    handleRejectCategoryRequest(
+                                                      group.providerId,
+                                                      item
+                                                    )
+                                                  }
+                                                  disabled={
+                                                    reviewActionInProgress ===
+                                                    rejectKey
+                                                  }
+                                                  className="rounded border border-orange-300 px-2 py-1 text-[11px] font-semibold text-orange-700 hover:bg-orange-50 disabled:opacity-50"
+                                                >
+                                                  {reviewActionInProgress ===
+                                                  rejectKey
+                                                    ? "…"
+                                                    : "Reject"}
+                                                </button>
+                                              </span>
+                                              {err && (
+                                                <p className="basis-full text-[11px] text-red-700">
+                                                  {err}
+                                                </p>
+                                              )}
+                                            </li>
+                                          );
+                                        })}
+                                      </ul>
+                                    </section>
+                                  )}
+
+                                  {aliasCount > 0 && (
+                                    <section className="mb-3">
+                                      <p className="text-[11px] font-bold uppercase tracking-wider text-slate-600">
+                                        Pending work terms / aliases
+                                      </p>
+                                      <ul className="mt-1 space-y-1.5">
+                                        {group.pendingWorkTerms.map((item) => {
+                                          const aliasKey = item.alias.toLowerCase();
+                                          const approveKey = `alias-approve::${group.providerId}::${aliasKey}`;
+                                          const rejectKey = `alias-reject::${group.providerId}::${aliasKey}`;
+                                          const err =
+                                            reviewActionErrors[approveKey] ||
+                                            reviewActionErrors[rejectKey];
+                                          return (
+                                            <li
+                                              key={`${group.providerId}-${aliasKey}`}
+                                              className="flex flex-wrap items-center gap-2 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs"
+                                            >
+                                              <span className="font-semibold text-slate-800">
+                                                {item.alias}
+                                              </span>
+                                              <span className="text-slate-500">
+                                                → {item.canonicalCategory || "—"}
+                                              </span>
+                                              <span className="ml-auto inline-flex flex-wrap gap-1.5">
+                                                <button
+                                                  type="button"
+                                                  onClick={() =>
+                                                    handleApproveWorkTerm(
+                                                      group.providerId,
+                                                      item
+                                                    )
+                                                  }
+                                                  disabled={
+                                                    reviewActionInProgress ===
+                                                    approveKey
+                                                  }
+                                                  className="rounded border border-[#003d20]/40 px-2 py-1 text-[11px] font-semibold text-[#003d20] hover:bg-green-50 disabled:opacity-50"
+                                                >
+                                                  {reviewActionInProgress ===
+                                                  approveKey
+                                                    ? "…"
+                                                    : "Approve"}
+                                                </button>
+                                                <button
+                                                  type="button"
+                                                  onClick={() =>
+                                                    handleRejectWorkTerm(
+                                                      group.providerId,
+                                                      item
+                                                    )
+                                                  }
+                                                  disabled={
+                                                    reviewActionInProgress ===
+                                                    rejectKey
+                                                  }
+                                                  className="rounded border border-orange-300 px-2 py-1 text-[11px] font-semibold text-orange-700 hover:bg-orange-50 disabled:opacity-50"
+                                                >
+                                                  {reviewActionInProgress ===
+                                                  rejectKey
+                                                    ? "…"
+                                                    : "Reject"}
+                                                </button>
+                                              </span>
+                                              {err && (
+                                                <p className="basis-full text-[11px] text-red-700">
+                                                  {err}
+                                                </p>
+                                              )}
+                                            </li>
+                                          );
+                                        })}
+                                      </ul>
+                                    </section>
+                                  )}
+
+                                  {areaCount > 0 && (
+                                    <section>
+                                      <p className="text-[11px] font-bold uppercase tracking-wider text-slate-600">
+                                        Pending areas / regions
+                                      </p>
+                                      <ul className="mt-1 space-y-1.5">
+                                        {group.pendingAreas.map((item) => {
+                                          const resolveKey = `area-resolve::${item.reviewId}`;
+                                          const err =
+                                            reviewActionErrors[resolveKey];
+                                          return (
+                                            <li
+                                              key={item.reviewId}
+                                              className="flex flex-wrap items-center gap-2 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs"
+                                            >
+                                              <span className="font-semibold text-slate-800">
+                                                {item.rawArea || "—"}
+                                              </span>
+                                              <span className="text-[10px] uppercase tracking-wide text-slate-500">
+                                                {item.sourceType ===
+                                                "provider_register"
+                                                  ? "from registration"
+                                                  : item.sourceType ===
+                                                      "provider_update"
+                                                    ? "from edit"
+                                                    : item.sourceType}
+                                              </span>
+                                              <span className="ml-auto inline-flex flex-wrap gap-1.5">
+                                                <button
+                                                  type="button"
+                                                  onClick={() =>
+                                                    handleResolveAreaReview(
+                                                      group.providerId,
+                                                      item
+                                                    )
+                                                  }
+                                                  disabled={
+                                                    reviewActionInProgress ===
+                                                    resolveKey
+                                                  }
+                                                  className="rounded border border-slate-400 px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+                                                  title="Mark the area review resolved without creating an alias. To promote an area to a canonical alias use the Area tab."
+                                                >
+                                                  {reviewActionInProgress ===
+                                                  resolveKey
+                                                    ? "…"
+                                                    : "Resolve"}
+                                                </button>
+                                              </span>
+                                              {err && (
+                                                <p className="basis-full text-[11px] text-red-700">
+                                                  {err}
+                                                </p>
+                                              )}
+                                            </li>
+                                          );
+                                        })}
+                                      </ul>
+                                      <p className="mt-1 text-[10px] text-slate-500">
+                                        Promote-to-alias actions remain in the
+                                        Area tab.
+                                      </p>
+                                    </section>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
                 </div>

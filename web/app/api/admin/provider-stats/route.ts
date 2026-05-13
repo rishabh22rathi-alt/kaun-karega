@@ -2,24 +2,35 @@ import { NextResponse } from "next/server";
 
 import { requireAdminSession } from "@/lib/adminAuth";
 import { adminSupabase } from "@/lib/supabase/admin";
+import { buildProvidersUnderReview } from "@/lib/admin/adminProviderReview";
 
 // Top-level provider tile counts for the Admin Providers tab.
 //
-// Total      Exact `providers` row count. Independent of category state —
-//            archive/disable never deletes provider rows, so the tile
-//            stays consistent with "providers we know about".
+// Total       Exact `providers` row count. Independent of category state —
+//             archive/disable never deletes provider rows, so the tile
+//             stays consistent with "providers we know about".
 //
-// Verified   Distinct providers that satisfy BOTH:
-//              1. Phone intersection with profiles.last_login_at within
-//                 the past 30 days (the original verified rule).
-//              2. At least one provider_services row whose normalized
-//                 category resolves to a currently-active categories row.
+// UnderReview Distinct providers with at least one open review item
+//             across pending_category_requests, category_aliases
+//             (active=false, submitted_by_provider_id), and
+//             area_review_queue (provider_register / provider_update
+//             sources). Sourced from `buildProvidersUnderReview`, the
+//             same helper that powers /api/admin/providers-under-review,
+//             so both routes always agree.
 //
-// The category gate was added to align this number with what the
-// Verified Providers by Category breakdown displays — that breakdown
-// only counts (provider, active_category) pairs, so an archived-only
-// provider drops out of the breakdown. Without the same gate here the
-// tile would over-report.
+// Verified    Distinct providers that satisfy ALL THREE:
+//               1. Phone intersection with profiles.last_login_at within
+//                  the past 30 days (the original verified rule).
+//               2. At least one provider_services row whose normalized
+//                  category resolves to a currently-active categories row.
+//               3. NOT present in the under-review set above.
+//
+// Verified is computed fresh with the under-review exclusion applied
+// during the intersection (rather than subtracting blindly afterwards)
+// — a provider currently in the under-review queue does not count as
+// verified, but they DO still count in Total, and they return to
+// verified automatically once their pending items are approved /
+// rejected / resolved (no manual flag flip).
 //
 // All queries paginate via .range() to bypass Supabase's 1000-row cap.
 
@@ -161,10 +172,36 @@ export async function GET(request: Request) {
     providersWithActiveServiceIds.add(id);
   }
 
+  // Under-review provider set. Computed once via the same helper that
+  // powers /api/admin/providers-under-review so both endpoints can't
+  // drift. Soft-fail if the helper throws (e.g. transient DB error) —
+  // verified would otherwise spuriously inflate.
+  let underReviewSet = new Set<string>();
+  try {
+    const review = await buildProvidersUnderReview();
+    underReviewSet = review.providerIdSet;
+  } catch (err) {
+    console.warn(
+      "[provider-stats] under-review aggregation failed; treating as empty",
+      err instanceof Error ? err.message : err
+    );
+  }
+  const underReview = underReviewSet.size;
+
+  // Verified — compute fresh with the under-review exclusion baked in.
+  // We don't subtract blindly from a pre-counted value; instead we
+  // walk verifiedByPhoneIds once and apply both gates (active service
+  // category AND not under review) so the resulting count is always
+  // consistent with the intersection.
   let verified = 0;
   for (const id of verifiedByPhoneIds) {
-    if (providersWithActiveServiceIds.has(id)) verified += 1;
+    if (!providersWithActiveServiceIds.has(id)) continue;
+    if (underReviewSet.has(id)) continue;
+    verified += 1;
   }
 
-  return NextResponse.json({ ok: true, data: { total, verified } });
+  return NextResponse.json({
+    ok: true,
+    data: { total, verified, underReview },
+  });
 }

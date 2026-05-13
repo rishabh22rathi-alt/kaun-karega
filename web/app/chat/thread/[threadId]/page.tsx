@@ -196,10 +196,39 @@ export default function ChatThreadPage() {
       }
     };
 
+    // Single helper used by every failure path — initial fetch, JSON
+    // parse, ok:false, missing-thread, missing-actor, and the 5s
+    // poll. Wipes ALL chat-derived state so a previously-rendered
+    // authorized thread cannot leak across route changes, and pins
+    // the denial UI as the only visible branch. The server already
+    // collapses "unauthorized for this thread" and "thread doesn't
+    // exist" into a single "Thread not found" response so existence
+    // isn't leaked; the client mirrors that by showing one denial
+    // UI for either case rather than echoing the raw server text.
+    const denyAndClear = (): void => {
+      setAccessDenied(true);
+      setError("");
+      setActorType(null);
+      setActorPhone("");
+      setThread(null);
+      setMessages([]);
+    };
+
     const load = async () => {
       setLoading(true);
       setError("");
       setAccessDenied(false);
+      // Clear chat state up-front. Without this, navigating from an
+      // authorized thread to an unauthorized one keeps the previous
+      // thread / messages / actor in memory while the new fetch is
+      // in flight. The `loading=true` guard above blocks visible
+      // render today, but clearing here is defense-in-depth so a
+      // future render branch can never accidentally surface stale
+      // bubbles, composer, participant names, or previews.
+      setActorType(null);
+      setActorPhone("");
+      setThread(null);
+      setMessages([]);
 
       try {
         // First load uses Stage-1 auto-mode: no ActorType, just SessionPhone.
@@ -214,21 +243,40 @@ export default function ChatThreadPage() {
             SessionPhone: phone,
           }),
         });
-        const initialData = (await initialRes.json()) as ChatMessagesResponse;
-
-        if (!initialRes.ok || !initialData.ok) {
-          throw new Error(initialData.error || "Unable to load chat thread.");
+        let initialData: ChatMessagesResponse = {};
+        try {
+          initialData = (await initialRes.json()) as ChatMessagesResponse;
+        } catch {
+          initialData = {};
         }
 
+        // Any server-rejected response — 401, 403, 404, 5xx, or 200
+        // with ok:false — is treated as denial. The page MUST NOT
+        // render chat bubbles, composer, or participant identity
+        // for a thread it failed to authorize against.
+        if (!initialRes.ok || !initialData.ok) {
+          if (ignore) return;
+          denyAndClear();
+          return;
+        }
+
+        // Even an ok:true response is denied if the server didn't
+        // resolve an actor or didn't include a thread — both signal
+        // that authorization wasn't conclusively confirmed.
         const resolved = initialData.actorType;
-        if (resolved !== "user" && resolved !== "provider") {
-          throw new Error("Unable to determine chat actor for this thread.");
+        if (
+          (resolved !== "user" && resolved !== "provider") ||
+          !initialData.thread
+        ) {
+          if (ignore) return;
+          denyAndClear();
+          return;
         }
 
         if (ignore) return;
         setActorType(resolved);
         setActorPhone(phone);
-        setThread(initialData.thread || null);
+        setThread(initialData.thread);
         setMessages(Array.isArray(initialData.messages) ? initialData.messages : []);
 
         // Mark read once on initial load using the resolved actor.
@@ -246,17 +294,27 @@ export default function ChatThreadPage() {
         });
 
         intervalId = setInterval(() => {
-          void loadMessages(resolved, phone, true).catch(() => undefined);
+          // Poll failure path now matches the initial-load path:
+          // any failure (auth state changed, thread closed, network
+          // blip) collapses to denial + stops the interval. Stale
+          // bubbles never linger past a failure.
+          void loadMessages(resolved, phone, true).catch(() => {
+            if (ignore) return;
+            denyAndClear();
+            if (intervalId) {
+              clearInterval(intervalId);
+              intervalId = null;
+            }
+          });
         }, 5000);
       } catch (err) {
         if (ignore) return;
-        const message = err instanceof Error ? err.message : "Unable to load chat thread.";
-        if (message.toLowerCase().includes("access denied")) {
-          setAccessDenied(true);
-          setError("");
-        } else {
-          setError(message);
-        }
+        // Network / unexpected throw — can't verify authorization,
+        // therefore must not render chat. The raw error string is
+        // intentionally NOT surfaced (it can carry server-side hints
+        // that distinguish "doesn't exist" from "unauthorized").
+        void err;
+        denyAndClear();
       } finally {
         if (!ignore) setLoading(false);
       }

@@ -1,7 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, X } from "lucide-react";
+import UnreadBadge, { type UnreadIndicator } from "./UnreadBadge";
+
+type UsersTabProps = {
+  unread?: UnreadIndicator | null;
+  onMarkRead?: () => void;
+};
 
 // Users accordion for /admin/dashboard.
 //
@@ -43,8 +49,21 @@ function formatDate(value: string | null): string {
   }
 }
 
-export default function UsersTab() {
+export default function UsersTab({
+  unread,
+  onMarkRead,
+}: UsersTabProps = {}) {
+  const markReadFiredRef = useRef(false);
   const [isOpen, setIsOpen] = useState(false);
+  useEffect(() => {
+    if (!isOpen) {
+      markReadFiredRef.current = false;
+      return;
+    }
+    if (markReadFiredRef.current) return;
+    markReadFiredRef.current = true;
+    onMarkRead?.();
+  }, [isOpen, onMarkRead]);
   const [users, setUsers] = useState<UserRow[] | null>(null);
   const [totalUsers, setTotalUsers] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
@@ -125,7 +144,10 @@ export default function UsersTab() {
         className="flex w-full items-center justify-between gap-3 px-5 py-4 text-left transition hover:bg-slate-50"
       >
         <div className="min-w-0">
-          <p className="text-base font-semibold text-slate-900">Users</p>
+          <p className="flex items-center text-base font-semibold text-slate-900">
+            Users
+            <UnreadBadge unread={unread} testId="users-unread-badge" />
+          </p>
           <p className="mt-0.5 text-xs text-slate-500">{summary}</p>
         </div>
         <ChevronDown

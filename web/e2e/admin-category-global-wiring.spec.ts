@@ -165,12 +165,16 @@ test.beforeAll(async ({ request }) => {
     headers: { "content-type": "application/json" },
     data: { phone: ADMIN_PHONE },
   });
-  let json: { ok?: boolean; admin?: unknown; error?: string } | null = null;
+  let rawJson: unknown = null;
   try {
-    json = (await verifyRes.json()) as typeof json;
+    rawJson = await verifyRes.json();
   } catch {
     /* */
   }
+  const json =
+    rawJson && typeof rawJson === "object"
+      ? (rawJson as { ok?: boolean; admin?: unknown; error?: string })
+      : null;
   if (verifyRes.ok() && json?.ok === true) {
     adminAccessOk = true;
     return;

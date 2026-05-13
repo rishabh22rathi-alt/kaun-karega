@@ -207,7 +207,10 @@ test.describe("Provider edit: Save Changes enable + region count validation", ()
     await save.click();
 
     await expect.poll(() => captured, { timeout: 5_000 }).not.toBeNull();
-    const areas = (captured as { areas?: string[] })?.areas ?? [];
+    // Route through `unknown` so the narrow survives even when TS
+    // has collapsed the let-binding to `null` via closure inference.
+    const areas =
+      (captured as unknown as { areas?: string[] } | null)?.areas ?? [];
     expect(areas).toEqual(expect.arrayContaining([QA_AREA]));
   });
 
@@ -232,7 +235,10 @@ test.describe("Provider edit: Save Changes enable + region count validation", ()
     await save.click();
 
     await expect.poll(() => captured, { timeout: 5_000 }).not.toBeNull();
-    const areas = (captured as { areas?: string[] })?.areas ?? [];
+    // Route through `unknown` so the narrow survives even when TS
+    // has collapsed the let-binding to `null` via closure inference.
+    const areas =
+      (captured as unknown as { areas?: string[] } | null)?.areas ?? [];
     expect(areas).toEqual(
       expect.arrayContaining([QA_AREA, "Shastri Nagar", "Ratanada"])
     );

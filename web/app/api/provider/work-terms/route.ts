@@ -14,6 +14,19 @@ import { getAuthSession } from "@/lib/auth";
 // category_aliases with active=false. Once an admin approves a custom term,
 // it becomes a live chip and the provider can tap it to save it here.
 //
+// Approval gate (POST) — added in the provider-alias-approval slice:
+//   The endpoint no longer trusts the client to send only approved terms.
+//   Before insert, the alias text must EITHER equal the canonical category
+//   name itself (the provider tapping the canonical chip) OR resolve to an
+//   ACTIVE row in `category_aliases` (`active=true`) mapped to the same
+//   canonical the provider offers. Pending (active=false) rows return
+//   409 ALIAS_PENDING_REVIEW; unknown alias text returns
+//   409 ALIAS_NOT_APPROVED; an active alias under a different canonical
+//   returns 409 ALIAS_CATEGORY_MISMATCH. Behaviour-preserving for the
+//   normal UI flow (chips loaded from the active alias list pass the
+//   check); a forged or stale-tab payload now fails closed instead of
+//   persisting an unapproved work term.
+//
 // Auth: cookie session → phone → providers.provider_id (same pattern as
 // /api/provider/notifications and /api/provider/dashboard-profile).
 
@@ -23,6 +36,26 @@ function normalizePhone10(value: string): string {
   const digits = onlyDigits(value);
   if (!digits) return "";
   return digits.length > 10 ? digits.slice(-10) : digits;
+}
+
+// Canonical-category equality key. The provider_services / categories /
+// category_aliases tables all store their text as the admin entered it,
+// which means a stray double-space, trailing whitespace, or mixed casing
+// in the client payload would defeat a naive `.ilike("category", value)`
+// equality. We collapse the three axes the human eye treats as identical:
+//   - trim leading/trailing whitespace
+//   - lowercase
+//   - replace any run of whitespace (incl. tabs / newlines) with a single
+//     space
+// Comparison is via this key. The original `category` string from
+// provider_services is still used verbatim when inserting into
+// provider_work_terms so the canonical casing the provider actually has
+// is preserved on the persisted row.
+function normalizeCategoryKey(value: unknown): string {
+  return String(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
 }
 
 async function resolveProviderIdFromCookies(
@@ -124,24 +157,89 @@ export async function POST(request: Request) {
     );
   }
 
-  // Provider must actually offer the canonical they're tagging under. This
-  // mirrors the guard on /api/provider/aliases and prevents a provider from
-  // claiming work terms for categories they don't have.
-  const { data: psRow, error: psErr } = await adminSupabase
+  // Provider must actually offer the canonical they're tagging under. We
+  // fetch ALL provider_services rows for the provider (no per-row text
+  // filter) and match in JS using normalizeCategoryKey so whitespace and
+  // casing drift between the client payload, the canonical row, and the
+  // provider_services row don't trigger a false PROVIDER_DOES_NOT_OFFER_-
+  // CATEGORY. The original DB string is preserved for the persisted
+  // work-term row.
+  const { data: psRows, error: psErr } = await adminSupabase
     .from("provider_services")
     .select("category")
-    .eq("provider_id", providerId)
-    .ilike("category", canonicalRaw)
-    .maybeSingle();
+    .eq("provider_id", providerId);
   if (psErr) {
     console.error("[provider/work-terms POST] ps lookup failed", psErr.message);
     return NextResponse.json({ ok: false, error: "DB_ERROR" }, { status: 500 });
   }
-  if (!psRow) {
+  const canonicalKey = normalizeCategoryKey(canonicalRaw);
+  const providerCategories = (psRows || []).map((row) => ({
+    raw: String((row as { category?: unknown }).category || ""),
+    key: normalizeCategoryKey((row as { category?: unknown }).category),
+  }));
+  const matchedCategory = providerCategories.find(
+    (entry) => entry.key === canonicalKey && entry.key.length > 0
+  );
+  if (!matchedCategory) {
+    // Safe debug — no phone, no PII. Helps trace future drift between
+    // what the client sends and what provider_services holds.
+    console.warn("[provider/work-terms POST] PROVIDER_DOES_NOT_OFFER_CATEGORY", {
+      providerId,
+      requestedCanonical: canonicalRaw,
+      normalizedRequestedKey: canonicalKey,
+      providerOfferKeys: providerCategories.map((c) => c.key),
+    });
     return NextResponse.json(
       { ok: false, error: "PROVIDER_DOES_NOT_OFFER_CATEGORY" },
       { status: 403 }
     );
+  }
+  const canonicalAsStored = matchedCategory.raw.trim();
+
+  // Approval gate. The alias is allowed ONLY when:
+  //   (a) its text equals the canonical category name itself (the provider
+  //       tapping the canonical chip), OR
+  //   (b) it resolves to an ACTIVE row in `category_aliases` whose
+  //       canonical_category equals the canonical the provider offers.
+  //
+  // Both comparisons use normalizeCategoryKey so the same whitespace /
+  // casing tolerance applies. The alias lookup itself stays case-
+  // insensitive via .ilike, and the row's canonical_category is then
+  // normalised in JS for the cross-canonical check.
+  const aliasKey = normalizeCategoryKey(aliasRaw);
+  const isCanonicalSelf = aliasKey === canonicalKey;
+  if (!isCanonicalSelf) {
+    const { data: aliasRow, error: aliasLookupErr } = await adminSupabase
+      .from("category_aliases")
+      .select("alias, canonical_category, active")
+      .ilike("alias", aliasRaw)
+      .maybeSingle();
+    if (aliasLookupErr) {
+      console.error(
+        "[provider/work-terms POST] alias lookup failed",
+        aliasLookupErr.message
+      );
+      return NextResponse.json({ ok: false, error: "DB_ERROR" }, { status: 500 });
+    }
+    if (!aliasRow) {
+      return NextResponse.json(
+        { ok: false, error: "ALIAS_NOT_APPROVED" },
+        { status: 409 }
+      );
+    }
+    if (aliasRow.active !== true) {
+      return NextResponse.json(
+        { ok: false, error: "ALIAS_PENDING_REVIEW" },
+        { status: 409 }
+      );
+    }
+    const aliasCanonicalKey = normalizeCategoryKey(aliasRow.canonical_category);
+    if (aliasCanonicalKey !== canonicalKey) {
+      return NextResponse.json(
+        { ok: false, error: "ALIAS_CATEGORY_MISMATCH" },
+        { status: 409 }
+      );
+    }
   }
 
   // Idempotent: if a row already exists for (provider_id, lower(alias)),
@@ -166,7 +264,11 @@ export async function POST(request: Request) {
     .insert({
       provider_id: providerId,
       alias: aliasRaw,
-      canonical_category: psRow.category, // canonical casing from provider_services
+      // Preserve the canonical casing from provider_services (the value
+      // the admin / approval pipeline wrote there). The matched row is
+      // resolved via the normalised key, but the inserted text keeps the
+      // original spelling so downstream displays remain consistent.
+      canonical_category: canonicalAsStored,
     });
   if (insertErr) {
     console.error(
