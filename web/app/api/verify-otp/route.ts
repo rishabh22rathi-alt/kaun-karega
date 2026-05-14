@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { adminSupabase } from "@/lib/supabase/admin";
 import { setAuthSessionCookie } from "@/lib/auth";
 import { checkAdminByPhone } from "@/lib/adminAuth";
+import { bumpSessionVersion } from "@/lib/sessionVersion";
 
 export const runtime = "nodejs";
 
@@ -120,6 +121,28 @@ export async function POST(request: Request) {
     // ignore — isAdmin stays false
   }
 
+  // Single-active-session: atomically bump profiles.session_version for
+  // this phone BEFORE setting the cookie. Any previously issued cookie
+  // for the same phone now carries a stale `sver` and will be rejected
+  // by getAuthSession({ cookie }) on its next protected request.
+  const newSessionVersion = await bumpSessionVersion(verifiedPhone);
+  if (newSessionVersion === null) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error:
+          "Failed to register session. Please try again.",
+      },
+      { status: 500 }
+    );
+  }
+
+  // Per-login UUID. Diagnostic only; no security check depends on it.
+  const sid =
+    typeof globalThis.crypto?.randomUUID === "function"
+      ? globalThis.crypto.randomUUID()
+      : undefined;
+
   const response = NextResponse.json({
     ok: true,
     phone: verifiedPhone,
@@ -131,6 +154,8 @@ export async function POST(request: Request) {
     phone: verifiedPhone,
     verified: true,
     createdAt: Date.now(),
+    sver: newSessionVersion,
+    ...(sid ? { sid } : {}),
   });
   if (!cookieSet) {
     return NextResponse.json(

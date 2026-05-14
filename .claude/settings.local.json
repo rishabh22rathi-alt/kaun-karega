@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx playwright:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npm run:*)",
+      "Bash(echo \"Dev server PID: $!\")",
+      "Bash(curl -s http://localhost:3000 -o /dev/null -w \"%{http_code}\")",
+      "Bash(grep -v \"//.*TODO\\\\|//.*FIXME\")",
+      "Bash(ls /c/Users/kaunk/OneDrive/Desktop/kaun-karega/web/*.js /c/Users/kaunk/OneDrive/Desktop/kaun-karega/web/*.gs)"
+    ]
+  }
+}

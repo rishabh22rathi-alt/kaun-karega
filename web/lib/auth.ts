@@ -32,6 +32,20 @@ export type AuthSession = {
   phone: string;
   verified: true;
   createdAt: number;
+  /**
+   * Snapshot of `profiles.session_version` at the moment this cookie was
+   * issued. Server-side guards reject the cookie when this no longer
+   * matches the row (i.e. a newer device has logged in). Optional for
+   * backward compatibility: cookies minted before the single-active-
+   * session feature carry no `sver` and are honoured as legacy until
+   * the user re-authenticates.
+   */
+  sver?: number;
+  /**
+   * Per-login UUID. Diagnostic only — no security check depends on it.
+   * Useful for log correlation when investigating "why was I kicked out".
+   */
+  sid?: string;
 };
 
 const COOKIE_AUTH = "kk_auth_session";
@@ -233,16 +247,26 @@ export async function verifySignedSessionCookieValue(
   ) {
     return null;
   }
-  const session = parsed as AuthSession;
+  const session = parsed as AuthSession & {
+    sver?: unknown;
+    sid?: unknown;
+  };
   const now = Date.now();
   if (session.createdAt > now + FUTURE_SKEW_TOLERANCE_MS) return null;
   if (now - session.createdAt > SESSION_MAX_AGE_MS) return null;
 
-  return {
+  const out: AuthSession = {
     phone: session.phone,
     verified: true,
     createdAt: session.createdAt,
   };
+  if (typeof session.sver === "number" && Number.isFinite(session.sver)) {
+    out.sver = session.sver;
+  }
+  if (typeof session.sid === "string" && session.sid.length > 0) {
+    out.sid = session.sid;
+  }
+  return out;
 }
 
 // ─── Public API: getAuthSession (overloaded) ─────────────────────────────────
@@ -256,15 +280,26 @@ export function getAuthSession(): AuthSession | null;
 /**
  * Server overload — async — verifies the signed `kk_auth_session` cookie
  * pulled from the request's Cookie header.
+ *
+ * `validateVersion` (default true) additionally checks the cookie's `sver`
+ * against `profiles.session_version` in Supabase, rejecting cookies that
+ * a newer device login has invalidated. Pass false ONLY for diagnostic /
+ * low-trust paths (e.g. the legacy logout endpoint which must work even
+ * for stale cookies). Cookies that carry no `sver` (issued before this
+ * feature shipped) bypass the version check regardless of the flag —
+ * see lib/sessionVersion.ts.
  */
 export function getAuthSession(options: {
   cookie: string;
+  validateVersion?: boolean;
 }): Promise<AuthSession | null>;
 export function getAuthSession(options?: {
   cookie?: string;
+  validateVersion?: boolean;
 }): AuthSession | null | Promise<AuthSession | null> {
   // Server-mode invocation: cookie header is provided. Verify HMAC.
   if (options && typeof options.cookie === "string") {
+    const validateVersion = options.validateVersion !== false;
     return (async () => {
       const raw = readCookie(COOKIE_AUTH, options.cookie ?? "");
       if (!raw) return null;
@@ -274,7 +309,29 @@ export function getAuthSession(options?: {
       } catch {
         // Cookie wasn't URL-encoded — try the raw value.
       }
-      return verifySignedSessionCookieValue(decoded);
+      const session = await verifySignedSessionCookieValue(decoded);
+      if (!session) return null;
+      if (!validateVersion) return session;
+      // ALL sessions (versioned + legacy) flow through the validator.
+      // The validator decides what to do with a missing `sver` — see
+      // lib/sessionVersion.ts. No bypass here: a short-circuit on
+      // missing `sver` would let pre-deploy cookies coast for 30 days
+      // after a fresh post-deploy login bumps the row, breaking the
+      // single-active-session guarantee for the rollout cohort.
+      try {
+        const mod = await import("./sessionVersion");
+        const ok = await mod.validateSessionVersion(session);
+        return ok ? session : null;
+      } catch (err) {
+        // Fail closed: if we can't load the validator on a runtime that
+        // supports versioned cookies, treat the session as invalid
+        // rather than silently disabling the single-device guarantee.
+        console.warn(
+          "[auth] session version validator unavailable; rejecting",
+          err
+        );
+        return null;
+      }
     })();
   }
 
@@ -314,17 +371,27 @@ function parseUserHintCookie(raw: string): AuthSession | null {
   for (const candidate of candidates) {
     if (!candidate || candidate[0] !== "{") continue;
     try {
-      const parsed = JSON.parse(candidate) as Partial<AuthSession>;
+      const parsed = JSON.parse(candidate) as Partial<AuthSession> & {
+        sver?: unknown;
+        sid?: unknown;
+      };
       if (
         typeof parsed.phone === "string" &&
         parsed.verified === true &&
         typeof parsed.createdAt === "number"
       ) {
-        return {
+        const out: AuthSession = {
           phone: parsed.phone,
           verified: true,
           createdAt: parsed.createdAt,
         };
+        if (typeof parsed.sver === "number" && Number.isFinite(parsed.sver)) {
+          out.sver = parsed.sver;
+        }
+        if (typeof parsed.sid === "string" && parsed.sid.length > 0) {
+          out.sid = parsed.sid;
+        }
+        return out;
       }
     } catch {
       // try next candidate

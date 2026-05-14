@@ -9,6 +9,7 @@ import ProviderAliasSubmitter from "@/components/ProviderAliasSubmitter";
 import ProviderPledgeModal from "@/components/ProviderPledgeModal";
 import { PROVIDER_PLEDGE_VERSION } from "@/lib/disclaimer";
 import { getAuthSession } from "@/lib/auth";
+import { useSessionGuard } from "@/lib/useSessionGuard";
 import { getTaskDisplayLabel } from "@/lib/taskDisplay";
 import { isProviderVerifiedBadge } from "@/lib/providerPresentation";
 import {
@@ -289,6 +290,10 @@ function ProviderDashboardInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const alreadyRegisteredNotice = searchParams.get("alreadyRegistered") === "true";
+  // Single-active-session guard. Pings /api/auth/whoami on mount and on
+  // tab focus; if a newer device has invalidated this session, clears
+  // UI hint cookies and routes to /login?next=/provider/dashboard.
+  useSessionGuard({ redirectTo: "/login?next=/provider/dashboard" });
   const [phone, setPhone] = useState("");
   const [profile, setProfile] = useState<ProviderProfile | null>(null);
   const [loading, setLoading] = useState(true);

@@ -27,6 +27,7 @@ import {
 import { clearAuthSession, getAuthSession, type AuthSession } from "@/lib/auth";
 import { isProviderVerifiedBadge } from "@/lib/providerPresentation";
 import { fetchProviderDashboardProfile } from "@/lib/providerDashboardProfile";
+import { useSessionGuard } from "@/lib/useSessionGuard";
 
 const PROVIDER_PROFILE_STORAGE_KEY = "kk_provider_profile";
 const ADMIN_SESSION_STORAGE_KEY = "kk_admin_session";
@@ -119,6 +120,13 @@ export default function Sidebar() {
   const [authHydrated, setAuthHydrated] = useState(false);
   const isLoggedIn = Boolean(session?.phone);
   const shouldHide = pathname?.startsWith("/admin");
+
+  // Single-active-session: if a newer device logs in with the same
+  // phone, /api/auth/whoami starts returning 401 reason="stale". The
+  // hook then clears UI hint cookies and routes to /login. Sidebar
+  // mounts on virtually every page, so wiring it here is the cheapest
+  // way to give the whole app passive detection.
+  useSessionGuard();
 
   useEffect(() => {
     const handler = (event: Event) => {

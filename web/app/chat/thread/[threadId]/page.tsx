@@ -5,6 +5,7 @@ import { BadgeCheck, ChevronLeft, Phone, Send } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { getAuthSession } from "@/lib/auth";
+import { useSessionGuard } from "@/lib/useSessionGuard";
 
 type Thread = {
   ThreadID: string;
@@ -102,6 +103,11 @@ export default function ChatThreadPage() {
   const routeThreadId = Array.isArray(params?.threadId) ? params.threadId[0] : params?.threadId;
   const threadId = decodeURIComponent(String(routeThreadId || "")).trim();
   const router = useRouter();
+  // Single-active-session guard. Returns the user to /login if a fresh
+  // login on another device has invalidated this cookie.
+  useSessionGuard({
+    redirectTo: `/login?next=${encodeURIComponent(`/chat/thread/${threadId}`)}`,
+  });
   // Actor type is no longer read from `?actor=user`. The backend infers it
   // from the session phone vs. chat_threads row (Stage 1) and echoes the
   // resolved value back in the chat_get_messages response — we pin that

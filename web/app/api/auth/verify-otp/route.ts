@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { adminSupabase } from "@/lib/supabase/admin";
 import { setAuthSessionCookie } from "@/lib/auth";
 import { checkAdminByPhone } from "@/lib/adminAuth";
+import { bumpSessionVersion } from "@/lib/sessionVersion";
 
 export const runtime = "nodejs";
 
@@ -64,11 +65,30 @@ export async function POST(request: Request) {
     isAdmin = false;
   }
 
+  // Single-active-session: bump version BEFORE issuing the cookie. See
+  // /api/verify-otp/route.ts and lib/sessionVersion.ts for the rationale.
+  const newSessionVersion = await bumpSessionVersion(phone);
+  if (newSessionVersion === null) {
+    return NextResponse.json(
+      {
+        success: false,
+        error: "Failed to register session. Please try again.",
+      },
+      { status: 500 }
+    );
+  }
+  const sid =
+    typeof globalThis.crypto?.randomUUID === "function"
+      ? globalThis.crypto.randomUUID()
+      : undefined;
+
   const response = NextResponse.json({ success: true, phone, isAdmin });
   const cookieSet = await setAuthSessionCookie(response, {
     phone,
     verified: true,
     createdAt: Date.now(),
+    sver: newSessionVersion,
+    ...(sid ? { sid } : {}),
   });
   if (!cookieSet) {
     return NextResponse.json(

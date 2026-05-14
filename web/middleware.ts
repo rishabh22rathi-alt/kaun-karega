@@ -13,9 +13,16 @@ export async function middleware(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
   const cookieHeader = request.headers.get("cookie") ?? "";
 
-  // Guard /report-issue — any authenticated user is allowed
+  // Guard /report-issue — any authenticated user is allowed.
+  // validateVersion: true rejects cookies whose `sver` no longer matches
+  // profiles.session_version (i.e. a newer device has logged in for the
+  // same phone). Legacy cookies without `sver` are still accepted — see
+  // lib/sessionVersion.ts for the rollout compatibility note.
   if (pathname === "/report-issue") {
-    const session = await getAuthSession({ cookie: cookieHeader });
+    const session = await getAuthSession({
+      cookie: cookieHeader,
+      validateVersion: true,
+    });
     if (!session?.phone) {
       const loginUrl = new URL("/login", request.url);
       loginUrl.searchParams.set("next", `/report-issue`);
@@ -31,7 +38,10 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  const session = await getAuthSession({ cookie: cookieHeader });
+  const session = await getAuthSession({
+    cookie: cookieHeader,
+    validateVersion: true,
+  });
   const adminCookie = request.cookies.get("kk_admin")?.value;
 
   if (!session?.phone || adminCookie !== "1") {

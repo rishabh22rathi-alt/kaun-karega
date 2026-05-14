@@ -1,0 +1,106 @@
+[1mdiff --git a/web/app/page.tsx b/web/app/page.tsx[m
+[1mindex 40361df..02b78ab 100644[m
+[1m--- a/web/app/page.tsx[m
+[1m+++ b/web/app/page.tsx[m
+[36m@@ -1705,10 +1705,10 @@[m [mconst hasArea = area.trim() !== "";[m
+ [m
+       {/* ── OTP MODAL ────────────────────────────────────────────────── */}[m
+       {showOtpModal && !isLoggedIn && ([m
+[31m-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">[m
+[31m-          <div className="w-full max-w-md space-y-4 rounded-2xl bg-white p-6 shadow-2xl">[m
+[32m+[m[32m        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/60 px-4 pb-12 pt-[max(env(safe-area-inset-top),2.5rem)] sm:pt-16 md:pt-20">[m
+[32m+[m[32m          <div className="w-full max-w-md space-y-4 rounded-2xl border border-slate-100 bg-white p-6 shadow-xl ring-1 ring-orange-600/10">[m
+             <div className="space-y-2 text-center select-none">[m
+[31m-              <h3 className="text-xl font-semibold text-slate-900">[m
+[32m+[m[32m              <h3 className="text-xl font-semibold text-[#003d20]">[m
+                 Verify your phone number[m
+               </h3>[m
+               <p className="mt-2 text-sm text-slate-600">[m
+[36m@@ -1731,11 +1731,14 @@[m [mconst hasArea = area.trim() !== "";[m
+               </label>[m
+               <input[m
+                 type="tel"[m
+[32m+[m[32m                name="phone"[m
+[32m+[m[32m                autoComplete="tel-national"[m
+                 value={phone}[m
+                 onChange={(e) => setPhone(e.target.value.replace(/\D/g, "").slice(0, 10))}[m
+[31m-                className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-400/30"[m
+[32m+[m[32m                className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 shadow-sm focus:border-orange-500 focus:outline-none focus:ring-2 focus:ring-orange-500/25"[m
+                 placeholder="10-digit mobile number"[m
+                 inputMode="numeric"[m
+[32m+[m[32m                pattern="[0-9]*"[m
+                 onDrop={(e) => e.preventDefault()}[m
+                 onDragOver={(e) => e.preventDefault()}[m
+               />[m
+[36m@@ -1743,7 +1746,7 @@[m [mconst hasArea = area.trim() !== "";[m
+                 type="button"[m
+                 onClick={sendOtp}[m
+                 disabled={isSending || isLoading || otpLoading || phone.trim().length !== 10}[m
+[31m-                className="w-full rounded-full bg-sky-500 px-4 py-3 text-sm font-semibold text-white shadow-md transition hover:bg-sky-600 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-60"[m
+[32m+[m[32m                className="w-full rounded-full bg-orange-600 px-4 py-3 text-sm font-semibold text-white shadow-md transition hover:bg-orange-700 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-60"[m
+               >[m
+                 {isSending ? "Sending..." : "Send OTP"}[m
+               </button>[m
+[36m@@ -1756,20 +1759,40 @@[m [mconst hasArea = area.trim() !== "";[m
+                 </label>[m
+                 <input[m
+                   type="tel"[m
+[32m+[m[32m                  name="otp"[m
+[32m+[m[32m                  autoComplete="one-time-code"[m
+                   value={otp}[m
+                   onChange={(e) => {[m
+[31m-                    const value = e.target.value.replace(/\D/g, "");[m
+[31m-                    if (value.length <= 4) setOtp(value);[m
+[32m+[m[32m                    // Always slice to 4 digits so pastes longer than the[m
+[32m+[m[32m                    // OTP length (e.g. "Your OTP is 123456" → "123456")[m
+[32m+[m[32m                    // still populate the field instead of being dropped.[m
+[32m+[m[32m                    const value = e.target.value.replace(/\D/g, "").slice(0, 4);[m
+[32m+[m[32m                    setOtp(value);[m
+                     if (value.length === 4) {[m
+                       setTimeout(() => {[m
+                         document.getElementById("verifyOtpBtn")?.focus();[m
+                       }, 50);[m
+                     }[m
+                   }}[m
+[32m+[m[32m                  onPaste={(e) => {[m
+[32m+[m[32m                    // Explicit paste handler so messy clipboard text[m
+[32m+[m[32m                    // ("Your OTP is 1234", "1 2 3 4") still resolves to[m
+[32m+[m[32m                    // the first four digits regardless of caret position.[m
+[32m+[m[32m                    const pasted = e.clipboardData.getData("text");[m
+[32m+[m[32m                    const digits = pasted.replace(/\D/g, "").slice(0, 4);[m
+[32m+[m[32m                    if (!digits) return;[m
+[32m+[m[32m                    e.preventDefault();[m
+[32m+[m[32m                    setOtp(digits);[m
+[32m+[m[32m                    if (digits.length === 4) {[m
+[32m+[m[32m                      setTimeout(() => {[m
+[32m+[m[32m                        document.getElementById("verifyOtpBtn")?.focus();[m
+[32m+[m[32m                      }, 50);[m
+[32m+[m[32m                    }[m
+[32m+[m[32m                  }}[m
+                   maxLength={4}[m
+                   inputMode="numeric"[m
+[31m-                  pattern="\\d{4}"[m
+[31m-                  className={`w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-center text-lg tracking-[0.25em] shadow-sm focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-400/30 ${[m
+[32m+[m[32m                  pattern="[0-9]*"[m
+[32m+[m[32m                  className={`w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-center text-lg tracking-[0.5em] text-[#003d20] shadow-sm focus:border-[#003d20] focus:outline-none focus:ring-2 focus:ring-[#003d20]/20 ${[m
+                     shakeOtp ? "shake" : ""[m
+                   }`}[m
+                   placeholder="____"[m
+[36m@@ -1781,7 +1804,7 @@[m [mconst hasArea = area.trim() !== "";[m
+                   id="verifyOtpBtn"[m
+                   onClick={verifyOtp}[m
+                   disabled={otpLoading || otp.trim().length !== 4}[m
+[31m-                  className="w-full rounded-full bg-emerald-500 px-4 py-3 text-sm font-semibold text-white shadow-md transition hover:bg-emerald-600 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-60"[m
+[32m+[m[32m                  className="w-full rounded-full bg-[#003d20] px-4 py-3 text-sm font-semibold text-white shadow-md transition hover:bg-[#00542b] hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-60"[m
+                 >[m
+                   {otpLoading ? "Verifying..." : "Verify OTP"}[m
+                 </button>[m
+[36m@@ -1796,7 +1819,7 @@[m [mconst hasArea = area.trim() !== "";[m
+                     {String(otpTimer % 60).padStart(2, "0")}[m
+                   </span>[m
+                 ) : ([m
+[31m-                  <button onClick={handleResendOtp} className="font-medium text-blue-600">[m
+[32m+[m[32m                  <button onClick={handleResendOtp} className="font-semibold text-orange-600 hover:text-orange-700">[m
+                     Resend OTP[m
+                   </button>[m
+                 )}[m
