@@ -127,6 +127,45 @@ test.describe("Auth: OTP paste input", () => {
     diag.assertClean();
   });
 
+  test("wrong OTP hides sent success, then resend can show success again", async ({
+    page,
+    diag,
+  }, testInfo) => {
+    testInfo.setTimeout(90_000);
+    allowExpectedGuestNoise(diag);
+    await mockVerifyPageApis(page);
+    await page.route("**/api/verify-otp", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: false, error: "Invalid or expired OTP" }),
+      });
+    });
+
+    await gotoPath(page, VERIFY_URL);
+    await expect(
+      page.getByText("OTP sent successfully on WhatsApp!")
+    ).toBeVisible();
+
+    await pasteIntoOtp(page, "1234");
+    await page.getByRole("button", { name: /verify & continue/i }).click();
+
+    await expect(page.getByText("Invalid or expired OTP")).toBeVisible();
+    await expect(
+      page.getByText("OTP sent successfully on WhatsApp!")
+    ).toHaveCount(0);
+
+    await expect(page.getByRole("button", { name: /^resend otp$/i })).toBeVisible({
+      timeout: 65_000,
+    });
+    await page.getByRole("button", { name: /^resend otp$/i }).click();
+    await expect(
+      page.getByText("OTP sent successfully on WhatsApp!")
+    ).toBeVisible();
+
+    diag.assertClean();
+  });
+
   test("mobile viewport paste normalizes OTP text", async ({ page, diag }) => {
     allowExpectedGuestNoise(diag);
     await page.setViewportSize({ width: 390, height: 844 });

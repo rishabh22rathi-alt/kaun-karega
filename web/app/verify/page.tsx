@@ -236,6 +236,7 @@ function VerifyPageContent() {
     }
 
     setError("");
+    setMessage("");
 
     try {
       setVerifyingOtp(true);
@@ -245,9 +246,11 @@ function VerifyPageContent() {
       if (result?.success) {
         router.push(nextPath);
       } else {
+        setMessage("");
         setError(result?.error || "Invalid OTP");
       }
     } catch (err) {
+      setMessage("");
       setError("Verification failed");
     } finally {
       setVerifyingOtp(false);
