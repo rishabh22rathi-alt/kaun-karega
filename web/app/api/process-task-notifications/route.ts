@@ -5,6 +5,15 @@ import { canonicalizeProviderAreasToCanonicalNames } from "@/lib/admin/adminArea
 import { createClient } from "@/lib/supabase/server";
 import { appendNotificationLog } from "@/lib/notificationLogStore";
 import { sendProviderLeadMessage } from "@/lib/whatsapp-provider";
+import { isPushConfigured } from "@/lib/push/firebaseAdmin";
+import { getActiveTokensForProviderIds } from "@/lib/push/recipients";
+import { newServiceRequestPayload } from "@/lib/push/payloads";
+import { sendPushToTokens } from "@/lib/push/sendFcm";
+import {
+  deactivateInvalidTokens,
+  isInvalidTokenError,
+} from "@/lib/push/invalidateTokens";
+import { appendPushLog, tokenTail } from "@/lib/push/pushLogStore";
 
 export const runtime = "nodejs";
 
@@ -412,6 +421,11 @@ export async function POST(request: Request) {
     //     pipeline + WhatsApp dispatch above are already done and not
     //     blocked. See provider_notifications schema:
     //     supabase/migrations/20260507120000_alias_review_and_notifications.sql
+    //
+    //     `toNotify` is hoisted to the outer scope so the §6c native push
+    //     block (Phase 4B) can reuse the same dedupe set without a second
+    //     round-trip — one source of truth for "who hasn't been told yet".
+    let toNotify: string[] = [];
     try {
       const matchedProviderIds = providerList
         .map((p) => String(p.provider_id || "").trim())
@@ -440,7 +454,7 @@ export async function POST(request: Request) {
             .map((row) => String(row.provider_id || ""))
         );
 
-        const toNotify = matchedProviderIds.filter(
+        toNotify = matchedProviderIds.filter(
           (pid) => !alreadyNotifiedIds.has(pid)
         );
 
@@ -480,6 +494,160 @@ export async function POST(request: Request) {
       console.warn(
         "[process-task-notifications] notification fan-out exception",
         notifErr instanceof Error ? notifErr.message : notifErr
+      );
+    }
+
+    // 6c. Native push fan-out (Phase 4B).
+    //
+    //     Reuses the §6b `toNotify` set so a force=true reprocess does not
+    //     double-push: if `provider_notifications` already has a row for
+    //     (provider_id, task), the provider is not in `toNotify`, and push
+    //     skips them.
+    //
+    //     Soft-fail throughout: WhatsApp, provider_notifications, and the
+    //     "tasks.status = notified" update below MUST NOT be affected by
+    //     any push error. The whole block is wrapped in a try/catch that
+    //     logs and swallows; inner SDK throws, Supabase errors, and per-
+    //     token failures all degrade gracefully.
+    //
+    //     Gating:
+    //       1. `NATIVE_PUSH_ENABLED === "true"` — explicit opt-in. Any
+    //          other value (unset, "false", "1") leaves the path inert.
+    //       2. `isPushConfigured()` — Firebase Admin env present. Without
+    //          this we skip silently to preserve the failure mode of
+    //          "WhatsApp + bell still fire normally".
+    //       3. `toNotify.length > 0` — nothing new to tell anyone.
+    try {
+      if (
+        process.env.NATIVE_PUSH_ENABLED === "true" &&
+        isPushConfigured() &&
+        toNotify.length > 0
+      ) {
+        const devices = await getActiveTokensForProviderIds(toNotify);
+
+        // Bucket devices by provider so we can both (a) write a 'skipped'
+        // log row for providers with zero devices, and (b) attach
+        // provider_id to each per-token log row.
+        const devicesByProvider = new Map<string, typeof devices>();
+        for (const d of devices) {
+          if (!d.providerId) continue;
+          const arr = devicesByProvider.get(d.providerId) ?? [];
+          arr.push(d);
+          devicesByProvider.set(d.providerId, arr);
+        }
+
+        // 1. Skipped rows — one per provider who has no active device.
+        //    Makes the admin dashboard self-explanatory: you can see who
+        //    *would* have been pushed if they'd installed the app.
+        for (const pid of toNotify) {
+          if (!devicesByProvider.has(pid)) {
+            const logResult = await appendPushLog({
+              eventType: "new_service_request",
+              taskId,
+              recipientProviderId: pid,
+              status: "skipped",
+              errorMessage: "no_active_device",
+              payloadJson: {
+                reason: "no_active_device",
+                taskId,
+              },
+            });
+            if (!logResult.ok) {
+              console.warn(
+                "[process-task-notifications] push_logs (skipped) insert failed",
+                { providerId: pid, error: logResult.error }
+              );
+            }
+          }
+        }
+
+        // 2. Send to devices that do exist.
+        if (devices.length > 0) {
+          const payload = newServiceRequestPayload({
+            taskId,
+            displayId: (task as { display_id?: unknown }).display_id ?? null,
+            category: String(task.category ?? ""),
+            area: String(task.area ?? ""),
+            workTag: taskWorkTag || null,
+            matchTier,
+          });
+
+          let sendResult: Awaited<ReturnType<typeof sendPushToTokens>> | null;
+          try {
+            sendResult = await sendPushToTokens(
+              devices.map((d) => d.fcmToken),
+              payload
+            );
+          } catch (sendErr) {
+            console.warn(
+              "[process-task-notifications] sendPushToTokens threw",
+              {
+                message:
+                  sendErr instanceof Error ? sendErr.message : String(sendErr),
+                deviceCount: devices.length,
+              }
+            );
+            sendResult = null;
+          }
+
+          if (sendResult) {
+            const invalidTokens: string[] = [];
+            const deviceByToken = new Map(
+              devices.map((d) => [d.fcmToken, d] as const)
+            );
+            for (const r of sendResult.results) {
+              const device = deviceByToken.get(r.token);
+              const status: "sent" | "invalid_token" | "failed" = r.ok
+                ? "sent"
+                : isInvalidTokenError(r.errorCode)
+                  ? "invalid_token"
+                  : "failed";
+              if (status === "invalid_token") {
+                invalidTokens.push(r.token);
+              }
+              const logResult = await appendPushLog({
+                eventType: "new_service_request",
+                taskId,
+                recipientPhone: device?.phone ?? null,
+                recipientProviderId: device?.providerId ?? null,
+                fcmTokenTail: tokenTail(r.token),
+                status,
+                fcmMessageId: r.messageId || null,
+                errorCode: r.errorCode || null,
+                errorMessage: r.errorMessage || null,
+                payloadJson: {
+                  eventType: payload.eventType,
+                  deepLink: payload.deepLink,
+                  taskId,
+                },
+              });
+              if (!logResult.ok) {
+                console.warn(
+                  "[process-task-notifications] push_logs insert failed",
+                  {
+                    providerId: device?.providerId ?? null,
+                    tokenTail: tokenTail(r.token),
+                    error: logResult.error,
+                  }
+                );
+              }
+            }
+            if (invalidTokens.length > 0) {
+              const deact = await deactivateInvalidTokens(invalidTokens);
+              if (deact.error) {
+                console.warn(
+                  "[process-task-notifications] deactivateInvalidTokens failed",
+                  { error: deact.error }
+                );
+              }
+            }
+          }
+        }
+      }
+    } catch (pushErr) {
+      console.warn(
+        "[process-task-notifications] native push fan-out exception",
+        pushErr instanceof Error ? pushErr.message : pushErr
       );
     }
 

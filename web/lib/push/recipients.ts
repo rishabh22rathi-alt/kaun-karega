@@ -68,3 +68,40 @@ export async function getActiveTokensForPhone(
     .map(mapRow)
     .filter((row): row is ActiveDeviceRow => row !== null);
 }
+
+// Resolve active provider-actor tokens by provider_id. Used by the
+// matched-job push fan-out (Phase 4B) so we never accidentally target
+// user/admin actor tokens that happen to share a phone with a provider.
+// Never throws — Supabase errors are logged and surface as an empty list,
+// which makes the caller's soft-fail trivial.
+export async function getActiveTokensForProviderIds(
+  providerIds: string[]
+): Promise<ActiveDeviceRow[]> {
+  const cleaned = Array.from(
+    new Set(
+      providerIds
+        .map((id) => String(id ?? "").trim())
+        .filter((id) => id.length > 0)
+    )
+  );
+  if (cleaned.length === 0) return [];
+
+  const { data, error } = await adminSupabase
+    .from("native_push_devices")
+    .select("fcm_token, phone, provider_id, actor_type")
+    .eq("active", true)
+    .eq("actor_type", "provider")
+    .in("provider_id", cleaned);
+
+  if (error) {
+    console.error("[push/recipients] provider_id lookup failed", {
+      code: error.code,
+      message: error.message,
+    });
+    return [];
+  }
+
+  return (data ?? [])
+    .map(mapRow)
+    .filter((row): row is ActiveDeviceRow => row !== null);
+}

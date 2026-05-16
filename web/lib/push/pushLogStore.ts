@@ -1,6 +1,13 @@
 import { adminSupabase } from "@/lib/supabase/admin";
+import { scrubLongTokens } from "./scrub";
 
-export type PushLogEventType = "job_matched" | "chat_message" | "test";
+// Keep in sync with the push_logs.event_type CHECK constraint. Phase 4B
+// added "new_service_request" via 20260516200000_push_logs_event_types.sql.
+export type PushLogEventType =
+  | "new_service_request"
+  | "job_matched"
+  | "chat_message"
+  | "test";
 
 export type PushLogStatus = "sent" | "failed" | "invalid_token" | "skipped";
 
@@ -47,7 +54,11 @@ export async function appendPushLog(
       status: input.status,
       fcm_message_id: trimOrNull(input.fcmMessageId ?? null),
       error_code: trimOrNull(input.errorCode ?? null),
-      error_message: trimOrNull(input.errorMessage ?? null),
+      // Defense-in-depth: scrub any token-shaped run before persisting.
+      // FCM occasionally embeds the offending token in error_message, and
+      // this table is read by the admin dashboard — a leak here would
+      // surface a credential in the UI.
+      error_message: scrubLongTokens(input.errorMessage ?? null),
       payload_json: input.payloadJson ?? null,
     });
     if (error) {
