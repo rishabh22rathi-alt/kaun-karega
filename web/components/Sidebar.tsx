@@ -121,12 +121,11 @@ export default function Sidebar() {
   const isLoggedIn = Boolean(session?.phone);
   const shouldHide = pathname?.startsWith("/admin");
 
-  // Single-active-session: if a newer device logs in with the same
-  // phone, /api/auth/whoami starts returning 401 reason="stale". The
-  // hook then clears UI hint cookies and routes to /login. Sidebar
-  // mounts on virtually every page, so wiring it here is the cheapest
-  // way to give the whole app passive detection.
-  useSessionGuard();
+  // Single-active-session: Sidebar mounts globally, including public pages.
+  // In public mode a stale cookie is cleaned up and rendered as Guest without
+  // redirecting away from the homepage. Protected pages mount their own strict
+  // guard and still redirect to /login on stale sessions.
+  useSessionGuard({ mode: "public" });
 
   useEffect(() => {
     const handler = (event: Event) => {

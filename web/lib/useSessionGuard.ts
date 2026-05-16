@@ -46,6 +46,21 @@ type WhoamiResponse = {
 
 type Options = {
   /**
+   * Public mode is for globally mounted chrome on public pages. It repairs
+   * stale browser auth state but does not redirect away from the page.
+   * Protected mode keeps the existing redirect-on-stale behavior.
+   */
+  mode?: "public" | "protected";
+  /**
+   * Explicit override for stale-session redirects. Defaults to false in
+   * public mode and true otherwise.
+   */
+  redirectOnStale?: boolean;
+  /**
+   * Allows callers to keep the hook mounted while suppressing probes.
+   */
+  enabled?: boolean;
+  /**
    * Where to send the user after a stale session is detected. Defaults
    * to `/login`. Pass a path like `/login?next=/provider/dashboard` if
    * you want to return to the same page after the next OTP login.
@@ -68,6 +83,9 @@ export function useSessionGuard(options: Options = {}): {
   recheck: () => Promise<void>;
 } {
   const router = useRouter();
+  const enabled = options.enabled !== false;
+  const mode = options.mode ?? "protected";
+  const redirectOnStale = options.redirectOnStale ?? mode !== "public";
   const redirectTo = options.redirectTo ?? "/login";
   const probeOnMount = options.probeOnMount !== false;
   const probeOnFocus = options.probeOnFocus !== false;
@@ -75,7 +93,7 @@ export function useSessionGuard(options: Options = {}): {
   const handledRef = useRef(false);
 
   const recheck = async (): Promise<void> => {
-    if (inFlightRef.current || handledRef.current) return;
+    if (!enabled || inFlightRef.current || handledRef.current) return;
     inFlightRef.current = true;
     try {
       const res = await fetch("/api/auth/whoami", {
@@ -104,13 +122,13 @@ export function useSessionGuard(options: Options = {}): {
         // protected page" case on their own.
         if (body?.reason === "stale") {
           handledRef.current = true;
-          try {
-            window.localStorage.removeItem("kk_admin_session");
-          } catch {
-            // localStorage may be unavailable (e.g. private-mode WebView)
-          }
+          clearStaleClientHints();
+          dispatchAuthStateChanged();
           await clearAuthSession();
-          router.replace(redirectTo);
+          dispatchAuthStateChanged();
+          if (redirectOnStale) {
+            router.replace(redirectTo);
+          }
         }
       }
     } catch {
@@ -121,6 +139,7 @@ export function useSessionGuard(options: Options = {}): {
   };
 
   useEffect(() => {
+    if (!enabled) return;
     if (probeOnMount) {
       void recheck();
     }
@@ -140,7 +159,32 @@ export function useSessionGuard(options: Options = {}): {
       window.removeEventListener("focus", onFocus);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [redirectTo, probeOnMount, probeOnFocus]);
+  }, [enabled, redirectOnStale, redirectTo, probeOnMount, probeOnFocus]);
 
   return { recheck };
+}
+
+function clearStaleClientHints(): void {
+  if (typeof window === "undefined" || typeof document === "undefined") return;
+  try {
+    window.localStorage.removeItem("kk_admin_session");
+    window.localStorage.removeItem("kk_provider_profile");
+  } catch {
+    // localStorage may be unavailable in private-mode WebViews or quota errors.
+  }
+  try {
+    document.cookie = "kk_session_user=; Max-Age=0; Path=/; SameSite=Strict";
+    document.cookie = "kk_admin=; Max-Age=0; Path=/; SameSite=Strict";
+  } catch {
+    // Cookie writes can fail in locked-down browser contexts.
+  }
+}
+
+function dispatchAuthStateChanged(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.dispatchEvent(new Event("storage"));
+  } catch {
+    // Non-critical; the next navigation will read the cleaned state.
+  }
 }

@@ -191,7 +191,7 @@ async function mockLogoutOk(page: Page): Promise<void> {
 test.describe("Auth: single-active-session", () => {
   test.use({ baseURL: "http://127.0.0.1:3000" });
 
-  test("user's old device is bounced to /login when whoami reports stale", async ({
+  test("user's old device on public / is repaired as guest without redirect", async ({
     page,
     diag,
   }) => {
@@ -206,10 +206,12 @@ test.describe("Auth: single-active-session", () => {
 
     await setVersionedSession(page, { phone: QA_USER_PHONE, sver: 1 });
 
-    // Land on a logged-in page. The Sidebar mounts useSessionGuard which
-    // pings whoami; the stale response triggers redirect.
+    // Land on a public page. The Sidebar mounts useSessionGuard in public
+    // mode, so stale auth hints are cleared without blocking homepage access.
     await gotoPath(page, "/");
-    await expect(page).toHaveURL(/\/login(\?|$)/);
+    await page.waitForTimeout(500);
+    await expect(page).not.toHaveURL(/\/login(\?|$)/);
+    await expect(page.getByText("JODHPUR LOCAL SERVICES")).toBeVisible();
 
     // UI hint cookie is wiped client-side so the next render shows guest
     // chrome instead of the previous "logged in as +91 …" state.
