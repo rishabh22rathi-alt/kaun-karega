@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useRef, useState, KeyboardEvent, ClipboardEvent } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { SIDEBAR_TOGGLE_EVENT } from "@/components/sidebarEvents";
 
@@ -13,6 +13,8 @@ const getSafeNext = (value: string | null): string => {
   }
   return value;
 };
+
+const normalizeOtpInput = (value: string) => value.replace(/\D/g, "").slice(0, 4);
 
 export default function VerifyPage() {
   return (
@@ -44,7 +46,6 @@ function VerifyPageContent() {
   const nextPath = getSafeNext(searchParams.get("next"));
   const [cooldown, setCooldown] = useState(0);
 
-  const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
   const verifyButtonRef = useRef<HTMLButtonElement | null>(null);
 
   // ---------------------------------------------------
@@ -254,56 +255,6 @@ function VerifyPageContent() {
   };
 
   // ---------------------------------------------------
-  // OTP BOX HANDLERS
-  // ---------------------------------------------------
-  const handleDigitInput = (index: number, value: string) => {
-    const digit = value.replace(/\D/g, "").slice(-1);
-    if (!digit && value !== "") return;
-
-    setOtp((prev) => {
-      const newOtp = prev.split("");
-      while (newOtp.length < 4) newOtp.push("");
-      newOtp[index] = digit;
-      return newOtp.join("");
-    });
-
-    if (digit && index < 3) {
-      inputRefs.current[index + 1]?.focus();
-    }
-  };
-
-  const handleDigitKeyDown = (
-    index: number,
-    e: KeyboardEvent<HTMLInputElement>
-  ) => {
-    if (e.key === "Backspace") {
-      if (otp[index]) {
-        const chars = otp.split("");
-        chars[index] = "";
-        setOtp(Array.from({ length: 4 }, (_, i) => chars[i] ?? "").join(""));
-      } else if (index > 0) {
-        inputRefs.current[index - 1]?.focus();
-      }
-    }
-  };
-
-  const handleOtpPaste = (e: ClipboardEvent<HTMLInputElement>) => {
-    e.preventDefault();
-
-    const pasted = e.clipboardData.getData("text");
-    const digits = pasted.replace(/\D/g, "").slice(0, 4);
-    if (!digits) return;
-
-    setOtp(Array.from({ length: 4 }, (_, i) => digits[i] ?? "").join(""));
-
-    if (digits.length === 4) {
-      verifyButtonRef.current?.focus();
-    } else {
-      inputRefs.current[digits.length - 1]?.focus();
-    }
-  };
-
-  // ---------------------------------------------------
   // UI
   // ---------------------------------------------------
   return (
@@ -352,31 +303,45 @@ function VerifyPageContent() {
           </div>
         )}
 
-        {/* 4 OTP Boxes */}
-        <div className="flex justify-center gap-3">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <input
-              key={i}
-              ref={(el) => { inputRefs.current[i] = el; }}
-              type="text"
-              inputMode="numeric"
-              pattern="[0-9]*"
-              // `autoComplete="one-time-code"` is set on the first box only.
-              // iOS Safari's QuickType SMS suggestion fires when the focused
-              // input has this attribute; tapping the suggestion pastes the
-              // full code, which `handleOtpPaste` then distributes across
-              // the remaining boxes. Setting it on every box would compete
-              // for the same suggestion and isn't necessary.
-              autoComplete={i === 0 ? "one-time-code" : "off"}
-              name={i === 0 ? "otp" : undefined}
-              maxLength={1}
-              value={otp[i] ?? ""}
-              onChange={(e) => handleDigitInput(i, e.target.value)}
-              onKeyDown={(e) => handleDigitKeyDown(i, e)}
-              onPaste={handleOtpPaste}
-              className="w-14 h-14 rounded-xl border-2 border-slate-200 bg-white text-center text-2xl font-bold text-[#003d20] shadow-sm transition focus:border-[#003d20] focus:outline-none focus:ring-2 focus:ring-[#003d20]/25"
-            />
-          ))}
+        {/* OTP input */}
+        <div className="space-y-2">
+          <label htmlFor="otp" className="sr-only">
+            Enter OTP
+          </label>
+          <input
+            id="otp"
+            name="otp"
+            type="text"
+            inputMode="numeric"
+            pattern="[0-9]*"
+            autoComplete="one-time-code"
+            maxLength={4}
+            value={otp}
+            onChange={(e) => {
+              setOtp(normalizeOtpInput(e.target.value));
+              if (error) setError("");
+            }}
+            onPaste={(e) => {
+              e.preventDefault();
+              const digits = normalizeOtpInput(e.clipboardData.getData("text"));
+              setOtp(digits);
+              if (error) setError("");
+              if (digits.length === 4) verifyButtonRef.current?.focus();
+            }}
+            placeholder="1234"
+            aria-label="Enter OTP"
+            className="w-full rounded-xl border-2 border-slate-200 bg-white px-4 py-3 text-center font-mono text-3xl font-bold tracking-[0.55em] text-[#003d20] shadow-sm transition placeholder:tracking-normal placeholder:text-slate-300 focus:border-[#003d20] focus:outline-none focus:ring-2 focus:ring-[#003d20]/25"
+          />
+          <div className="grid grid-cols-4 gap-3" aria-hidden="true">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div
+                key={i}
+                className={`h-1 rounded-full ${
+                  otp[i] ? "bg-[#003d20]" : "bg-slate-200"
+                }`}
+              />
+            ))}
+          </div>
         </div>
 
         {/* Verify Button */}

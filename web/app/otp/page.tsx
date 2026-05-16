@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, KeyboardEvent } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { SIDEBAR_TOGGLE_EVENT } from "@/components/sidebarEvents";
 
@@ -14,6 +14,8 @@ const getSafeNext = (value: string | null): string => {
   return value;
 };
 
+const normalizeOtpInput = (value: string) => value.replace(/\D/g, "").slice(0, 4);
+
 export default function VerifyPage() {
   const router = useRouter();
   const [otp, setOtp] = useState("");
@@ -24,8 +26,6 @@ export default function VerifyPage() {
   const [requestId, setRequestId] = useState("");
   const [nextPath, setNextPath] = useState(DEFAULT_NEXT);
   const [cooldown, setCooldown] = useState(0);
-
-  const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
   // ---------------------------------------------------
   // LOAD PHONE FROM URL + AUTO SEND OTP WHEN PAGE OPENS
@@ -212,34 +212,6 @@ export default function VerifyPage() {
   };
 
   // ---------------------------------------------------
-  // OTP BOX HANDLERS
-  // ---------------------------------------------------
-  const handleDigitInput = (index: number, value: string) => {
-    const digit = value.replace(/\D/g, "").slice(-1);
-    const newOtp = otp.split("");
-    newOtp[index] = digit;
-    // fill gaps with empty string
-    const filled = Array.from({ length: 4 }, (_, i) => newOtp[i] ?? "");
-    setOtp(filled.join(""));
-
-    if (digit && index < 3) {
-      inputRefs.current[index + 1]?.focus();
-    }
-  };
-
-  const handleDigitKeyDown = (index: number, e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Backspace") {
-      if (otp[index]) {
-        const chars = otp.split("");
-        chars[index] = "";
-        setOtp(Array.from({ length: 4 }, (_, i) => chars[i] ?? "").join(""));
-      } else if (index > 0) {
-        inputRefs.current[index - 1]?.focus();
-      }
-    }
-  };
-
-  // ---------------------------------------------------
   // UI
   // ---------------------------------------------------
   return (
@@ -288,21 +260,41 @@ export default function VerifyPage() {
           </div>
         )}
 
-        {/* 4 OTP Boxes */}
-        <div className="flex justify-center gap-3">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <input
-              key={i}
-              ref={(el) => { inputRefs.current[i] = el; }}
-              type="text"
-              inputMode="numeric"
-              maxLength={1}
-              value={otp[i] ?? ""}
-              onChange={(e) => handleDigitInput(i, e.target.value)}
-              onKeyDown={(e) => handleDigitKeyDown(i, e)}
-              className="w-14 h-14 rounded-xl border-2 border-slate-200 bg-white text-center text-2xl font-bold text-slate-900 shadow-sm transition focus:border-green-500 focus:outline-none focus:ring-2 focus:ring-green-500/30"
-            />
-          ))}
+        {/* OTP input */}
+        <div className="space-y-2">
+          <label htmlFor="otp" className="sr-only">
+            Enter OTP
+          </label>
+          <input
+            id="otp"
+            name="otp"
+            type="text"
+            inputMode="numeric"
+            pattern="[0-9]*"
+            autoComplete="one-time-code"
+            maxLength={4}
+            value={otp}
+            onChange={(e) => {
+              setOtp(normalizeOtpInput(e.target.value));
+              if (error) setError("");
+            }}
+            onPaste={(e) => {
+              e.preventDefault();
+              setOtp(normalizeOtpInput(e.clipboardData.getData("text")));
+              if (error) setError("");
+            }}
+            placeholder="1234"
+            aria-label="Enter OTP"
+            className="w-full rounded-xl border-2 border-slate-200 bg-white px-4 py-3 text-center font-mono text-3xl font-bold tracking-[0.55em] text-slate-900 shadow-sm transition placeholder:tracking-normal placeholder:text-slate-300 focus:border-green-500 focus:outline-none focus:ring-2 focus:ring-green-500/30"
+          />
+          <div className="grid grid-cols-4 gap-3" aria-hidden="true">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div
+                key={i}
+                className={`h-1 rounded-full ${otp[i] ? "bg-green-600" : "bg-slate-200"}`}
+              />
+            ))}
+          </div>
         </div>
 
         {/* Verify Button */}
