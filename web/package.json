@@ -16,6 +16,7 @@
     "@supabase/supabase-js": "^2.103.3",
     "canvas-confetti": "^1.9.4",
     "dotenv": "^17.2.3",
+    "firebase-admin": "^13.10.0",
     "jspdf": "^4.2.1",
     "jspdf-autotable": "^5.0.7",
     "lucide-react": "^0.554.0",
