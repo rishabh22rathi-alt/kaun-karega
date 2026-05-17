@@ -3,6 +3,7 @@ import { getAuthSession } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { adminSupabase } from "@/lib/supabase/admin";
 import { getProviderByPhoneFromSupabase } from "@/lib/admin/adminProviderReads";
+import { effectivePlan } from "@/lib/payments/effectivePlan";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -1166,6 +1167,25 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    // Stage 2 payment rails: additively load provider_plans for this
+    // provider. Absence is the implicit Free plan (effectivePlan
+    // handles that). RLS on provider_plans is service-role-only, so
+    // use adminSupabase rather than the cookie-scoped client.
+    // Failure here is non-fatal — dashboard renders without the Plan
+    // field rather than erroring out.
+    const { data: providerPlanRow, error: providerPlanError } = await adminSupabase
+      .from("provider_plans")
+      .select("plan_code, max_regions, current_period_start, current_period_end")
+      .eq("provider_id", provider.provider_id)
+      .maybeSingle();
+    if (providerPlanError) {
+      console.warn(
+        "[provider/dashboard-profile] provider_plans lookup failed",
+        providerPlanError.message || providerPlanError
+      );
+    }
+    const planForResponse = effectivePlan(providerPlanRow ?? null);
+
     const providerCategoryList = Array.isArray(providerServices)
       ? providerServices
           .map((item) => String(item.category || "").trim())
@@ -1642,6 +1662,16 @@ export async function GET(request: NextRequest) {
             }))
           : [],
         AreaCoverage: areaCoverage,
+        // Stage 2 payment rails: additive. Existing consumers ignore
+        // this field; new UI reads it for the plan card. Absence of a
+        // provider_plans row resolves to { code: "free", maxRegions: 1,
+        // currentPeriodEnd: null, active: true } via effectivePlan().
+        Plan: {
+          code: planForResponse.code,
+          maxRegions: planForResponse.maxRegions,
+          currentPeriodEnd: planForResponse.currentPeriodEnd,
+          active: planForResponse.active,
+        },
         Analytics: {
           Summary: {
             ProviderID: String(provider.provider_id || ""),
