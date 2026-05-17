@@ -8,6 +8,9 @@ import ProviderDashboardCoachmark from "@/components/ProviderDashboardCoachmark"
 import ProviderAliasSubmitter from "@/components/ProviderAliasSubmitter";
 import ProviderPledgeModal from "@/components/ProviderPledgeModal";
 import PlatformAnnouncementBanner from "@/components/PlatformAnnouncementBanner";
+import ProviderPlanCard, {
+  type ProviderPlanShape,
+} from "@/components/provider/ProviderPlanCard";
 import { PROVIDER_PLEDGE_VERSION } from "@/lib/disclaimer";
 import { getAuthSession } from "@/lib/auth";
 import { useSessionGuard } from "@/lib/useSessionGuard";
@@ -130,6 +133,10 @@ type ProviderProfile = {
   }[];
   Areas?: { Area: string }[];
   AreaCoverage?: ProviderAreaCoverage;
+  // Stage 2 payment rails: optional Plan field appended by
+  // /api/provider/dashboard-profile. Absent on older deploys /
+  // cached responses → render as the implicit Free plan.
+  Plan?: ProviderPlanShape | null;
   RejectedCategoryRequests?: {
     RequestedCategory: string;
     Reason?: string;
@@ -1050,6 +1057,16 @@ function ProviderDashboardInner() {
             </p>
           </section>
         ) : null}
+
+        {/* Stage 4A: Current Plan card. Reads provider.Plan (added by
+            /api/provider/dashboard-profile) and the live coverage count
+            from provider.Areas. Absent Plan resolves to the implicit
+            Free plan inside the component. */}
+        <ProviderPlanCard
+          plan={profile.Plan ?? null}
+          currentRegionsCount={profile.Areas?.length ?? 0}
+          providerName={profile.ProviderName}
+        />
 
         <section
           aria-labelledby="provider-metrics-heading"
