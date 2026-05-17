@@ -12,6 +12,7 @@ import SystemHealthTab from "@/components/admin/SystemHealthTab";
 import ReportsTab from "@/components/admin/ReportsTab";
 import IssueReportsTab from "@/components/admin/IssueReportsTab";
 import ChatsTab from "@/components/admin/ChatsTab";
+import PushAnalyticsTab from "@/components/admin/PushAnalyticsTab";
 import { useAdminUnread } from "@/components/admin/useAdminUnread";
 
 /**
@@ -70,6 +71,7 @@ function DashboardBody() {
         unread={unread.chats}
         onMarkRead={() => void markRead("chats")}
       />
+      <PushAnalyticsTab defaultOpen={activeTab === "notifications"} />
       <SystemHealthTab />
       <ReportsTab />
       <CategoryTab

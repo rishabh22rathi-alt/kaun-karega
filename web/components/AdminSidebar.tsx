@@ -4,8 +4,11 @@ import type { ReactElement } from "react";
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import {
+  BarChart3,
+  Bell,
   ChevronLeft,
   ChevronRight,
+  Megaphone,
   MessageSquare,
   MessageSquareWarning,
   PanelLeftClose,
@@ -73,6 +76,22 @@ const navItems: NavItem[] = [
     href: "/admin/dashboard?tab=chats",
     tabKey: "chats",
     icon: <MessageSquare className="h-5 w-5" aria-hidden="true" />,
+  },
+  {
+    label: "Notifications",
+    href: "/admin/notifications",
+    icon: <Bell className="h-5 w-5" aria-hidden="true" />,
+  },
+  {
+    label: "Notification Analytics",
+    href: "/admin/dashboard?tab=notifications",
+    tabKey: "notifications",
+    icon: <BarChart3 className="h-5 w-5" aria-hidden="true" />,
+  },
+  {
+    label: "Announcements",
+    href: "/admin/announcements",
+    icon: <Megaphone className="h-5 w-5" aria-hidden="true" />,
   },
 ];
 

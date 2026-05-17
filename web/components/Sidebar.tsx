@@ -834,6 +834,11 @@ export default function Sidebar() {
                   href: "/dashboard/my-requests",
                   icon: ClipboardList,
                 })}
+                {renderNavLink({
+                  label: "Notifications",
+                  href: "/dashboard/notifications",
+                  icon: Bell,
+                })}
 
                 {showProviderSection ? (
                   <>

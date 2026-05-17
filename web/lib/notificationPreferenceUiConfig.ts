@@ -46,3 +46,54 @@ export const PROVIDER_NOTIFICATION_TOGGLES: ReadonlyArray<NotificationPreference
     description: "Heads-up when new service categories are added on Kaun Karega.",
   },
 ];
+
+// User settings page toggles (Phase 4A). Order matters — render order on
+// /dashboard/notifications. Deliberately minimal: only events the user
+// can actually receive today. chat_message and need_post are NOT shown
+// because no chat-message or need-post push is sent yet; surfacing those
+// toggles would create the "I turned it off but I still got it" / "I
+// turned it on but I get nothing" mismatch. Add them here when those
+// pushes go live.
+export const USER_NOTIFICATION_TOGGLES: ReadonlyArray<NotificationPreferenceToggle> = [
+  {
+    eventType: "general",
+    label: "General Notifications",
+    description: "Required system notifications",
+    mandatory: true,
+  },
+  {
+    eventType: "task_update",
+    label: "Task Updates",
+    description: "Updates on tasks you have created — provider responses and status changes.",
+  },
+  {
+    eventType: "marketing",
+    label: "Marketing & Updates",
+    description: "Occasional offers and feature announcements from Kaun Karega.",
+  },
+];
+
+// Admin settings page toggles (Phase 5A). Order matters — render order on
+// /admin/notifications. Deliberately minimal: only events the admin can
+// actually receive today. marketing, chat_message, task_update, and
+// system are NOT shown because no admin push of those types is sent yet;
+// surfacing them would create a settings → behavior mismatch. Add them
+// here when the corresponding pushes go live.
+export const ADMIN_NOTIFICATION_TOGGLES: ReadonlyArray<NotificationPreferenceToggle> = [
+  {
+    eventType: "general",
+    label: "General Notifications",
+    description: "Required system notifications",
+    mandatory: true,
+  },
+  {
+    eventType: "admin_alert",
+    label: "Admin Alerts",
+    description: "Operational alerts and system events for admins.",
+  },
+  {
+    eventType: "new_category",
+    label: "New Categories",
+    description: "Heads-up when new service categories are added on Kaun Karega.",
+  },
+];
