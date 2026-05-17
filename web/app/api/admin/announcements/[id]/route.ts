@@ -71,6 +71,7 @@ export async function PATCH(request: Request, context: RouteContext) {
     title: body.title,
     body: body.body,
     target_audience: body.target_audience,
+    target_category: body.target_category,
     deep_link: body.deep_link,
   });
   if (!result.ok) {

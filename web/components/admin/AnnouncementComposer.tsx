@@ -2,50 +2,82 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-// Phase 7A: announcement composer. New-draft mode or edit-existing-draft
+// Phase 7A/7C: announcement composer. New-draft mode or edit-existing-draft
 // mode (controlled by `editingId`). No send / queue / approve buttons —
 // those live on the list rows so the composer surface stays single-
 // purpose. Submit-for-approval is here because it's the natural last
 // step after writing copy.
+//
+// Phase 7C Steps 1-5: composer accepts three audience modes:
+//   • admins                — Phase 7B baseline; only audience the
+//                             queue + worker actually unlock today.
+//   • provider_category     — dynamic category dropdown from
+//                             /api/categories (active only). Queue
+//                             still rejects this audience until Step 6.
+//   • providers_all         — high-risk broadcast. Composer shows
+//                             a red warning banner. Queue still
+//                             rejects this audience until Step 8.
+//
+// Reserved audience values ('all', 'users', 'providers') exist in the
+// shared types for future phases but are NOT offered here.
 
-type AnnouncementAudience = "all" | "users" | "providers" | "admins";
+// Full audience union — mirrors AnnouncementAudience in
+// lib/announcements/store.ts. The composer offers only three of these
+// in its <select>; legacy / reserved values (all, users, providers)
+// are persisted in the DB but never selectable here. If an existing
+// row arrives via edit-mode with a reserved value, the composer
+// preserves it until the admin explicitly changes the dropdown.
+export type ComposerAudience =
+  | "all"
+  | "users"
+  | "providers"
+  | "admins"
+  | "provider_category"
+  | "providers_all";
+
+// Narrowed type for the <select> options below.
+type AudienceOptionValue =
+  | "admins"
+  | "provider_category"
+  | "providers_all";
 
 export type ComposerDraft = {
   id: string | null;
   title: string;
   body: string;
-  target_audience: AnnouncementAudience;
+  target_audience: ComposerAudience;
+  target_category: string; // empty string ⇔ null in the DB
   deep_link: string;
 };
 
 type RecipientPreview = {
-  audience: AnnouncementAudience;
+  audience: string;
   total: number;
   by_actor: { users: number; providers: number; admins: number };
+  target_category?: string | null;
+  providers_in_category?: number | null;
 };
 
 type AudienceOption = {
-  value: AnnouncementAudience;
+  value: AudienceOptionValue;
   label: string;
 };
 
 const AUDIENCE_OPTIONS: ReadonlyArray<AudienceOption> = [
-  { value: "all", label: "Everyone (users + providers + admins)" },
-  { value: "users", label: "Users only" },
-  { value: "providers", label: "Providers only" },
   { value: "admins", label: "Admins only" },
+  { value: "provider_category", label: "Providers in category" },
+  { value: "providers_all", label: "All providers" },
 ];
+
+type CategoryListItem = { name: string; active: boolean };
 
 const TITLE_MAX = 65;
 const BODY_MAX = 240;
 const DEEP_LINK_MAX = 256;
 
 type AnnouncementComposerProps = {
-  // null → create-new mode. Non-null → edit-draft mode.
   editingId: string | null;
   initialDraft: ComposerDraft | null;
-  // Called after a successful save / submit / cancel so the parent can
-  // refresh the list and clear edit state.
   onSaved?: () => void;
   onCancelEdit?: () => void;
 };
@@ -54,7 +86,11 @@ const EMPTY_DRAFT: ComposerDraft = {
   id: null,
   title: "",
   body: "",
-  target_audience: "all",
+  // Phase 7C: default to admins (the only audience the queue+worker
+  // currently unlock). Switching to provider_category / providers_all
+  // is a deliberate, friction-laden choice.
+  target_audience: "admins",
+  target_category: "",
   deep_link: "",
 };
 
@@ -73,6 +109,12 @@ export default function AnnouncementComposer({
   const [preview, setPreview] = useState<RecipientPreview | null>(null);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  // Dynamic category list — fetched from /api/categories on mount.
+  // The endpoint already filters to active=true, so the dropdown
+  // can't surface disabled categories.
+  const [categories, setCategories] = useState<CategoryListItem[]>([]);
+  const [categoriesLoading, setCategoriesLoading] = useState(true);
+  const [categoriesError, setCategoriesError] = useState("");
 
   // Re-hydrate when parent switches the editing row. Resets preview
   // so the count reflects the new audience selection.
@@ -82,6 +124,55 @@ export default function AnnouncementComposer({
     setError("");
     setSuccess("");
   }, [editingId, initialDraft]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setCategoriesLoading(true);
+      setCategoriesError("");
+      try {
+        const res = await fetch("/api/categories", {
+          method: "GET",
+          credentials: "same-origin",
+          cache: "no-store",
+        });
+        const data = (await res.json().catch(() => null)) as {
+          ok?: boolean;
+          categories?: Array<{ name?: unknown; active?: unknown }>;
+          message?: string;
+        } | null;
+        if (cancelled) return;
+        if (!res.ok || !Array.isArray(data?.categories)) {
+          setCategoriesError(
+            data?.message || `Could not load categories (${res.status}).`
+          );
+          setCategories([]);
+          return;
+        }
+        const rows = data.categories
+          .map((row) => ({
+            name: String(row.name ?? "").trim(),
+            active: Boolean(row.active),
+          }))
+          .filter((row) => row.name.length > 0)
+          .sort((a, b) =>
+            a.name.toLowerCase().localeCompare(b.name.toLowerCase())
+          );
+        setCategories(rows);
+      } catch {
+        if (!cancelled) {
+          setCategoriesError("Could not load categories.");
+          setCategories([]);
+        }
+      } finally {
+        if (!cancelled) setCategoriesLoading(false);
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const titleRemaining = TITLE_MAX - draft.title.length;
   const bodyRemaining = BODY_MAX - draft.body.length;
@@ -93,6 +184,10 @@ export default function AnnouncementComposer({
     if (draft.body.trim().length === 0) return false;
     if (draft.body.length > BODY_MAX) return false;
     if (draft.deep_link.length > DEEP_LINK_MAX) return false;
+    // Phase 7C: provider_category requires a category selection.
+    if (draft.target_audience === "provider_category") {
+      if (draft.target_category.trim().length === 0) return false;
+    }
     return true;
   }, [draft]);
 
@@ -100,15 +195,36 @@ export default function AnnouncementComposer({
     AUDIENCE_OPTIONS.find((o) => o.value === draft.target_audience)?.label ??
     draft.target_audience;
 
+  const handleAudienceChange = (next: ComposerAudience) => {
+    setDraft((current) => ({
+      ...current,
+      target_audience: next,
+      // Switching away from provider_category clears the category.
+      // Switching into provider_category keeps whatever was there.
+      target_category:
+        next === "provider_category" ? current.target_category : "",
+    }));
+    // Invalidate the preview — it was computed against the previous
+    // audience and might now mislead the type-the-count modal.
+    setPreview(null);
+  };
+
   const handleSaveDraft = async () => {
     if (!isValid || saving) return;
     setSaving(true);
     setError("");
     setSuccess("");
-    const payload = {
+    const payload: Record<string, unknown> = {
       title: draft.title.trim(),
       body: draft.body.trim(),
       target_audience: draft.target_audience,
+      // target_category is null for admins and providers_all; non-null
+      // for provider_category. The store helper + DB CHECK both
+      // enforce this consistency.
+      target_category:
+        draft.target_audience === "provider_category"
+          ? draft.target_category.trim()
+          : null,
       deep_link: draft.deep_link.trim() || null,
     };
     const url = editingId
@@ -224,7 +340,11 @@ export default function AnnouncementComposer({
             {editingId ? "Edit Draft" : "Compose Announcement"}
           </h2>
           <p className="mt-0.5 text-xs text-slate-500">
-            Phase 7A — drafts and approval only. Sending lands in Phase 7B.
+            Phase 7C — drafts and approval ready. Sending is unlocked for
+            <span className="font-mono"> admins</span> only;{" "}
+            <span className="font-mono">provider_category</span> and{" "}
+            <span className="font-mono">providers_all</span> queue is still
+            blocked.
           </p>
         </div>
         {editingId ? (
@@ -311,10 +431,7 @@ export default function AnnouncementComposer({
             <select
               value={draft.target_audience}
               onChange={(e) =>
-                setDraft({
-                  ...draft,
-                  target_audience: e.target.value as AnnouncementAudience,
-                })
+                handleAudienceChange(e.target.value as ComposerAudience)
               }
               data-testid="announcement-audience-select"
               className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-200"
@@ -326,6 +443,71 @@ export default function AnnouncementComposer({
               ))}
             </select>
           </label>
+
+          {/* Phase 7C: conditional category dropdown */}
+          {draft.target_audience === "provider_category" ? (
+            <label className="block" data-testid="announcement-category-block">
+              <span className="text-xs font-semibold uppercase tracking-wide text-slate-600">
+                Provider category
+              </span>
+              {categoriesError ? (
+                <p
+                  role="alert"
+                  className="mt-1 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700"
+                >
+                  {categoriesError}
+                </p>
+              ) : null}
+              <select
+                value={draft.target_category}
+                onChange={(e) =>
+                  setDraft((current) => ({
+                    ...current,
+                    target_category: e.target.value,
+                  }))
+                }
+                disabled={categoriesLoading || categories.length === 0}
+                data-testid="announcement-category-select"
+                className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-200 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <option value="">
+                  {categoriesLoading
+                    ? "Loading categories…"
+                    : categories.length === 0
+                      ? "No active categories"
+                      : "Select a category…"}
+                </option>
+                {categories.map((cat) => (
+                  <option key={cat.name} value={cat.name}>
+                    {cat.name}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-[11px] text-slate-500">
+                Only canonical, active categories appear. Aliases are not
+                broadcast targets.
+              </p>
+            </label>
+          ) : null}
+
+          {/* Phase 7C: red warning banner for the all-providers audience */}
+          {draft.target_audience === "providers_all" ? (
+            <div
+              role="alert"
+              data-testid="announcement-providers-all-warning"
+              className="rounded-2xl border border-rose-300 bg-rose-50 px-4 py-3 text-sm text-rose-900"
+            >
+              <p className="font-semibold">⚠️ Broadcast to every provider</p>
+              <p className="mt-1 text-xs leading-relaxed">
+                This audience reaches every registered provider device on
+                Kaun Karega across all categories. Sending requires a
+                two-field confirmation (type recipient count + type{" "}
+                <span className="font-mono">SEND TO ALL PROVIDERS</span>) and
+                is still blocked at the queue route in Phase 7C Steps 1-5
+                — preview only.
+              </p>
+            </div>
+          ) : null}
 
           <label className="block">
             <span className="text-xs font-semibold uppercase tracking-wide text-slate-600">
@@ -402,12 +584,31 @@ export default function AnnouncementComposer({
             >
               <p className="font-semibold text-slate-900">
                 Recipients for{" "}
-                <span className="font-mono">{preview.audience}</span>:{" "}
+                <span className="font-mono">{preview.audience}</span>
+                {preview.target_category ? (
+                  <>
+                    {" "}
+                    /{" "}
+                    <span className="font-mono">{preview.target_category}</span>
+                  </>
+                ) : null}
+                :{" "}
                 <span data-testid="announcement-preview-total">
                   {preview.total}
                 </span>{" "}
                 device{preview.total === 1 ? "" : "s"}
               </p>
+              {typeof preview.providers_in_category === "number" ? (
+                <p className="mt-1 text-slate-500">
+                  Distinct providers in this category:{" "}
+                  <span
+                    className="font-semibold text-slate-700"
+                    data-testid="announcement-preview-providers-in-category"
+                  >
+                    {preview.providers_in_category}
+                  </span>
+                </p>
+              ) : null}
               <p className="mt-1 text-slate-500">
                 Across all active devices: users {preview.by_actor.users} ·
                 providers {preview.by_actor.providers} · admins{" "}
@@ -448,6 +649,13 @@ export default function AnnouncementComposer({
           </p>
           <p className="text-[11px] leading-relaxed text-slate-500">
             Audience: <span className="font-semibold">{audienceLabel}</span>
+            {draft.target_audience === "provider_category" &&
+            draft.target_category ? (
+              <>
+                {" "}
+                / <span className="font-mono">{draft.target_category}</span>
+              </>
+            ) : null}
           </p>
           {draft.deep_link.trim() ? (
             <p className="break-all text-[11px] leading-relaxed text-slate-500">

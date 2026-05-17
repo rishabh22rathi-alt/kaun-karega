@@ -119,6 +119,12 @@ export type AnnouncementPayloadInput = {
   body: string;
   deepLink?: string | null;
   audience: string;
+  // Phase 7C: present in the FCM data map only when the broadcast
+  // targets a single category. Empty string for every other audience
+  // so the data map shape stays stable (FCM requires Map<string,string>;
+  // omitting the key would still satisfy that, but stable shapes
+  // simplify Android-side parsing).
+  targetCategory?: string | null;
 };
 
 export function announcementPayload(
@@ -132,5 +138,6 @@ export function announcementPayload(
     sentAt: new Date().toISOString(),
     announcementId: String(input.announcementId ?? "").trim(),
     audience: String(input.audience ?? "").trim(),
+    targetCategory: String(input.targetCategory ?? "").trim(),
   };
 }

@@ -88,6 +88,7 @@ export default function AdminAnnouncementsPage() {
         title: editingRow.title,
         body: editingRow.body,
         target_audience: editingRow.target_audience,
+        target_category: editingRow.target_category ?? "",
         deep_link: editingRow.deep_link ?? "",
       }
     : null;

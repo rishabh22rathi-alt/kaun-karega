@@ -97,6 +97,10 @@ type AnnouncementRow = {
   body: string;
   deep_link: string | null;
   target_audience: AnnouncementAudience;
+  // Phase 7C: canonical categories.name when target_audience =
+  // 'provider_category', NULL otherwise. DB cross-column CHECK
+  // enforces consistency.
+  target_category: string | null;
   status: string;
   recipient_count: number | null;
   sent_count: number | null;
@@ -194,7 +198,7 @@ async function loadAnnouncement(
   const { data, error } = await adminSupabase
     .from("admin_announcements")
     .select(
-      "id, title, body, deep_link, target_audience, status, recipient_count, sent_count, failed_count, invalid_token_count"
+      "id, title, body, deep_link, target_audience, target_category, status, recipient_count, sent_count, failed_count, invalid_token_count"
     )
     .eq("id", announcementId)
     .maybeSingle();
@@ -285,23 +289,62 @@ export async function runOnce(
     };
   }
 
-  // ─── 4. Phase 7B audience hard-block (defense in depth) ────────────
-  if (announcement.target_audience !== "admins") {
+  // ─── 4. Phase 7C audience hard-block (defense in depth) ────────────
+  //
+  // Allowed: 'admins' (Phase 7B), 'provider_category' (Phase 7C Step 6).
+  // 'providers_all' stays blocked until Phase 7C Step 8 — the store's
+  // QUEUE_ALLOWED_AUDIENCES set also blocks it, but the worker
+  // re-checks because a row could theoretically be mutated between
+  // queue time and tick time.
+  const allowedAudiences: ReadonlySet<AnnouncementAudience> = new Set([
+    "admins",
+    "provider_category",
+  ]);
+  if (!allowedAudiences.has(announcement.target_audience)) {
     await finalizeJob(
       job.id,
       "failed",
-      "audience_not_allowed_phase_7b"
+      "audience_not_allowed_phase_7c"
     );
     await finalizeAnnouncement(announcement.id, {
       status: "failed",
-      failure_reason: "Phase 7B sends to 'admins' audience only.",
+      failure_reason:
+        "Phase 7C sends to 'admins' and 'provider_category' audiences only.",
     });
     return {
       ok: true,
       status: "audience_blocked",
       announcementId: announcement.id,
       reason:
-        "target_audience is not 'admins' — Phase 7B does not unlock other audiences.",
+        "target_audience not in {admins, provider_category} — Phase 7C does not unlock providers_all yet.",
+    };
+  }
+
+  // Phase 7C: provider_category requires a non-null target_category at
+  // worker time. The store's queueAnnouncement already enforces this
+  // and re-validates against the categories table; we defend the
+  // worker against a hypothetical bypass where a job exists for a
+  // provider_category row that's missing target_category.
+  if (
+    announcement.target_audience === "provider_category" &&
+    (announcement.target_category === null ||
+      String(announcement.target_category).trim().length === 0)
+  ) {
+    await finalizeJob(
+      job.id,
+      "failed",
+      "target_category_missing"
+    );
+    await finalizeAnnouncement(announcement.id, {
+      status: "failed",
+      failure_reason:
+        "target_category is required for audience='provider_category'.",
+    });
+    return {
+      ok: true,
+      status: "audience_blocked",
+      announcementId: announcement.id,
+      reason: "target_category missing for provider_category broadcast.",
     };
   }
 
@@ -374,7 +417,10 @@ export async function runOnce(
   // ─── 7. First-tick init: seed total_recipients + transition status ─
   let totalRecipients = job.total_recipients;
   if (totalRecipients == null) {
-    const countResult = await countRecipients(announcement.target_audience);
+    const countResult = await countRecipients(
+      announcement.target_audience,
+      announcement.target_category
+    );
     if (!countResult.ok) {
       const reason = `count_failed: ${countResult.error}`;
       if (job.attempts >= MAX_ATTEMPTS) {
@@ -463,7 +509,8 @@ export async function runOnce(
   const page = await listRecipientsPage(
     announcement.target_audience,
     job.next_offset,
-    batchSize
+    batchSize,
+    announcement.target_category
   );
   if (!page.ok) {
     const reason = `page_failed: ${page.error}`;
@@ -523,6 +570,11 @@ export async function runOnce(
     body: announcement.body,
     deepLink: announcement.deep_link ?? "",
     audience: announcement.target_audience,
+    // Phase 7C: present in the FCM data map only for category
+    // broadcasts. Empty string for admins (and any future audience
+    // that doesn't scope by category) so the Android-side parser
+    // sees a consistent key set.
+    targetCategory: announcement.target_category ?? "",
   });
 
   let sendResult: Awaited<ReturnType<typeof sendPushToTokens>> | null;
@@ -602,6 +654,10 @@ export async function runOnce(
         eventType: "general",
         announcement_id: announcement.id,
         audience: announcement.target_audience,
+        // Phase 7C: null for non-category audiences. Analytics can
+        // filter by `payload_json->>'target_category'` once category
+        // broadcasts have data.
+        target_category: announcement.target_category ?? null,
         deep_link: announcement.deep_link ?? null,
       },
     });

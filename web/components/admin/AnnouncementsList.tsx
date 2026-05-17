@@ -7,7 +7,13 @@ import { useEffect, useState } from "react";
 // the backend store and route both re-enforce the same rule so a
 // crafted POST cannot bypass.
 
-type AnnouncementAudience = "all" | "users" | "providers" | "admins";
+type AnnouncementAudience =
+  | "all"
+  | "users"
+  | "providers"
+  | "admins"
+  | "provider_category"
+  | "providers_all";
 
 type AnnouncementStatus =
   | "draft"
@@ -26,6 +32,9 @@ export type AnnouncementRow = {
   body: string;
   deep_link: string | null;
   target_audience: AnnouncementAudience;
+  // Phase 7C: canonical categories.name when audience='provider_category',
+  // null otherwise. DB cross-column CHECK enforces consistency.
+  target_category: string | null;
   status: AnnouncementStatus;
   approval_required: boolean;
   approved_by_phone: string | null;
@@ -35,11 +44,27 @@ export type AnnouncementRow = {
   updated_at: string;
 };
 
-// Phase 7B soft-launch — only admin-audience announcements can be
-// queued from the UI. Other audiences land in later phases.
+// Phase 7C Steps 1-5: the UI exposes Queue Send for all three audience
+// modes (admins, provider_category, providers_all) so the entire
+// confirmation flow is exercisable end-to-end. The store's
+// QUEUE_ALLOWED_AUDIENCES set still only includes 'admins', so the
+// POST /queue call for provider_category / providers_all returns 400
+// AUDIENCE_NOT_ALLOWED — the modal surfaces that as an actionError.
+// This is intentional: UI is testable without unlocking actual sends.
+// Legacy reserved values ('all', 'users', 'providers') stay blocked
+// at the UI layer too.
 const QUEUE_ENABLED_AUDIENCES: ReadonlySet<AnnouncementAudience> = new Set([
   "admins",
+  "provider_category",
+  "providers_all",
 ]);
+
+// Phase 7C: literal string required to confirm an all-providers
+// broadcast. Case-sensitive on purpose — adds friction proportional
+// to blast radius. If a future product change wants this in another
+// language, update the constant here and the audit copy in the
+// composer's warning banner together.
+const PROVIDERS_ALL_CONFIRM_PHRASE = "SEND TO ALL PROVIDERS";
 
 const STATUS_BADGE: Record<AnnouncementStatus, string> = {
   draft: "border-slate-300 bg-slate-100 text-slate-700",
@@ -73,6 +98,9 @@ type RecipientPreview = {
   total: number;
   by_actor: { users: number; providers: number; admins: number };
   audience: AnnouncementAudience;
+  // Phase 7C: present only for provider_category audience.
+  target_category?: string | null;
+  providers_in_category?: number | null;
 };
 
 type AnnouncementsListProps = {
@@ -108,26 +136,56 @@ function QueueConfirmModal({
   onClose,
   onConfirm,
 }: QueueConfirmProps) {
-  const [typed, setTyped] = useState("");
-  const expected = preview ? String(preview.total) : "";
-  const match = expected.length > 0 && typed.trim() === expected;
+  const [typedCount, setTypedCount] = useState("");
+  const [typedPhrase, setTypedPhrase] = useState("");
+
+  const isProvidersAll = row.target_audience === "providers_all";
+  const expectedCount = preview ? String(preview.total) : "";
+  const countMatches =
+    expectedCount.length > 0 && typedCount.trim() === expectedCount;
+  // Phase 7C: providers_all requires a SECOND gate — type the literal
+  // string. Case-sensitive on purpose. Other audiences ignore this
+  // field; phraseMatches is forced true so the regular count gate
+  // alone is sufficient.
+  const phraseMatches = isProvidersAll
+    ? typedPhrase === PROVIDERS_ALL_CONFIRM_PHRASE
+    : true;
+  const canConfirm = countMatches && phraseMatches;
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center">
       <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl">
         <h3 className="text-base font-semibold text-slate-900">
-          Confirm broadcast
+          {isProvidersAll
+            ? "Confirm broadcast to ALL providers"
+            : "Confirm broadcast"}
         </h3>
         <p className="mt-1 text-xs text-slate-600">
-          This will send an FCM push to every active device in the audience.
-          In-flight messages cannot be recalled.
+          {isProvidersAll
+            ? "This will reach every registered provider device on the platform. In-flight messages cannot be recalled."
+            : "This will send an FCM push to every active device in the audience. In-flight messages cannot be recalled."}
         </p>
+
+        {isProvidersAll ? (
+          <p
+            role="alert"
+            data-testid="queue-confirm-providers-all-warning"
+            className="mt-3 rounded-2xl border border-rose-300 bg-rose-50 px-3 py-2 text-xs text-rose-900"
+          >
+            ⚠️ Two-field confirmation required for the all-providers audience.
+          </p>
+        ) : null}
 
         <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
           <p className="font-semibold text-slate-900">{row.title}</p>
           <p className="mt-1">{row.body}</p>
           <p className="mt-2 text-[11px] text-slate-500">
             Audience: <span className="font-mono">{row.target_audience}</span>
+            {row.target_audience === "provider_category" && row.target_category ? (
+              <>
+                {" "}/ <span className="font-mono">{row.target_category}</span>
+              </>
+            ) : null}
             {row.deep_link ? (
               <>
                 {" · "}Deep link: <span className="font-mono">{row.deep_link}</span>
@@ -158,7 +216,13 @@ function QueueConfirmModal({
                 {preview.total}
               </span>{" "}
               device{preview.total === 1 ? "" : "s"} in audience{" "}
-              <span className="font-mono">{preview.audience}</span>.
+              <span className="font-mono">{preview.audience}</span>
+              {preview.target_category ? (
+                <>
+                  {" "}/ <span className="font-mono">{preview.target_category}</span>
+                </>
+              ) : null}
+              .
             </p>
             <label className="mt-3 block">
               <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">
@@ -166,14 +230,30 @@ function QueueConfirmModal({
               </span>
               <input
                 type="text"
-                value={typed}
-                onChange={(e) => setTyped(e.target.value)}
+                value={typedCount}
+                onChange={(e) => setTypedCount(e.target.value)}
                 inputMode="numeric"
                 autoComplete="off"
                 data-testid="queue-confirm-input"
                 className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-200"
               />
             </label>
+            {isProvidersAll ? (
+              <label className="mt-3 block">
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-rose-700">
+                  Type {PROVIDERS_ALL_CONFIRM_PHRASE} to confirm (case-sensitive)
+                </span>
+                <input
+                  type="text"
+                  value={typedPhrase}
+                  onChange={(e) => setTypedPhrase(e.target.value)}
+                  autoComplete="off"
+                  spellCheck={false}
+                  data-testid="queue-confirm-phrase-input"
+                  className="mt-1 block w-full rounded-lg border border-rose-300 bg-white px-3 py-2 text-sm font-mono text-slate-900 focus:border-rose-500 focus:outline-none focus:ring-2 focus:ring-rose-200"
+                />
+              </label>
+            ) : null}
           </div>
         ) : null}
 
@@ -189,7 +269,7 @@ function QueueConfirmModal({
           <button
             type="button"
             onClick={onConfirm}
-            disabled={!match || submitting}
+            disabled={!canConfirm || submitting}
             data-testid="queue-confirm-button"
             className="rounded-lg bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
@@ -440,6 +520,15 @@ export default function AnnouncementsList({
                   </td>
                   <td className="px-3 py-2 align-top text-xs font-mono text-slate-700">
                     {row.target_audience}
+                    {row.target_audience === "provider_category" &&
+                    row.target_category ? (
+                      <>
+                        {" / "}
+                        <span data-testid={`announcement-target-category-${row.id}`}>
+                          {row.target_category}
+                        </span>
+                      </>
+                    ) : null}
                   </td>
                   <td className="px-3 py-2 align-top">
                     <span

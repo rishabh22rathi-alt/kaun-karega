@@ -93,6 +93,7 @@ export async function POST(request: Request) {
     title: body.title,
     body: body.body,
     target_audience: body.target_audience,
+    target_category: body.target_category,
     deep_link: body.deep_link,
     approval_required: body.approval_required,
     created_by_phone: String(auth.admin.phone || "").trim(),
