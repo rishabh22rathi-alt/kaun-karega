@@ -136,25 +136,56 @@ export default function AnnouncementComposer({
           credentials: "same-origin",
           cache: "no-store",
         });
-        const data = (await res.json().catch(() => null)) as {
+        // /api/categories returns { ok, data, error } today — `data` is
+        // an array of { name, active }. Older audits suggested a
+        // `categories` key, and some sibling endpoints emit plain
+        // string[]. Accept all three shapes so a future API tweak
+        // doesn't silently regress this surface again.
+        const raw = (await res.json().catch(() => null)) as {
           ok?: boolean;
-          categories?: Array<{ name?: unknown; active?: unknown }>;
+          data?: unknown;
+          categories?: unknown;
           message?: string;
+          error?: unknown;
         } | null;
         if (cancelled) return;
-        if (!res.ok || !Array.isArray(data?.categories)) {
-          setCategoriesError(
-            data?.message || `Could not load categories (${res.status}).`
-          );
+        const arrayCandidate = Array.isArray(raw?.data)
+          ? raw?.data
+          : Array.isArray(raw?.categories)
+            ? raw?.categories
+            : null;
+        if (!res.ok || !arrayCandidate) {
+          const errMsg =
+            (raw && typeof raw.error === "object" && raw.error !== null
+              ? String((raw.error as { message?: unknown }).message ?? "")
+              : "") ||
+            raw?.message ||
+            `Could not load categories (${res.status}).`;
+          setCategoriesError(errMsg);
           setCategories([]);
           return;
         }
-        const rows = data.categories
-          .map((row) => ({
-            name: String(row.name ?? "").trim(),
-            active: Boolean(row.active),
-          }))
-          .filter((row) => row.name.length > 0)
+        const rows = arrayCandidate
+          .map((item): CategoryListItem | null => {
+            if (typeof item === "string") {
+              const name = item.trim();
+              return name ? { name, active: true } : null;
+            }
+            if (item && typeof item === "object") {
+              const obj = item as { name?: unknown; active?: unknown };
+              const name = String(obj.name ?? "").trim();
+              if (!name) return null;
+              // /api/categories already filters to active=true, so
+              // missing/undefined `active` is treated as true to
+              // tolerate both shapes.
+              const active =
+                obj.active === undefined ? true : Boolean(obj.active);
+              return { name, active };
+            }
+            return null;
+          })
+          .filter((row): row is CategoryListItem => row !== null)
+          .filter((row) => row.active)
           .sort((a, b) =>
             a.name.toLowerCase().localeCompare(b.name.toLowerCase())
           );
