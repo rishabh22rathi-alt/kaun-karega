@@ -11,6 +11,13 @@ const AdminSidebar = dynamic(() => import("@/components/AdminSidebar"), {
 const AdminTopbar = dynamic(() => import("@/components/AdminTopbar"), {
   ssr: false,
 });
+// Phase 7D.5: in-app announcement banner. Fetches /api/announcements/active
+// which resolves the actor server-side; the API only surfaces banners
+// whose target_audience matches an admin actor for this layout shell.
+const PlatformAnnouncementBanner = dynamic(
+  () => import("@/components/PlatformAnnouncementBanner"),
+  { ssr: false }
+);
 
 type AdminLayoutClientProps = {
   children: React.ReactNode;
@@ -180,7 +187,10 @@ export default function AdminLayoutClient({
           />
 
           <main className="min-w-0 flex-1 overflow-x-auto p-4 md:p-6 xl:p-8">
-            <div className="mx-auto w-full max-w-none">{children}</div>
+            <div className="mx-auto w-full max-w-none space-y-4">
+              <PlatformAnnouncementBanner />
+              {children}
+            </div>
           </main>
         </div>
       </div>

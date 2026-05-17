@@ -9,7 +9,6 @@
 // tabs race-safely: only one wins, the other gets ok:false.
 
 import { adminSupabase } from "@/lib/supabase/admin";
-import { countRecipients } from "./recipients";
 
 // Audience discriminators understood by the store. The DB CHECK in
 // admin_announcements mirrors this set verbatim — keep them in sync.
@@ -77,6 +76,15 @@ export type AnnouncementRow = {
   invalid_token_count: number | null;
   no_active_device_count: number | null;
   failure_reason: string | null;
+  // Phase 7D: banner surface fields. send_push defaults true so
+  // existing rows keep their Phase 7B/7C push-only behavior.
+  send_push: boolean;
+  show_as_banner: boolean;
+  banner_priority: number;
+  banner_starts_at: string | null;
+  banner_expires_at: string | null;
+  banner_dismissible: boolean;
+  banner_cta_label: string | null;
 };
 
 export type StoreError = {
@@ -104,7 +112,10 @@ const SELECT_COLUMNS =
   "approval_required, approved_by_phone, approved_at, queued_at, " +
   "sending_started_at, sent_at, canceled_at, created_by_phone, " +
   "updated_at, created_at, recipient_count, sent_count, failed_count, " +
-  "invalid_token_count, no_active_device_count, failure_reason";
+  "invalid_token_count, no_active_device_count, failure_reason, " +
+  // Phase 7D: banner surface columns.
+  "send_push, show_as_banner, banner_priority, banner_starts_at, " +
+  "banner_expires_at, banner_dismissible, banner_cta_label";
 
 // ─── Validation helpers ─────────────────────────────────────────────
 
@@ -127,6 +138,225 @@ function trimOptional(value: unknown, max: number): string | null | "invalid" {
   if (trimmed.length === 0) return null;
   if (trimmed.length > max) return "invalid";
   return trimmed;
+}
+
+// Phase 7D: resolve banner-related fields to a typed, validated set
+// or a single error message. Mirrors the four DB cross-column CHECKs
+// added by 20260522120000_admin_announcements_banner.sql:
+//   1. send_push OR show_as_banner must be true
+//   2. banner timing fields require show_as_banner=true
+//   3. banner_starts_at < banner_expires_at (when both set)
+//   4. banner_cta_label requires deep_link
+//
+// When show_as_banner is false, every banner field except send_push
+// is normalized to its inert default (priority=0, starts/expires=null,
+// dismissible=true, cta_label=null). The DB CHECK on
+// admin_announcements_banner_timing_requires_banner would otherwise
+// reject non-null timing fields on a non-banner row.
+type BannerFieldSet = {
+  send_push: boolean;
+  show_as_banner: boolean;
+  banner_priority: number;
+  banner_starts_at: string | null;
+  banner_expires_at: string | null;
+  banner_dismissible: boolean;
+  banner_cta_label: string | null;
+};
+
+type BannerFieldsInput = {
+  send_push?: unknown;
+  show_as_banner?: unknown;
+  banner_priority?: unknown;
+  banner_starts_at?: unknown;
+  banner_expires_at?: unknown;
+  banner_dismissible?: unknown;
+  banner_cta_label?: unknown;
+};
+
+function coerceBooleanWithDefault(
+  raw: unknown,
+  fallback: boolean
+): boolean | null {
+  if (raw === undefined) return fallback;
+  if (typeof raw === "boolean") return raw;
+  // Reject ambiguous strings/numbers — surface INVALID_INPUT instead
+  // of silently coercing. Tests assert this.
+  return null;
+}
+
+function coerceIsoTimestamp(raw: unknown): string | null | "invalid" {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw !== "string") return "invalid";
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return null;
+  // Date.parse accepts ISO 8601; tolerate "YYYY-MM-DDTHH:mm" from
+  // the composer's datetime-local input.
+  const parsed = Date.parse(trimmed);
+  if (Number.isNaN(parsed)) return "invalid";
+  return new Date(parsed).toISOString();
+}
+
+function resolveBannerFields(
+  input: BannerFieldsInput,
+  effectiveDeepLink: string | null
+): { ok: true; value: BannerFieldSet } | { ok: false; message: string } {
+  const sendPush = coerceBooleanWithDefault(input.send_push, true);
+  if (sendPush === null) {
+    return { ok: false, message: "send_push must be a boolean" };
+  }
+  const showBanner = coerceBooleanWithDefault(input.show_as_banner, false);
+  if (showBanner === null) {
+    return { ok: false, message: "show_as_banner must be a boolean" };
+  }
+
+  // Gate 1: at least one emission surface.
+  if (!sendPush && !showBanner) {
+    return {
+      ok: false,
+      message:
+        "At least one of send_push or show_as_banner must be true. An announcement that does nothing is rejected.",
+    };
+  }
+
+  // Banner-off short-circuit: ignore (and normalize away) every banner
+  // field. The DB CHECK enforces this; we ensure the row we insert
+  // satisfies it rather than relying on Supabase to reject after a
+  // round-trip.
+  if (!showBanner) {
+    if (
+      input.banner_starts_at !== undefined ||
+      input.banner_expires_at !== undefined
+    ) {
+      const starts = coerceIsoTimestamp(input.banner_starts_at);
+      const expires = coerceIsoTimestamp(input.banner_expires_at);
+      // Be strict: a UI that sends timing fields while show_as_banner
+      // is off is a bug. Reject so admins don't silently lose values.
+      if (
+        (starts !== null && starts !== "invalid" && starts !== undefined) ||
+        (expires !== null && expires !== "invalid" && expires !== undefined)
+      ) {
+        return {
+          ok: false,
+          message:
+            "Banner timing fields require show_as_banner=true.",
+        };
+      }
+    }
+    if (
+      typeof input.banner_cta_label === "string" &&
+      input.banner_cta_label.trim().length > 0
+    ) {
+      return {
+        ok: false,
+        message: "banner_cta_label requires show_as_banner=true.",
+      };
+    }
+    return {
+      ok: true,
+      value: {
+        send_push: sendPush,
+        show_as_banner: false,
+        banner_priority: 0,
+        banner_starts_at: null,
+        banner_expires_at: null,
+        // Default true matches the DB column default; the value is
+        // irrelevant for non-banner rows but normalize for consistency.
+        banner_dismissible: true,
+        banner_cta_label: null,
+      },
+    };
+  }
+
+  // show_as_banner === true from here on.
+
+  // banner_priority (integer; default 0)
+  let priority = 0;
+  if (input.banner_priority !== undefined) {
+    if (typeof input.banner_priority === "number") {
+      if (!Number.isFinite(input.banner_priority) ||
+          !Number.isInteger(input.banner_priority)) {
+        return {
+          ok: false,
+          message: "banner_priority must be a finite integer",
+        };
+      }
+      priority = input.banner_priority;
+    } else if (typeof input.banner_priority === "string") {
+      const parsed = Number.parseInt(input.banner_priority, 10);
+      if (!Number.isFinite(parsed)) {
+        return {
+          ok: false,
+          message: "banner_priority must be a finite integer",
+        };
+      }
+      priority = parsed;
+    } else {
+      return {
+        ok: false,
+        message: "banner_priority must be a number",
+      };
+    }
+  }
+
+  const starts = coerceIsoTimestamp(input.banner_starts_at);
+  if (starts === "invalid") {
+    return { ok: false, message: "banner_starts_at must be a valid ISO timestamp" };
+  }
+  const expires = coerceIsoTimestamp(input.banner_expires_at);
+  if (expires === "invalid") {
+    return { ok: false, message: "banner_expires_at must be a valid ISO timestamp" };
+  }
+
+  // Gate 3: time window sanity.
+  if (starts && expires && Date.parse(starts) >= Date.parse(expires)) {
+    return {
+      ok: false,
+      message: "banner_starts_at must be strictly before banner_expires_at",
+    };
+  }
+
+  const dismissible = coerceBooleanWithDefault(input.banner_dismissible, true);
+  if (dismissible === null) {
+    return { ok: false, message: "banner_dismissible must be a boolean" };
+  }
+
+  // banner_cta_label optional, 1-40 chars when set, REQUIRES deep_link.
+  let ctaLabel: string | null = null;
+  if (input.banner_cta_label !== undefined && input.banner_cta_label !== null) {
+    if (typeof input.banner_cta_label !== "string") {
+      return { ok: false, message: "banner_cta_label must be a string" };
+    }
+    const trimmed = input.banner_cta_label.trim();
+    if (trimmed.length > 0) {
+      if (trimmed.length > 40) {
+        return {
+          ok: false,
+          message: "banner_cta_label must be 1-40 characters",
+        };
+      }
+      // Gate 4: CTA label requires deep_link.
+      if (!effectiveDeepLink || effectiveDeepLink.trim().length === 0) {
+        return {
+          ok: false,
+          message: "banner_cta_label requires deep_link to be set",
+        };
+      }
+      ctaLabel = trimmed;
+    }
+  }
+
+  return {
+    ok: true,
+    value: {
+      send_push: sendPush,
+      show_as_banner: true,
+      banner_priority: priority,
+      banner_starts_at: starts,
+      banner_expires_at: expires,
+      banner_dismissible: dismissible,
+      banner_cta_label: ctaLabel,
+    },
+  };
 }
 
 // Phase 7C: resolve the (audience, target_category) pair to a single
@@ -248,6 +478,15 @@ export type CreateDraftInput = {
   target_category?: unknown;
   deep_link?: unknown;
   approval_required?: unknown;
+  // Phase 7D: banner surface fields. send_push defaults true so
+  // omitting these keeps existing push-only Phase 7B/7C behavior.
+  send_push?: unknown;
+  show_as_banner?: unknown;
+  banner_priority?: unknown;
+  banner_starts_at?: unknown;
+  banner_expires_at?: unknown;
+  banner_dismissible?: unknown;
+  banner_cta_label?: unknown;
   created_by_phone: string;
 };
 
@@ -319,6 +558,28 @@ export async function createAnnouncementDraft(
       ? input.approval_required
       : false;
 
+  // Phase 7D: validate banner fields against the four DB CHECK
+  // constraints before INSERT so a 400 surfaces with the specific
+  // failure message instead of a generic Supabase error.
+  const bannerResult = resolveBannerFields(
+    {
+      send_push: input.send_push,
+      show_as_banner: input.show_as_banner,
+      banner_priority: input.banner_priority,
+      banner_starts_at: input.banner_starts_at,
+      banner_expires_at: input.banner_expires_at,
+      banner_dismissible: input.banner_dismissible,
+      banner_cta_label: input.banner_cta_label,
+    },
+    deepLink
+  );
+  if (!bannerResult.ok) {
+    return {
+      ok: false,
+      error: { code: "INVALID_INPUT", message: bannerResult.message },
+    };
+  }
+
   const { data, error } = await adminSupabase
     .from("admin_announcements")
     .insert({
@@ -330,6 +591,13 @@ export async function createAnnouncementDraft(
       approval_required: approvalRequired,
       created_by_phone: createdByPhone,
       // status defaults to 'draft' at the DB layer.
+      send_push: bannerResult.value.send_push,
+      show_as_banner: bannerResult.value.show_as_banner,
+      banner_priority: bannerResult.value.banner_priority,
+      banner_starts_at: bannerResult.value.banner_starts_at,
+      banner_expires_at: bannerResult.value.banner_expires_at,
+      banner_dismissible: bannerResult.value.banner_dismissible,
+      banner_cta_label: bannerResult.value.banner_cta_label,
     })
     .select(SELECT_COLUMNS)
     .single();
@@ -352,6 +620,16 @@ export type UpdateDraftInput = {
   // see updateAnnouncementDraft body.
   target_category?: unknown;
   deep_link?: unknown;
+  // Phase 7D: banner surface fields. Same effective-pair pattern —
+  // if ANY banner field is being updated, the WHOLE banner set is
+  // re-validated against the effective audience + deep_link.
+  send_push?: unknown;
+  show_as_banner?: unknown;
+  banner_priority?: unknown;
+  banner_starts_at?: unknown;
+  banner_expires_at?: unknown;
+  banner_dismissible?: unknown;
+  banner_cta_label?: unknown;
 };
 
 export async function updateAnnouncementDraft(
@@ -447,6 +725,73 @@ export async function updateAnnouncementDraft(
       };
     }
     patch.deep_link = deepLink;
+  }
+
+  // Phase 7D: re-validate banner fields whenever ANY banner field is
+  // in the patch, OR when deep_link is being changed (because the CTA
+  // label gate depends on deep_link). Uses the EFFECTIVE pair —
+  // anything not in the patch falls back to the existing row.
+  const bannerFieldKeys: ReadonlyArray<keyof UpdateDraftInput> = [
+    "send_push",
+    "show_as_banner",
+    "banner_priority",
+    "banner_starts_at",
+    "banner_expires_at",
+    "banner_dismissible",
+    "banner_cta_label",
+  ];
+  const anyBannerFieldTouched = bannerFieldKeys.some(
+    (k) => input[k] !== undefined
+  );
+  if (anyBannerFieldTouched || input.deep_link !== undefined) {
+    const effectiveDeepLink =
+      input.deep_link !== undefined
+        ? (patch.deep_link as string | null)
+        : existing.value.deep_link;
+    const bannerInput: BannerFieldsInput = {
+      send_push:
+        input.send_push !== undefined
+          ? input.send_push
+          : existing.value.send_push,
+      show_as_banner:
+        input.show_as_banner !== undefined
+          ? input.show_as_banner
+          : existing.value.show_as_banner,
+      banner_priority:
+        input.banner_priority !== undefined
+          ? input.banner_priority
+          : existing.value.banner_priority,
+      banner_starts_at:
+        input.banner_starts_at !== undefined
+          ? input.banner_starts_at
+          : existing.value.banner_starts_at,
+      banner_expires_at:
+        input.banner_expires_at !== undefined
+          ? input.banner_expires_at
+          : existing.value.banner_expires_at,
+      banner_dismissible:
+        input.banner_dismissible !== undefined
+          ? input.banner_dismissible
+          : existing.value.banner_dismissible,
+      banner_cta_label:
+        input.banner_cta_label !== undefined
+          ? input.banner_cta_label
+          : existing.value.banner_cta_label,
+    };
+    const bannerResult = resolveBannerFields(bannerInput, effectiveDeepLink);
+    if (!bannerResult.ok) {
+      return {
+        ok: false,
+        error: { code: "INVALID_INPUT", message: bannerResult.message },
+      };
+    }
+    patch.send_push = bannerResult.value.send_push;
+    patch.show_as_banner = bannerResult.value.show_as_banner;
+    patch.banner_priority = bannerResult.value.banner_priority;
+    patch.banner_starts_at = bannerResult.value.banner_starts_at;
+    patch.banner_expires_at = bannerResult.value.banner_expires_at;
+    patch.banner_dismissible = bannerResult.value.banner_dismissible;
+    patch.banner_cta_label = bannerResult.value.banner_cta_label;
   }
 
   if (Object.keys(patch).length === 0) {
@@ -674,27 +1019,15 @@ const QUEUE_ALLOWED_AUDIENCES: ReadonlySet<AnnouncementAudience> = new Set([
   "provider_category",
 ]);
 
-// Phase 7C Step 6: per-audience recipient caps enforced at queue
-// time. The fallback default (5) intentionally low for the soft
-// launch — admins raise it via the env var as confidence grows.
+// Phase 7C Step 6 introduced a temporary recipient cap for
+// provider_category broadcasts during soft launch. Phase 7E removed
+// the cap — sends now go to the full eligible audience by default.
+// The `ANNOUNCEMENT_PHASE_7C_MAX_RECIPIENTS_CATEGORY` env var is no
+// longer read anywhere and is safe to delete from Vercel.
 //
-// Cap is checked AFTER the audience hard-block, AFTER the category
-// active-check, and AFTER the count query. A cap miss returns 400
-// RECIPIENT_LIMIT_EXCEEDED with the actual count surfaced so the
-// admin sees the gap.
-const PHASE_7C_CATEGORY_RECIPIENT_CAP_DEFAULT = 5;
-
-function readCategoryRecipientCap(): number {
-  const raw = process.env.ANNOUNCEMENT_PHASE_7C_MAX_RECIPIENTS_CATEGORY;
-  if (typeof raw !== "string" || raw.trim().length === 0) {
-    return PHASE_7C_CATEGORY_RECIPIENT_CAP_DEFAULT;
-  }
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    return PHASE_7C_CATEGORY_RECIPIENT_CAP_DEFAULT;
-  }
-  return parsed;
-}
+// RECIPIENT_LIMIT_EXCEEDED stays in StoreError["code"] for one
+// release cycle so any client that imported the union doesn't break;
+// no code path emits it anymore.
 
 // Re-validate the row's target_category against the canonical
 // categories table. Used at queue time to catch the race where a
@@ -802,30 +1135,11 @@ export async function queueAnnouncement(
         },
       };
     }
-    // Recipient cap. Counts active provider devices that map to this
-    // category via provider_services. The cap defaults to 5 for the
-    // soft launch — env var raises it once category broadcasts are
-    // proven.
-    const cap = readCategoryRecipientCap();
-    const countResult = await countRecipients("provider_category", targetCategory);
-    if (!countResult.ok) {
-      return {
-        ok: false,
-        error: {
-          code: "DB_ERROR",
-          message: `Recipient count failed: ${countResult.error}`,
-        },
-      };
-    }
-    if (countResult.total > cap) {
-      return {
-        ok: false,
-        error: {
-          code: "RECIPIENT_LIMIT_EXCEEDED",
-          message: `Recipient count ${countResult.total} exceeds the configured cap of ${cap}. Raise ANNOUNCEMENT_PHASE_7C_MAX_RECIPIENTS_CATEGORY or pick a smaller category.`,
-        },
-      };
-    }
+    // Phase 7E: recipient cap removed. provider_category sends now
+    // go to every active provider device matching the category. The
+    // recipient preview shown in the composer is the admin-side
+    // visibility gate; backend trust is provided by the audience
+    // hard-block and the active-category check above.
   }
 
   const nowIso = new Date().toISOString();
@@ -856,6 +1170,23 @@ export async function queueAnnouncement(
       error: {
         code: "INVALID_TRANSITION",
         message: "Announcement is no longer in approved state.",
+      },
+    };
+  }
+
+  // Phase 7D banner-only path: when send_push=false, the worker has
+  // nothing to do — there's no FCM to dispatch. Skip the job-row
+  // INSERT entirely. The announcement.status transition above is
+  // sufficient to make the banner visible (BANNER_ELIGIBLE_STATUSES
+  // in banners.ts includes 'queued'). For push+banner rows
+  // (send_push=true AND show_as_banner=true) the job row is still
+  // created and the worker handles the push half normally.
+  if (existing.value.send_push !== true) {
+    return {
+      ok: true,
+      value: {
+        announcement: updated as unknown as AnnouncementRow,
+        jobCreated: false,
       },
     };
   }

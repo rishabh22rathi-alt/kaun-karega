@@ -48,6 +48,16 @@ export type ComposerDraft = {
   target_audience: ComposerAudience;
   target_category: string; // empty string ⇔ null in the DB
   deep_link: string;
+  // Phase 7D: banner surface fields. Defaults match the DB column
+  // defaults so a fresh draft is push-only with banner off.
+  send_push: boolean;
+  show_as_banner: boolean;
+  banner_priority: number;
+  // datetime-local string ("YYYY-MM-DDTHH:mm") or empty. Converted to
+  // ISO at save time.
+  banner_expires_at: string;
+  banner_dismissible: boolean;
+  banner_cta_label: string;
 };
 
 type RecipientPreview = {
@@ -92,6 +102,13 @@ const EMPTY_DRAFT: ComposerDraft = {
   target_audience: "admins",
   target_category: "",
   deep_link: "",
+  // Phase 7D: default emission profile = push only, no banner.
+  send_push: true,
+  show_as_banner: false,
+  banner_priority: 0,
+  banner_expires_at: "",
+  banner_dismissible: true,
+  banner_cta_label: "",
 };
 
 export default function AnnouncementComposer({
@@ -219,6 +236,20 @@ export default function AnnouncementComposer({
     if (draft.target_audience === "provider_category") {
       if (draft.target_category.trim().length === 0) return false;
     }
+    // Phase 7D: at least one emission surface; mirrors the DB CHECK
+    // admin_announcements_emission_at_least_one.
+    if (!draft.send_push && !draft.show_as_banner) return false;
+    // Phase 7D: CTA label requires deep_link.
+    if (
+      draft.show_as_banner &&
+      draft.banner_cta_label.trim().length > 0 &&
+      draft.deep_link.trim().length === 0
+    ) {
+      return false;
+    }
+    if (draft.show_as_banner && draft.banner_cta_label.length > 40) {
+      return false;
+    }
     return true;
   }, [draft]);
 
@@ -245,6 +276,18 @@ export default function AnnouncementComposer({
     setSaving(true);
     setError("");
     setSuccess("");
+    // Phase 7D: banner-off rows must send timing/cta as null/empty
+    // so the store's banner validator normalizes correctly. The
+    // composer's local state may carry stale banner field values from
+    // a prior toggle; explicitly send neutral values when banner is off.
+    const bannerOn = draft.show_as_banner === true;
+    const bannerExpiresAtIso = bannerOn && draft.banner_expires_at
+      ? new Date(draft.banner_expires_at).toISOString()
+      : null;
+    const ctaLabel =
+      bannerOn && draft.banner_cta_label.trim().length > 0
+        ? draft.banner_cta_label.trim()
+        : null;
     const payload: Record<string, unknown> = {
       title: draft.title.trim(),
       body: draft.body.trim(),
@@ -257,6 +300,14 @@ export default function AnnouncementComposer({
           ? draft.target_category.trim()
           : null,
       deep_link: draft.deep_link.trim() || null,
+      // Phase 7D banner emission set. Inert defaults when banner off.
+      send_push: draft.send_push,
+      show_as_banner: bannerOn,
+      banner_priority: bannerOn ? draft.banner_priority : 0,
+      banner_starts_at: null, // Phase 7D V1 — composer doesn't expose
+      banner_expires_at: bannerExpiresAtIso,
+      banner_dismissible: bannerOn ? draft.banner_dismissible : true,
+      banner_cta_label: ctaLabel,
     };
     const url = editingId
       ? `/api/admin/announcements/${encodeURIComponent(editingId)}`
@@ -563,6 +614,153 @@ export default function AnnouncementComposer({
               {deepLinkRemaining} of {DEEP_LINK_MAX} characters remaining
             </p>
           </label>
+
+          {/* Phase 7D: Emission + Banner options */}
+          <fieldset
+            data-testid="announcement-emission-fieldset"
+            className="rounded-xl border border-slate-200 bg-slate-50 p-3"
+          >
+            <legend className="px-1 text-xs font-semibold uppercase tracking-wide text-slate-600">
+              Emission
+            </legend>
+            <div className="space-y-2">
+              <label className="flex items-start gap-2 text-sm text-slate-800">
+                <input
+                  type="checkbox"
+                  checked={draft.send_push}
+                  onChange={(e) =>
+                    setDraft({ ...draft, send_push: e.target.checked })
+                  }
+                  data-testid="announcement-send-push-toggle"
+                  className="mt-0.5 h-4 w-4 cursor-pointer"
+                />
+                <span>
+                  <span className="font-semibold">Send push notification</span>
+                  <span className="ml-2 text-xs text-slate-500">
+                    (FCM fan-out to active devices in the target audience)
+                  </span>
+                </span>
+              </label>
+              <label className="flex items-start gap-2 text-sm text-slate-800">
+                <input
+                  type="checkbox"
+                  checked={draft.show_as_banner}
+                  onChange={(e) =>
+                    setDraft({ ...draft, show_as_banner: e.target.checked })
+                  }
+                  data-testid="announcement-show-banner-toggle"
+                  className="mt-0.5 h-4 w-4 cursor-pointer"
+                />
+                <span>
+                  <span className="font-semibold">Show as in-app banner</span>
+                  <span className="ml-2 text-xs text-slate-500">
+                    (renders inside the app/web UI for targeted actors)
+                  </span>
+                </span>
+              </label>
+              {!draft.send_push && !draft.show_as_banner ? (
+                <p
+                  role="alert"
+                  className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700"
+                >
+                  At least one of push or banner must be enabled.
+                </p>
+              ) : null}
+            </div>
+          </fieldset>
+
+          {draft.show_as_banner ? (
+            <fieldset
+              data-testid="announcement-banner-options"
+              className="rounded-xl border border-sky-200 bg-sky-50 p-3"
+            >
+              <legend className="px-1 text-xs font-semibold uppercase tracking-wide text-sky-700">
+                Banner options
+              </legend>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="block text-xs text-slate-700">
+                  <span className="font-semibold uppercase tracking-wide text-slate-600">
+                    Priority
+                  </span>
+                  <input
+                    type="number"
+                    step={1}
+                    value={draft.banner_priority}
+                    onChange={(e) =>
+                      setDraft({
+                        ...draft,
+                        banner_priority:
+                          Number.parseInt(e.target.value, 10) || 0,
+                      })
+                    }
+                    data-testid="announcement-banner-priority"
+                    className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-200"
+                  />
+                  <span className="mt-1 block text-[11px] text-slate-500">
+                    Higher = shown first when multiple banners match.
+                  </span>
+                </label>
+                <label className="block text-xs text-slate-700">
+                  <span className="font-semibold uppercase tracking-wide text-slate-600">
+                    Expires at (optional)
+                  </span>
+                  <input
+                    type="datetime-local"
+                    value={draft.banner_expires_at}
+                    onChange={(e) =>
+                      setDraft({ ...draft, banner_expires_at: e.target.value })
+                    }
+                    data-testid="announcement-banner-expires-at"
+                    className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-200"
+                  />
+                  <span className="mt-1 block text-[11px] text-slate-500">
+                    Leave empty for no expiry.
+                  </span>
+                </label>
+              </div>
+              <label className="mt-3 flex items-start gap-2 text-sm text-slate-800">
+                <input
+                  type="checkbox"
+                  checked={draft.banner_dismissible}
+                  onChange={(e) =>
+                    setDraft({
+                      ...draft,
+                      banner_dismissible: e.target.checked,
+                    })
+                  }
+                  data-testid="announcement-banner-dismissible"
+                  className="mt-0.5 h-4 w-4 cursor-pointer"
+                />
+                <span>
+                  <span className="font-semibold">Dismissible</span>
+                  <span className="ml-2 text-xs text-slate-500">
+                    (uncheck only for critical announcements — no close
+                    button rendered)
+                  </span>
+                </span>
+              </label>
+              <label className="mt-3 block">
+                <span className="text-xs font-semibold uppercase tracking-wide text-slate-600">
+                  CTA button label (optional)
+                </span>
+                <input
+                  type="text"
+                  value={draft.banner_cta_label}
+                  maxLength={40}
+                  onChange={(e) =>
+                    setDraft({ ...draft, banner_cta_label: e.target.value })
+                  }
+                  placeholder="e.g. Learn more"
+                  disabled={draft.deep_link.trim().length === 0}
+                  data-testid="announcement-banner-cta-label"
+                  className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-200 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:opacity-60"
+                />
+                <span className="mt-1 block text-[11px] text-slate-500">
+                  Requires a deep link. Max 40 characters.
+                </span>
+              </label>
+            </fieldset>
+          ) : null}
 
           <div className="flex flex-wrap items-center gap-3 pt-1">
             <button

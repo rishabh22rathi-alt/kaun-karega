@@ -96,6 +96,16 @@ export async function POST(request: Request) {
     target_category: body.target_category,
     deep_link: body.deep_link,
     approval_required: body.approval_required,
+    // Phase 7D: banner fields. Omitted fields fall back to safe
+    // defaults inside the store (send_push=true, show_as_banner=false,
+    // etc.) so a UI that doesn't supply them keeps push-only behavior.
+    send_push: body.send_push,
+    show_as_banner: body.show_as_banner,
+    banner_priority: body.banner_priority,
+    banner_starts_at: body.banner_starts_at,
+    banner_expires_at: body.banner_expires_at,
+    banner_dismissible: body.banner_dismissible,
+    banner_cta_label: body.banner_cta_label,
     created_by_phone: String(auth.admin.phone || "").trim(),
   });
 

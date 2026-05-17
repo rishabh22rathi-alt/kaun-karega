@@ -73,6 +73,15 @@ export async function PATCH(request: Request, context: RouteContext) {
     target_audience: body.target_audience,
     target_category: body.target_category,
     deep_link: body.deep_link,
+    // Phase 7D: banner fields. Re-validated against the effective
+    // (audience, deep_link, banner_*) tuple inside the store.
+    send_push: body.send_push,
+    show_as_banner: body.show_as_banner,
+    banner_priority: body.banner_priority,
+    banner_starts_at: body.banner_starts_at,
+    banner_expires_at: body.banner_expires_at,
+    banner_dismissible: body.banner_dismissible,
+    banner_cta_label: body.banner_cta_label,
   });
   if (!result.ok) {
     return NextResponse.json(

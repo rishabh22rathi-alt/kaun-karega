@@ -106,6 +106,13 @@ type AnnouncementRow = {
   sent_count: number | null;
   failed_count: number | null;
   invalid_token_count: number | null;
+  // Phase 7D: defense-in-depth. The worker reads send_push so a
+  // banner-only row (which shouldn't have a job row at all per
+  // store.queueAnnouncement) is still rejected at the worker if a
+  // job row somehow exists. Prevents any code/SQL bypass that
+  // inserts a job for an announcement with send_push=false from
+  // firing an FCM push.
+  send_push: boolean | null;
 };
 
 function isSendEnabled(): boolean {
@@ -198,7 +205,7 @@ async function loadAnnouncement(
   const { data, error } = await adminSupabase
     .from("admin_announcements")
     .select(
-      "id, title, body, deep_link, target_audience, target_category, status, recipient_count, sent_count, failed_count, invalid_token_count"
+      "id, title, body, deep_link, target_audience, target_category, status, recipient_count, sent_count, failed_count, invalid_token_count, send_push"
     )
     .eq("id", announcementId)
     .maybeSingle();
@@ -317,6 +324,23 @@ export async function runOnce(
       announcementId: announcement.id,
       reason:
         "target_audience not in {admins, provider_category} — Phase 7C does not unlock providers_all yet.",
+    };
+  }
+
+  // Phase 7D defense-in-depth: worker REFUSES to send when
+  // send_push=false. The store's queueAnnouncement already skips the
+  // job-row INSERT for banner-only rows, so reaching this branch
+  // requires a bypass (direct SQL INSERT into admin_announcement_jobs,
+  // or a code regression). Mark the job done so a stuck banner-only
+  // job doesn't loop on retry.
+  if (announcement.send_push === false) {
+    await finalizeJob(job.id, "done", "banner_only_no_push");
+    return {
+      ok: true,
+      status: "audience_blocked",
+      announcementId: announcement.id,
+      reason:
+        "send_push is false — banner-only announcement, worker has no FCM work to do.",
     };
   }
 

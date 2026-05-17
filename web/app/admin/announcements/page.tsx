@@ -82,6 +82,18 @@ export default function AdminAnnouncementsPage() {
     ? announcements.find((row) => row.id === editingId) ?? null
     : null;
 
+  // Phase 7D: convert the row's ISO banner_expires_at to the
+  // datetime-local format ("YYYY-MM-DDTHH:mm") the composer's
+  // <input type="datetime-local"> expects. Empty string when null.
+  const formatForDatetimeLocal = (iso: string | null): string => {
+    if (!iso) return "";
+    const parsed = Date.parse(iso);
+    if (Number.isNaN(parsed)) return "";
+    const d = new Date(parsed);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+
   const composerDraft: ComposerDraft | null = editingRow
     ? {
         id: editingRow.id,
@@ -90,6 +102,12 @@ export default function AdminAnnouncementsPage() {
         target_audience: editingRow.target_audience,
         target_category: editingRow.target_category ?? "",
         deep_link: editingRow.deep_link ?? "",
+        send_push: editingRow.send_push,
+        show_as_banner: editingRow.show_as_banner,
+        banner_priority: editingRow.banner_priority,
+        banner_expires_at: formatForDatetimeLocal(editingRow.banner_expires_at),
+        banner_dismissible: editingRow.banner_dismissible,
+        banner_cta_label: editingRow.banner_cta_label ?? "",
       }
     : null;
 

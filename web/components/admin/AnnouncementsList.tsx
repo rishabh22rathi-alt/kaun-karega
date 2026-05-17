@@ -42,6 +42,53 @@ export type AnnouncementRow = {
   created_by_phone: string;
   created_at: string;
   updated_at: string;
+  // Phase 7D: banner fields. Defaults match the DB column defaults
+  // so existing rows fetched without Phase 7D code path still render.
+  send_push: boolean;
+  show_as_banner: boolean;
+  banner_priority: number;
+  banner_starts_at: string | null;
+  banner_expires_at: string | null;
+  banner_dismissible: boolean;
+  banner_cta_label: string | null;
+};
+
+// Banner lifecycle states for the row badge. Derived from row fields
+// at render time — there is no banner-specific column in the DB.
+type BannerLifecycle =
+  | "off"
+  | "active"
+  | "scheduled"
+  | "expired";
+
+function deriveBannerLifecycle(
+  row: AnnouncementRow,
+  now: Date
+): BannerLifecycle {
+  if (!row.show_as_banner) return "off";
+  if (row.banner_starts_at) {
+    const starts = Date.parse(row.banner_starts_at);
+    if (!Number.isNaN(starts) && starts > now.getTime()) return "scheduled";
+  }
+  if (row.banner_expires_at) {
+    const expires = Date.parse(row.banner_expires_at);
+    if (!Number.isNaN(expires) && expires <= now.getTime()) return "expired";
+  }
+  return "active";
+}
+
+const BANNER_BADGE_CLASS: Record<BannerLifecycle, string> = {
+  off: "border-slate-200 bg-slate-50 text-slate-500",
+  active: "border-emerald-300 bg-emerald-50 text-emerald-800",
+  scheduled: "border-sky-300 bg-sky-50 text-sky-800",
+  expired: "border-slate-300 bg-slate-100 text-slate-600",
+};
+
+const BANNER_BADGE_LABEL: Record<BannerLifecycle, string> = {
+  off: "Banner off",
+  active: "Banner active",
+  scheduled: "Banner scheduled",
+  expired: "Banner expired",
 };
 
 // Phase 7C Steps 1-5: the UI exposes Queue Send for all three audience
@@ -140,30 +187,43 @@ function QueueConfirmModal({
   const [typedPhrase, setTypedPhrase] = useState("");
 
   const isProvidersAll = row.target_audience === "providers_all";
+  const isBannerOnly = row.send_push === false && row.show_as_banner === true;
+  // Phase 7E: simplified confirmation. The type-the-count gate is
+  // ONLY required for providers_all (still blocked at the queue
+  // route, but the modal UI stays ready for the eventual unlock).
+  // Admins, provider_category, and banner-only all flow through a
+  // single Confirm click once the recipient preview has loaded.
+  const requireCountGate = isProvidersAll;
+  const previewReady = preview !== null;
   const expectedCount = preview ? String(preview.total) : "";
-  const countMatches =
-    expectedCount.length > 0 && typedCount.trim() === expectedCount;
-  // Phase 7C: providers_all requires a SECOND gate — type the literal
-  // string. Case-sensitive on purpose. Other audiences ignore this
-  // field; phraseMatches is forced true so the regular count gate
-  // alone is sufficient.
+  const countMatches = requireCountGate
+    ? expectedCount.length > 0 && typedCount.trim() === expectedCount
+    : true;
   const phraseMatches = isProvidersAll
     ? typedPhrase === PROVIDERS_ALL_CONFIRM_PHRASE
     : true;
-  const canConfirm = countMatches && phraseMatches;
+  // Banner-only doesn't actually need preview to be ready (no FCM),
+  // but every other path benefits from showing the admin the count
+  // first. Keep the universal previewReady gate so the UX is
+  // predictable.
+  const canConfirm = previewReady && countMatches && phraseMatches;
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center">
       <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl">
         <h3 className="text-base font-semibold text-slate-900">
-          {isProvidersAll
-            ? "Confirm broadcast to ALL providers"
-            : "Confirm broadcast"}
+          {isBannerOnly
+            ? "Activate banner"
+            : isProvidersAll
+              ? "Confirm broadcast to ALL providers"
+              : "Confirm broadcast"}
         </h3>
         <p className="mt-1 text-xs text-slate-600">
-          {isProvidersAll
-            ? "This will reach every registered provider device on the platform. In-flight messages cannot be recalled."
-            : "This will send an FCM push to every active device in the audience. In-flight messages cannot be recalled."}
+          {isBannerOnly
+            ? "This announcement has push disabled. Activating makes the in-app banner visible to targeted actors until it expires or they dismiss it."
+            : isProvidersAll
+              ? "This will reach every registered provider device on the platform. In-flight messages cannot be recalled."
+              : "This will send an FCM push to every active device in the audience. In-flight messages cannot be recalled."}
         </p>
 
         {isProvidersAll ? (
@@ -208,14 +268,15 @@ function QueueConfirmModal({
         {preview ? (
           <div className="mt-3 text-xs text-slate-700">
             <p>
-              Will reach{" "}
+              {isBannerOnly ? "Will surface to " : "Will reach "}
               <span
                 className="font-bold text-slate-900"
                 data-testid="queue-confirm-total"
               >
                 {preview.total}
               </span>{" "}
-              device{preview.total === 1 ? "" : "s"} in audience{" "}
+              {isBannerOnly ? "device-eligible actor" : "device"}
+              {preview.total === 1 ? "" : "s"} in audience{" "}
               <span className="font-mono">{preview.audience}</span>
               {preview.target_category ? (
                 <>
@@ -224,20 +285,22 @@ function QueueConfirmModal({
               ) : null}
               .
             </p>
-            <label className="mt-3 block">
-              <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">
-                Type {preview.total} to confirm
-              </span>
-              <input
-                type="text"
-                value={typedCount}
-                onChange={(e) => setTypedCount(e.target.value)}
-                inputMode="numeric"
-                autoComplete="off"
-                data-testid="queue-confirm-input"
-                className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-200"
-              />
-            </label>
+            {requireCountGate ? (
+              <label className="mt-3 block">
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">
+                  Type {preview.total} to confirm
+                </span>
+                <input
+                  type="text"
+                  value={typedCount}
+                  onChange={(e) => setTypedCount(e.target.value)}
+                  inputMode="numeric"
+                  autoComplete="off"
+                  data-testid="queue-confirm-input"
+                  className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-200"
+                />
+              </label>
+            ) : null}
             {isProvidersAll ? (
               <label className="mt-3 block">
                 <span className="text-[11px] font-semibold uppercase tracking-wide text-rose-700">
@@ -273,7 +336,13 @@ function QueueConfirmModal({
             data-testid="queue-confirm-button"
             className="rounded-lg bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {submitting ? "Queueing…" : "Queue Send"}
+            {submitting
+              ? isBannerOnly
+                ? "Activating…"
+                : "Queueing…"
+              : isBannerOnly
+                ? "Activate banner"
+                : "Queue Send"}
           </button>
         </div>
       </div>
@@ -531,12 +600,31 @@ export default function AnnouncementsList({
                     ) : null}
                   </td>
                   <td className="px-3 py-2 align-top">
-                    <span
-                      data-testid={`announcement-status-${row.id}`}
-                      className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${STATUS_BADGE[row.status]}`}
-                    >
-                      {row.status.replace("_", " ")}
-                    </span>
+                    <div className="flex flex-col gap-1">
+                      <span
+                        data-testid={`announcement-status-${row.id}`}
+                        className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${STATUS_BADGE[row.status]}`}
+                      >
+                        {row.send_push ? "Push" : "No push"}{" "}
+                        · {row.status.replace("_", " ")}
+                      </span>
+                      {(() => {
+                        const lifecycle = deriveBannerLifecycle(row, new Date());
+                        return (
+                          <span
+                            data-testid={`announcement-banner-status-${row.id}`}
+                            className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${BANNER_BADGE_CLASS[lifecycle]}`}
+                          >
+                            {BANNER_BADGE_LABEL[lifecycle]}
+                            {lifecycle !== "off" && !row.banner_dismissible ? (
+                              <span className="ml-1 rounded bg-amber-100 px-1 text-[9px] font-semibold text-amber-800">
+                                non-dismissible
+                              </span>
+                            ) : null}
+                          </span>
+                        );
+                      })()}
+                    </div>
                   </td>
                   <td className="px-3 py-2 align-top text-xs text-slate-600">
                     {formatDateTime(row.updated_at)}
@@ -587,12 +675,14 @@ export default function AnnouncementsList({
                             data-testid={`announcement-queue-${row.id}`}
                             className="rounded-md border border-rose-300 bg-rose-50 px-2.5 py-1 text-[11px] font-semibold text-rose-800 transition hover:bg-rose-100 disabled:opacity-50"
                           >
-                            Queue Send
+                            {row.send_push === false && row.show_as_banner
+                              ? "Activate banner"
+                              : "Queue Send"}
                           </button>
                         ) : (
                           <span
                             data-testid={`announcement-queue-blocked-${row.id}`}
-                            title="Phase 7B sends to admin audience only."
+                            title="Sending unavailable for this audience yet."
                             className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-500"
                           >
                             Sending unavailable

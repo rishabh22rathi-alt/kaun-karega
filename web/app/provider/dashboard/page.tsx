@@ -7,6 +7,7 @@ import InAppToastStack, { type InAppToast } from "@/components/InAppToastStack";
 import ProviderDashboardCoachmark from "@/components/ProviderDashboardCoachmark";
 import ProviderAliasSubmitter from "@/components/ProviderAliasSubmitter";
 import ProviderPledgeModal from "@/components/ProviderPledgeModal";
+import PlatformAnnouncementBanner from "@/components/PlatformAnnouncementBanner";
 import { PROVIDER_PLEDGE_VERSION } from "@/lib/disclaimer";
 import { getAuthSession } from "@/lib/auth";
 import { useSessionGuard } from "@/lib/useSessionGuard";
@@ -932,6 +933,11 @@ function ProviderDashboardInner() {
   return (
     <main className="min-h-screen bg-[linear-gradient(180deg,#f8fafc_0%,#eef6ff_100%)] px-4 py-8">
       <div className="mx-auto w-full max-w-6xl space-y-6">
+        {/* Phase 7D.6: in-app banner for provider_category audience.
+            The API resolves actor + matches against provider_services
+            so only banners targeting categories this provider offers
+            surface here. */}
+        <PlatformAnnouncementBanner />
         {alreadyRegisteredNotice ? (
           <div className="rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-800">
             You are already registered. You can update your details from dashboard.
