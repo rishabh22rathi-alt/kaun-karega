@@ -14,6 +14,7 @@ import {
   isInvalidTokenError,
 } from "@/lib/push/invalidateTokens";
 import { appendPushLog, tokenTail } from "@/lib/push/pushLogStore";
+import { filterProviderIdsByPreference } from "@/lib/notificationPreferences";
 
 export const runtime = "nodejs";
 
@@ -525,21 +526,79 @@ export async function POST(request: Request) {
       ) {
         const devices = await getActiveTokensForProviderIds(toNotify);
 
-        // Bucket devices by provider so we can both (a) write a 'skipped'
-        // log row for providers with zero devices, and (b) attach
-        // provider_id to each per-token log row.
-        const devicesByProvider = new Map<string, typeof devices>();
-        for (const d of devices) {
+        // Phase 2: notification preference gate. Filter out providers
+        // whose owners have disabled the "job_match" toggle. Fails OPEN —
+        // a preference-lookup error returns the full input set, leaves
+        // the existing fan-out intact, and writes no preference-disabled
+        // log rows for the failed lookup. Soft-fail throughout matches
+        // the rest of §6c: a transient prefs error must not regress
+        // matched-service push for anyone.
+        const prefFilter = await filterProviderIdsByPreference(
+          toNotify,
+          "job_match"
+        );
+        if (prefFilter.failedOpen) {
+          console.warn(
+            "[process-task-notifications] preference filter failed open; sending to all matched providers",
+            { taskId, providerCount: toNotify.length }
+          );
+        }
+        const allowedSet = prefFilter.allowed;
+        const preferenceDisabledIds = toNotify.filter(
+          (pid) => !allowedSet.has(pid)
+        );
+
+        // 0. Preference-skipped rows — written BEFORE the no-device
+        //    check so a disabled provider does not also get a misleading
+        //    "no_active_device" row. Logged with event_type="job_match"
+        //    (the preference key) even though the unsent payload would
+        //    have used event_type="new_service_request"; this keeps the
+        //    push_logs audit per-preference-key so the admin dashboard
+        //    can surface "how many providers opted out of job_match for
+        //    this task" without joining tables.
+        for (const pid of preferenceDisabledIds) {
+          const logResult = await appendPushLog({
+            eventType: "job_match",
+            taskId,
+            recipientProviderId: pid,
+            status: "skipped",
+            errorMessage: "preference_disabled",
+            payloadJson: {
+              reason: "preference_disabled",
+              taskId,
+            },
+          });
+          if (!logResult.ok) {
+            console.warn(
+              "[process-task-notifications] push_logs (preference_disabled) insert failed",
+              { providerId: pid, error: logResult.error }
+            );
+          }
+        }
+
+        // Narrow the device set to allowed providers only. Disabled
+        // providers' tokens never reach sendEachForMulticast.
+        const allowedDevices = devices.filter(
+          (d) => d.providerId !== null && allowedSet.has(d.providerId)
+        );
+
+        // Bucket allowed devices by provider so we can both (a) write a
+        // 'skipped' log row for allowed providers with zero devices,
+        // and (b) attach provider_id to each per-token log row.
+        const devicesByProvider = new Map<string, typeof allowedDevices>();
+        for (const d of allowedDevices) {
           if (!d.providerId) continue;
           const arr = devicesByProvider.get(d.providerId) ?? [];
           arr.push(d);
           devicesByProvider.set(d.providerId, arr);
         }
 
-        // 1. Skipped rows — one per provider who has no active device.
-        //    Makes the admin dashboard self-explanatory: you can see who
-        //    *would* have been pushed if they'd installed the app.
+        // 1. Skipped rows — one per ALLOWED provider who has no active
+        //    device. Preference-disabled providers were already logged
+        //    above and are excluded here so they get exactly one
+        //    skipped row with the most-specific reason.
         for (const pid of toNotify) {
+          if (!allowedSet.has(pid)) continue;
           if (!devicesByProvider.has(pid)) {
             const logResult = await appendPushLog({
               eventType: "new_service_request",
@@ -562,7 +621,7 @@ export async function POST(request: Request) {
         }
 
         // 2. Send to devices that do exist.
-        if (devices.length > 0) {
+        if (allowedDevices.length > 0) {
           const payload = newServiceRequestPayload({
             taskId,
             displayId: (task as { display_id?: unknown }).display_id ?? null,
@@ -575,7 +634,7 @@ export async function POST(request: Request) {
           let sendResult: Awaited<ReturnType<typeof sendPushToTokens>> | null;
           try {
             sendResult = await sendPushToTokens(
-              devices.map((d) => d.fcmToken),
+              allowedDevices.map((d) => d.fcmToken),
               payload
             );
           } catch (sendErr) {
@@ -584,7 +643,7 @@ export async function POST(request: Request) {
               {
                 message:
                   sendErr instanceof Error ? sendErr.message : String(sendErr),
-                deviceCount: devices.length,
+                deviceCount: allowedDevices.length,
               }
             );
             sendResult = null;
@@ -593,7 +652,7 @@ export async function POST(request: Request) {
           if (sendResult) {
             const invalidTokens: string[] = [];
             const deviceByToken = new Map(
-              devices.map((d) => [d.fcmToken, d] as const)
+              allowedDevices.map((d) => [d.fcmToken, d] as const)
             );
             for (const r of sendResult.results) {
               const device = deviceByToken.get(r.token);

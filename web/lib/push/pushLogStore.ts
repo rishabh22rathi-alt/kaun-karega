@@ -3,8 +3,13 @@ import { scrubLongTokens } from "./scrub";
 
 // Keep in sync with the push_logs.event_type CHECK constraint. Phase 4B
 // added "new_service_request" via 20260516200000_push_logs_event_types.sql.
+// Phase 2 (notification preferences) added "job_match" — written when a
+// matched-service push is skipped because the provider opted out via the
+// "job_match" preference toggle. The migration that widened the CHECK is
+// 20260518120000_notification_preferences.sql.
 export type PushLogEventType =
   | "new_service_request"
+  | "job_match"
   | "job_matched"
   | "chat_message"
   | "test";
