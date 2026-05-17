@@ -54,6 +54,7 @@ import {
   editCategory,
   toggleCategory,
 } from "@/lib/admin/adminCategoryMutations";
+import { reconcileProviderApprovalStatusSoft } from "@/lib/admin/adminProviderApprovalReconcile";
 import {
   createOrGetChatThreadFromSupabase,
   getAdminChatThreadFromSupabase,
@@ -536,7 +537,29 @@ export async function POST(request: NextRequest) {
           )
         );
       }
+      // Capture the queue row's source_ref + source_type before the
+      // helper runs, so we can reconcile the originating provider after
+      // success. Provider-sourced rows have source_type in
+      // (provider_register, provider_update); non-provider sources
+      // (legacy / admin-seeded) skip reconcile.
+      const { data: areaReviewRow } = await adminSupabase
+        .from("area_review_queue")
+        .select("source_ref, source_type")
+        .eq("review_id", reviewId)
+        .maybeSingle();
       const result = await mapUnmappedAreaInSupabase({ reviewId, rawArea, canonicalArea });
+      if (result.ok) {
+        const sourceType = String(areaReviewRow?.source_type || "").trim();
+        if (
+          sourceType === "provider_register" ||
+          sourceType === "provider_update"
+        ) {
+          await reconcileProviderApprovalStatusSoft(
+            areaReviewRow?.source_ref ?? null,
+            "admin_map_unmapped_area"
+          );
+        }
+      }
       return withNoCache(NextResponse.json(result, { status: result.ok ? 200 : 400 }));
     }
     if (action === "admin_create_area_from_unmapped") {
@@ -561,7 +584,26 @@ export async function POST(request: NextRequest) {
       }
       const resolvedCanonicalArea =
         typeof body.resolvedCanonicalArea === "string" ? body.resolvedCanonicalArea.trim() : "";
+      // Capture source_ref + source_type before the helper clears the
+      // row. Same provider-source rule as admin_map_unmapped_area.
+      const { data: areaReviewRow } = await adminSupabase
+        .from("area_review_queue")
+        .select("source_ref, source_type")
+        .eq("review_id", reviewId)
+        .maybeSingle();
       const result = await resolveUnmappedAreaInSupabase({ reviewId, resolvedCanonicalArea });
+      if (result.ok) {
+        const sourceType = String(areaReviewRow?.source_type || "").trim();
+        if (
+          sourceType === "provider_register" ||
+          sourceType === "provider_update"
+        ) {
+          await reconcileProviderApprovalStatusSoft(
+            areaReviewRow?.source_ref ?? null,
+            "admin_resolve_unmapped_area"
+          );
+        }
+      }
       return withNoCache(NextResponse.json(result, { status: result.ok ? 200 : 400 }));
     }
     if (action === "admin_get_needs") {

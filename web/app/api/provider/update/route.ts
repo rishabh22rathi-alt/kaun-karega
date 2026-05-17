@@ -4,6 +4,8 @@ import { adminSupabase } from "@/lib/supabase/admin";
 import { updateProviderInSupabase } from "@/lib/admin/adminProviderReads";
 import { findDuplicateNameProviders } from "@/lib/providerNameNormalize";
 import { queueUnmappedAreaForReview } from "@/lib/admin/adminUnmappedAreas";
+import { isPaymentEnforcementEnabled } from "@/lib/payments/server";
+import { effectivePlan } from "@/lib/payments/effectivePlan";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -109,6 +111,52 @@ export async function POST(request: Request) {
       { ok: false, error: "PROVIDER_NOT_FOUND" },
       { status: 404 }
     );
+  }
+
+  // Stage 3A payment enforcement: cap how many areas the provider may
+  // save based on their active plan. Read the flag here (not at module
+  // load) so flipping it in Vercel env is instant. When the flag is
+  // off, this entire block is a no-op and existing behavior is
+  // preserved exactly.
+  //
+  // Free plan / no row / expired paid plan all resolve to maxRegions=1
+  // via effectivePlan(). We never mutate provider_areas on expiry —
+  // we only block the NEXT save that would push above the allowed
+  // count. Existing saved coverage is untouched and remains visible
+  // to the provider; only the matching pipeline (Stage 3C, not yet
+  // wired) will filter it down at lead-emission time.
+  //
+  // Failure mode for the plan lookup: fail-OPEN with a loud warn. A
+  // transient single-row PK lookup blip should not lock a paying
+  // provider out of their own coverage. This matches the fail-open
+  // posture in process-task-notifications for category checks.
+  if (isPaymentEnforcementEnabled()) {
+    const { data: planRow, error: planLookupError } = await adminSupabase
+      .from("provider_plans")
+      .select("plan_code, max_regions, current_period_start, current_period_end")
+      .eq("provider_id", providerRow.provider_id)
+      .maybeSingle();
+
+    if (planLookupError) {
+      console.warn(
+        "[provider/update] provider_plans lookup failed; failing OPEN (no enforcement this request)",
+        planLookupError.message || planLookupError
+      );
+    } else {
+      const plan = effectivePlan(planRow ?? null);
+      if (areas.length > plan.maxRegions) {
+        return NextResponse.json(
+          {
+            ok: false,
+            error: "PLAN_LIMIT_EXCEEDED",
+            planCode: plan.code,
+            maxRegions: plan.maxRegions,
+            attempted: areas.length,
+          },
+          { status: 400 }
+        );
+      }
+    }
   }
 
   // Detect categories the provider added that are NOT in the active master

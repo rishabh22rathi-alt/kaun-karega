@@ -1081,9 +1081,28 @@ function ProviderRegisterPageInner() {
           }),
         });
         const updateData = (await parseJsonSafe(updateRes)) as
-          | { ok?: boolean; error?: string; message?: string }
+          | {
+              ok?: boolean;
+              error?: string;
+              message?: string;
+              // Stage 3A payment enforcement response shape — only
+              // present when the server rejects with PLAN_LIMIT_EXCEEDED.
+              planCode?: string;
+              maxRegions?: number;
+              attempted?: number;
+            }
           | null;
         if (!updateRes.ok || updateData?.ok !== true) {
+          // Surface a clear plan-limit message when enforcement rejects
+          // the save. The catch below stuffs error.message into
+          // submitError, which is what the form already renders.
+          if (updateData?.error === "PLAN_LIMIT_EXCEEDED") {
+            const allowed = Number(updateData.maxRegions ?? 1);
+            const regionLabel = allowed === 1 ? "region" : "regions";
+            throw new Error(
+              `Your current plan supports only ${allowed} ${regionLabel}. Upgrade to add more regions.`
+            );
+          }
           throw new Error(
             updateData?.error || updateData?.message || "Failed to save changes"
           );

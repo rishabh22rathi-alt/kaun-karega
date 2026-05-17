@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { adminSupabase } from "@/lib/supabase/admin";
 import { requireAdminSession } from "@/lib/adminAuth";
+import { reconcileProviderApprovalStatusSoft } from "@/lib/admin/adminProviderApprovalReconcile";
 
 // GET  /api/admin/aliases?status=pending|active
 // POST /api/admin/aliases  body: { action: "approve"|"reject", alias, reason? }
@@ -353,6 +354,14 @@ export async function POST(request: Request) {
       },
     });
 
+    // Reconcile providers.status='pending' -> 'active' if this was the
+    // provider's last open queue item. submittedBy may be empty for
+    // legacy/admin-initiated rows; the helper no-ops on empty input.
+    await reconcileProviderApprovalStatusSoft(
+      submittedBy || null,
+      "alias.approve"
+    );
+
     return NextResponse.json({
       ok: true,
       action: "approved",
@@ -386,6 +395,14 @@ export async function POST(request: Request) {
       reason: reason || null,
     },
   });
+
+  // Reconcile providers.status='pending' -> 'active' if this was the
+  // provider's last open queue item. Confirmed decision: rejection of
+  // the last open item still flips the provider to active.
+  await reconcileProviderApprovalStatusSoft(
+    submittedBy || null,
+    "alias.reject"
+  );
 
   return NextResponse.json({
     ok: true,

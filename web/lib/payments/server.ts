@@ -35,7 +35,26 @@ export function isPaymentEnabled(): boolean {
   return String(process.env.PAYMENT_ENABLED || "").trim().toLowerCase() === "true";
 }
 
-// PAYMENT_ENFORCEMENT_ENABLED is reserved for Stage 3. Not read here.
+/**
+ * Stage 3 enforcement switch. Read on every call so flipping in Vercel
+ * env console takes effect without a redeploy.
+ *
+ * When false (default): enforcement call sites must short-circuit and
+ * preserve existing pre-payment behavior exactly. No plan reads, no
+ * region caps, no matching restriction.
+ *
+ * When true: call sites consult provider_plans + effectivePlan() to
+ * decide whether to block writes / filter matches.
+ *
+ * Stage 3A reads this in /api/provider/update only. Stage 3B will add
+ * the registration call site. Stage 3C will add the matching pipeline.
+ */
+export function isPaymentEnforcementEnabled(): boolean {
+  return (
+    String(process.env.PAYMENT_ENFORCEMENT_ENABLED || "").trim().toLowerCase() ===
+    "true"
+  );
+}
 
 // ─── Pricing ───────────────────────────────────────────────────────────────
 

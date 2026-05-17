@@ -10,6 +10,7 @@
  */
 
 import { adminSupabase } from "../supabase/admin";
+import { reconcileProviderApprovalStatusSoft } from "./adminProviderApprovalReconcile";
 
 // ---------------------------------------------------------------------------
 // Notification helper — fan out to the requesting provider.
@@ -237,6 +238,14 @@ export async function approveCategoryRequest(
           String(requestRow.requested_category || "") || categoryName,
       });
     }
+
+    // Reconcile providers.status='pending' -> 'active' if this was the
+    // last open queue item for the provider. Non-fatal; logs on failure.
+    await reconcileProviderApprovalStatusSoft(
+      requestRow?.provider_id ?? null,
+      "approveCategoryRequest"
+    );
+
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : "Unknown error" };
@@ -273,6 +282,16 @@ export async function rejectCategoryRequest(
         reason,
       });
     }
+
+    // Reconcile providers.status='pending' -> 'active' if this was the
+    // last open queue item. Confirmed decision: rejection of the last
+    // open item still flips the provider to active — only that specific
+    // request was rejected, not the provider account.
+    await reconcileProviderApprovalStatusSoft(
+      requestRow?.provider_id ?? null,
+      "rejectCategoryRequest"
+    );
+
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : "Unknown error" };
