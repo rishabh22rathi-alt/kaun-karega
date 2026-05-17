@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import InAppToastStack, { type InAppToast } from "@/components/InAppToastStack";
 import ProviderDashboardCoachmark from "@/components/ProviderDashboardCoachmark";
 import ProviderAliasSubmitter from "@/components/ProviderAliasSubmitter";
+import ProviderNotificationPreferencesCard from "@/components/ProviderNotificationPreferencesCard";
 import ProviderPledgeModal from "@/components/ProviderPledgeModal";
 import { PROVIDER_PLEDGE_VERSION } from "@/lib/disclaimer";
 import { getAuthSession } from "@/lib/auth";
@@ -1348,6 +1349,8 @@ function ProviderDashboardInner() {
               </div>
             </div>
           </section>
+
+        <ProviderNotificationPreferencesCard />
       </div>
       <InAppToastStack
         toasts={toasts}
