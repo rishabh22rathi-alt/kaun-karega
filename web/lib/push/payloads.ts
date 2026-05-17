@@ -7,11 +7,13 @@
 // will toggle ("new_service_request", "chat_message", "general_announcement",
 // "jodhpur_need", "new_category_addition"). Phase 4B introduces
 // "new_service_request"; "job_matched" stays in the union for any historical
-// callers/rows that may exist from earlier audits.
+// callers/rows that may exist from earlier audits. Phase 7B adds "general"
+// for admin platform announcements (mandatory, cannot be opted out of).
 export type PushEventType =
   | "new_service_request"
   | "job_matched"
   | "chat_message"
+  | "general"
   | "test";
 
 export type PushDataPayload = {
@@ -101,4 +103,34 @@ export function newServiceRequestPayload(
     matchTier: String(input.matchTier ?? "").trim(),
   };
   return payload;
+}
+
+// Phase 7B: admin platform announcement payload. eventType='general' is
+// the mandatory category — recipients cannot opt out via notification
+// preferences. The Android wrapper opens `deepLink` on tap; empty
+// string is acceptable and yields no navigation.
+//
+// All values MUST be strings (FCM data is Map<string,string>); the
+// helper coerces nullable inputs to empty strings rather than omitting
+// them so payload keys stay stable across announcements.
+export type AnnouncementPayloadInput = {
+  announcementId: string;
+  title: string;
+  body: string;
+  deepLink?: string | null;
+  audience: string;
+};
+
+export function announcementPayload(
+  input: AnnouncementPayloadInput
+): PushDataPayload {
+  return {
+    title: String(input.title ?? "").trim(),
+    body: String(input.body ?? "").trim(),
+    deepLink: String(input.deepLink ?? "").trim(),
+    eventType: "general",
+    sentAt: new Date().toISOString(),
+    announcementId: String(input.announcementId ?? "").trim(),
+    audience: String(input.audience ?? "").trim(),
+  };
 }

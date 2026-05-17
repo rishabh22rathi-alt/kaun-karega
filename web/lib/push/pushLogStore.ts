@@ -6,12 +6,15 @@ import { scrubLongTokens } from "./scrub";
 // Phase 2 (notification preferences) added "job_match" — written when a
 // matched-service push is skipped because the provider opted out via the
 // "job_match" preference toggle. The migration that widened the CHECK is
-// 20260518120000_notification_preferences.sql.
+// 20260518120000_notification_preferences.sql. Phase 7B writes "general"
+// for admin platform announcements; the CHECK constraint already allows
+// it (added in 20260518120000_notification_preferences.sql).
 export type PushLogEventType =
   | "new_service_request"
   | "job_match"
   | "job_matched"
   | "chat_message"
+  | "general"
   | "test";
 
 export type PushLogStatus = "sent" | "failed" | "invalid_token" | "skipped";

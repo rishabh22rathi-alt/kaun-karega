@@ -61,6 +61,8 @@ export type StoreError = {
     | "INVALID_INPUT"
     | "INVALID_TRANSITION"
     | "APPROVAL_SELF"
+    | "AUDIENCE_NOT_ALLOWED"
+    | "ALREADY_QUEUED"
     | "DB_ERROR";
   message: string;
 };
@@ -537,6 +539,263 @@ export async function approveAnnouncement(
     };
   }
   return { ok: true, value: data as unknown as AnnouncementRow };
+}
+
+// ─── Queue + cancel (Phase 7B) ──────────────────────────────────────
+//
+// Phase 7B soft-launch hard-blocks every non-admin audience at the
+// store layer. The queue route ALSO checks this — defense in depth —
+// but a future feature flag that intends to unlock more audiences
+// must edit BOTH locations consciously.
+const QUEUE_ALLOWED_AUDIENCES: ReadonlySet<AnnouncementAudience> = new Set([
+  "admins",
+]);
+
+export type QueueAnnouncementResult = {
+  announcement: AnnouncementRow;
+  jobCreated: boolean;
+};
+
+// Transition: approved → queued. Audience hard-block: only 'admins'
+// in Phase 7B. Creates a corresponding admin_announcement_jobs row;
+// the unique(announcement_id) constraint guarantees one job per
+// announcement even under concurrent queue clicks.
+export async function queueAnnouncement(
+  id: string
+): Promise<StoreResult<QueueAnnouncementResult>> {
+  const existing = await getAnnouncementById(id);
+  if (!existing.ok) return existing;
+
+  if (!QUEUE_ALLOWED_AUDIENCES.has(existing.value.target_audience)) {
+    return {
+      ok: false,
+      error: {
+        code: "AUDIENCE_NOT_ALLOWED",
+        message:
+          "Phase 7B sends to admin-audience announcements only. Other audiences are not yet unlocked.",
+      },
+    };
+  }
+
+  if (existing.value.status === "queued" || existing.value.status === "sending") {
+    return {
+      ok: false,
+      error: {
+        code: "ALREADY_QUEUED",
+        message: `Announcement is already ${existing.value.status}.`,
+      },
+    };
+  }
+  if (existing.value.status !== "approved") {
+    return {
+      ok: false,
+      error: {
+        code: "INVALID_TRANSITION",
+        message: `Cannot queue announcement in status '${existing.value.status}'.`,
+      },
+    };
+  }
+
+  const nowIso = new Date().toISOString();
+
+  // Race-safe transition: only flips when current status is still
+  // 'approved'. Concurrent queue clicks resolve to one winner.
+  const { data: updated, error: updateErr } = await adminSupabase
+    .from("admin_announcements")
+    .update({
+      status: "queued",
+      queued_at: nowIso,
+      updated_at: nowIso,
+    })
+    .eq("id", id)
+    .eq("status", "approved")
+    .select(SELECT_COLUMNS)
+    .single();
+
+  if (updateErr) {
+    return {
+      ok: false,
+      error: { code: "DB_ERROR", message: updateErr.message },
+    };
+  }
+  if (!updated) {
+    return {
+      ok: false,
+      error: {
+        code: "INVALID_TRANSITION",
+        message: "Announcement is no longer in approved state.",
+      },
+    };
+  }
+
+  // Insert the job row. unique(announcement_id) guarantees idempotency
+  // against double-clicks across tabs. If the row exists already
+  // (shouldn't, because we just transitioned from 'approved'), treat
+  // as a race-win and proceed.
+  const { error: jobErr } = await adminSupabase
+    .from("admin_announcement_jobs")
+    .insert({
+      announcement_id: id,
+      status: "queued",
+      next_offset: 0,
+    });
+
+  if (jobErr) {
+    const code = (jobErr as { code?: string }).code ?? "";
+    if (code !== "23505") {
+      // Roll back the announcement.status transition so the admin
+      // can retry once the underlying issue is resolved.
+      await adminSupabase
+        .from("admin_announcements")
+        .update({
+          status: "approved",
+          queued_at: null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", id)
+        .eq("status", "queued");
+      return {
+        ok: false,
+        error: {
+          code: "DB_ERROR",
+          message: `Failed to create job row: ${jobErr.message}`,
+        },
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    value: {
+      announcement: updated as unknown as AnnouncementRow,
+      jobCreated: !jobErr,
+    },
+  };
+}
+
+export type CancelAnnouncementResult = {
+  announcement: AnnouncementRow;
+  // True when the cancel was terminal (no worker action needed); false
+  // when the announcement was moved to 'canceling' awaiting the worker.
+  immediate: boolean;
+};
+
+// Cancel an in-flight or queued announcement.
+//   queued     → canceled (terminal; job → done)
+//   sending    → canceling (worker observes and finalizes)
+//   canceling  → no-op (already in canceling)
+//   anything else → INVALID_TRANSITION
+export async function cancelAnnouncement(
+  id: string
+): Promise<StoreResult<CancelAnnouncementResult>> {
+  const existing = await getAnnouncementById(id);
+  if (!existing.ok) return existing;
+
+  if (existing.value.status === "canceling") {
+    return {
+      ok: true,
+      value: { announcement: existing.value, immediate: false },
+    };
+  }
+  if (existing.value.status === "canceled") {
+    return {
+      ok: true,
+      value: { announcement: existing.value, immediate: true },
+    };
+  }
+
+  const nowIso = new Date().toISOString();
+
+  if (existing.value.status === "queued") {
+    // Terminal cancel — no worker has touched it yet.
+    const { data: updated, error: updateErr } = await adminSupabase
+      .from("admin_announcements")
+      .update({
+        status: "canceled",
+        canceled_at: nowIso,
+        updated_at: nowIso,
+      })
+      .eq("id", id)
+      .eq("status", "queued")
+      .select(SELECT_COLUMNS)
+      .single();
+    if (updateErr) {
+      return {
+        ok: false,
+        error: { code: "DB_ERROR", message: updateErr.message },
+      };
+    }
+    if (!updated) {
+      return {
+        ok: false,
+        error: {
+          code: "INVALID_TRANSITION",
+          message: "Announcement state changed before cancel could apply.",
+        },
+      };
+    }
+    // Mark job done so the worker won't try to pick it up.
+    await adminSupabase
+      .from("admin_announcement_jobs")
+      .update({
+        status: "done",
+        last_error: "canceled_before_start",
+        updated_at: nowIso,
+      })
+      .eq("announcement_id", id)
+      .in("status", ["queued", "processing"]);
+    return {
+      ok: true,
+      value: {
+        announcement: updated as unknown as AnnouncementRow,
+        immediate: true,
+      },
+    };
+  }
+
+  if (existing.value.status === "sending") {
+    // Cooperative cancel — worker observes on next tick.
+    const { data: updated, error: updateErr } = await adminSupabase
+      .from("admin_announcements")
+      .update({
+        status: "canceling",
+        updated_at: nowIso,
+      })
+      .eq("id", id)
+      .eq("status", "sending")
+      .select(SELECT_COLUMNS)
+      .single();
+    if (updateErr) {
+      return {
+        ok: false,
+        error: { code: "DB_ERROR", message: updateErr.message },
+      };
+    }
+    if (!updated) {
+      return {
+        ok: false,
+        error: {
+          code: "INVALID_TRANSITION",
+          message: "Announcement state changed before cancel could apply.",
+        },
+      };
+    }
+    return {
+      ok: true,
+      value: {
+        announcement: updated as unknown as AnnouncementRow,
+        immediate: false,
+      },
+    };
+  }
+
+  return {
+    ok: false,
+    error: {
+      code: "INVALID_TRANSITION",
+      message: `Cannot cancel announcement in status '${existing.value.status}'.`,
+    },
+  };
 }
 
 // ─── Recipient preview ──────────────────────────────────────────────
