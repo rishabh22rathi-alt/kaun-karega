@@ -3,74 +3,102 @@
 import { useEffect, useState } from "react";
 import { Lock } from "lucide-react";
 
-// Provider-side notification preferences card (Phase 3).
-// Lives only on /provider/dashboard for now. Talks exclusively to the
-// /api/notification-preferences route — does not know about Supabase,
-// the shared catalogue, or actor_key plumbing. Adding a new toggle is a
-// two-place change: PROVIDER_ALLOWED_EVENTS in the route, and TOGGLES
-// here.
+import type { NotificationPreferenceToggle } from "@/lib/notificationPreferenceUiConfig";
 
-type EventKey = "general" | "job_match" | "chat_message" | "new_category";
+// Generic notification preferences card. One client component used by
+// the provider settings page today and (Phase 4/5) the user + admin
+// settings pages. Talks only to the route given by `apiPath` — does not
+// know about Supabase, the shared catalogue, or the underlying actor
+// model.
+//
+// Preserves all behavior from the previous provider-only card:
+//   • GET on mount, render toggle list
+//   • optimistic flip → PUT → rebase or rollback
+//   • per-row "Saving…" indicator while a PUT is in flight
+//   • only one toggle in flight at a time (pendingKey guard)
+//   • mandatory rows render disabled with a Lock pill
+//   • general always forced true client-side (defense in depth)
+//   • mobile-first layout (stacks below sm:, side-by-side from sm: up)
 
-type Preferences = Record<EventKey, boolean>;
+type Preferences = Record<string, boolean>;
 
 type ApiResponse = {
   ok?: boolean;
-  preferences?: Partial<Preferences>;
+  preferences?: Preferences;
   error?: string;
   message?: string;
 };
 
-const TOGGLES: ReadonlyArray<{
-  key: EventKey;
-  label: string;
-  description: string;
-  mandatory?: boolean;
-}> = [
-  {
-    key: "general",
-    label: "General Notifications",
-    description: "Required system notifications",
-    mandatory: true,
-  },
-  {
-    key: "job_match",
-    label: "New Matched Jobs",
-    description: "Get a push alert when a customer request matches your services and areas.",
-  },
-  {
-    key: "chat_message",
-    label: "Chat Messages",
-    description: "Get notified when a customer sends you a new message.",
-  },
-  {
-    key: "new_category",
-    label: "New Categories / Services",
-    description: "Heads-up when new service categories are added on Kaun Karega.",
-  },
-];
-
-const DEFAULT_PREFS: Preferences = {
-  general: true,
-  job_match: true,
-  chat_message: true,
-  new_category: true,
+export type NotificationPreferencesCardProps = {
+  /**
+   * Logical surface this card lives on. Used as the default test-id
+   * prefix and for log messages — never sent to the API. The route
+   * itself derives the actor from the session cookie.
+   */
+  scope: "provider" | "user" | "admin";
+  /**
+   * Endpoint that serves both GET (current snapshot) and PUT (apply
+   * updates) for this surface. The route is responsible for actor
+   * resolution and allow-list enforcement.
+   */
+  apiPath: string;
+  /**
+   * Ordered list of toggles to render. The card's response merger
+   * defaults missing keys to enabled and forces mandatory keys to true.
+   */
+  toggles: ReadonlyArray<NotificationPreferenceToggle>;
+  /** Card heading rendered as an h2 inside the section. */
+  title: string;
+  /** Sub-line under the heading. */
+  subtitle: string;
+  /**
+   * Override for the outer section's data-testid. Switches keep their
+   * own `notif-toggle-<eventType>` test-ids regardless of this prop.
+   */
+  dataTestId?: string;
 };
 
-function mergePrefs(partial: Partial<Preferences> | undefined): Preferences {
-  return {
-    general: true,
-    job_match: partial?.job_match !== false,
-    chat_message: partial?.chat_message !== false,
-    new_category: partial?.new_category !== false,
-  };
+function buildDefaults(
+  toggles: ReadonlyArray<NotificationPreferenceToggle>
+): Preferences {
+  const out: Preferences = {};
+  for (const toggle of toggles) {
+    out[toggle.eventType] = true;
+  }
+  return out;
 }
 
-export default function ProviderNotificationPreferencesCard() {
-  const [prefs, setPrefs] = useState<Preferences>(DEFAULT_PREFS);
+function mergePrefs(
+  toggles: ReadonlyArray<NotificationPreferenceToggle>,
+  partial: Preferences | undefined
+): Preferences {
+  const out: Preferences = {};
+  for (const toggle of toggles) {
+    if (toggle.mandatory) {
+      // Hard guarantee: mandatory toggles are ALWAYS enabled in the UI,
+      // even if a corrupted server response says otherwise. The DB
+      // trigger + helper + route also enforce this server-side.
+      out[toggle.eventType] = true;
+      continue;
+    }
+    const value = partial?.[toggle.eventType];
+    out[toggle.eventType] = value !== false;
+  }
+  return out;
+}
+
+export default function NotificationPreferencesCard({
+  scope,
+  apiPath,
+  toggles,
+  title,
+  subtitle,
+  dataTestId,
+}: NotificationPreferencesCardProps) {
+  const [prefs, setPrefs] = useState<Preferences>(() => buildDefaults(toggles));
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
-  const [pendingKey, setPendingKey] = useState<EventKey | null>(null);
+  const [pendingKey, setPendingKey] = useState<string | null>(null);
   const [actionError, setActionError] = useState("");
 
   useEffect(() => {
@@ -79,13 +107,11 @@ export default function ProviderNotificationPreferencesCard() {
       setLoading(true);
       setLoadError("");
       try {
-        const res = await fetch("/api/notification-preferences", {
+        const res = await fetch(apiPath, {
           credentials: "same-origin",
           cache: "no-store",
         });
-        const data = (await res
-          .json()
-          .catch(() => null)) as ApiResponse | null;
+        const data = (await res.json().catch(() => null)) as ApiResponse | null;
         if (cancelled) return;
         if (!res.ok || !data?.ok || !data.preferences) {
           setLoadError(
@@ -93,7 +119,7 @@ export default function ProviderNotificationPreferencesCard() {
           );
           return;
         }
-        setPrefs(mergePrefs(data.preferences));
+        setPrefs(mergePrefs(toggles, data.preferences));
       } catch {
         if (!cancelled) {
           setLoadError("Could not load notification preferences.");
@@ -106,18 +132,22 @@ export default function ProviderNotificationPreferencesCard() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [apiPath, toggles]);
 
-  const handleToggle = async (key: EventKey, nextValue: boolean) => {
-    if (key === "general") return;
+  const handleToggle = async (
+    toggle: NotificationPreferenceToggle,
+    nextValue: boolean
+  ) => {
+    if (toggle.mandatory) return;
     if (pendingKey) return;
+    const key = toggle.eventType;
     const previous = prefs[key];
     // Optimistic flip — UI reflects the new value immediately.
     setPrefs((current) => ({ ...current, [key]: nextValue }));
     setPendingKey(key);
     setActionError("");
     try {
-      const res = await fetch("/api/notification-preferences", {
+      const res = await fetch(apiPath, {
         method: "PUT",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
@@ -125,18 +155,16 @@ export default function ProviderNotificationPreferencesCard() {
           updates: [{ eventType: key, enabled: nextValue }],
         }),
       });
-      const data = (await res
-        .json()
-        .catch(() => null)) as ApiResponse | null;
+      const data = (await res.json().catch(() => null)) as ApiResponse | null;
       if (!res.ok || !data?.ok || !data.preferences) {
-        // Rollback the optimistic flip.
+        // Rollback to the previous value and surface the message.
         setPrefs((current) => ({ ...current, [key]: previous }));
         setActionError(data?.message || "Could not save. Please try again.");
         return;
       }
       // Re-base on server truth in case the response narrows or expands
-      // anything (e.g. server forced general=true).
-      setPrefs(mergePrefs(data.preferences));
+      // anything (e.g. server forced mandatory keys back to true).
+      setPrefs(mergePrefs(toggles, data.preferences));
     } catch {
       setPrefs((current) => ({ ...current, [key]: previous }));
       setActionError("Could not save. Please check your connection.");
@@ -145,27 +173,29 @@ export default function ProviderNotificationPreferencesCard() {
     }
   };
 
+  const sectionTestId = dataTestId ?? `notification-preferences-card-${scope}`;
+  const headingId = `notif-prefs-heading-${scope}`;
+
   return (
     <section
-      data-provider-tour="notification-preferences"
-      aria-labelledby="provider-notif-prefs-heading"
+      data-testid={sectionTestId}
+      aria-labelledby={headingId}
       className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm"
     >
       <div className="flex flex-col gap-2">
         <h2
-          id="provider-notif-prefs-heading"
+          id={headingId}
           className="text-xl font-semibold text-slate-900"
         >
-          Notification Preferences
+          {title}
         </h2>
-        <p className="text-sm text-slate-500">
-          Choose which notifications you want to receive on your phone.
-        </p>
+        <p className="text-sm text-slate-500">{subtitle}</p>
       </div>
 
       {loadError ? (
         <p
           role="alert"
+          data-testid={`${sectionTestId}-load-error`}
           className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700"
         >
           {loadError}
@@ -175,6 +205,7 @@ export default function ProviderNotificationPreferencesCard() {
       {actionError ? (
         <p
           role="alert"
+          data-testid={`${sectionTestId}-action-error`}
           className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800"
         >
           {actionError}
@@ -182,14 +213,14 @@ export default function ProviderNotificationPreferencesCard() {
       ) : null}
 
       <ul className="mt-5 divide-y divide-slate-100">
-        {TOGGLES.map((toggle) => {
-          const enabled = prefs[toggle.key];
-          const isPending = pendingKey === toggle.key;
+        {toggles.map((toggle) => {
+          const enabled = prefs[toggle.eventType] ?? true;
+          const isPending = pendingKey === toggle.eventType;
           const isLocked = Boolean(toggle.mandatory);
           const disabled = isLocked || loading || isPending;
           return (
             <li
-              key={toggle.key}
+              key={toggle.eventType}
               className="flex flex-col gap-3 py-4 sm:flex-row sm:items-start sm:justify-between sm:gap-6"
             >
               <div className="min-w-0">
@@ -204,7 +235,9 @@ export default function ProviderNotificationPreferencesCard() {
                     </span>
                   ) : null}
                 </div>
-                <p className="mt-1 text-xs text-slate-500">{toggle.description}</p>
+                <p className="mt-1 text-xs text-slate-500">
+                  {toggle.description}
+                </p>
               </div>
               <div className="flex shrink-0 items-center gap-3">
                 {isPending ? (
@@ -216,8 +249,8 @@ export default function ProviderNotificationPreferencesCard() {
                   aria-checked={enabled}
                   aria-label={`${toggle.label} ${enabled ? "on" : "off"}`}
                   disabled={disabled}
-                  onClick={() => handleToggle(toggle.key, !enabled)}
-                  data-testid={`notif-toggle-${toggle.key}`}
+                  onClick={() => handleToggle(toggle, !enabled)}
+                  data-testid={`notif-toggle-${toggle.eventType}`}
                   className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full transition-colors ${
                     enabled ? "bg-emerald-500" : "bg-slate-300"
                   } ${

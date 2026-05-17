@@ -17,6 +17,7 @@ import {
   UserPlus,
   ListTodo,
   Briefcase,
+  Bell,
   Lock,
 } from "lucide-react";
 import {
@@ -848,6 +849,11 @@ export default function Sidebar() {
                           label: "My Jobs",
                           href: "/provider/my-jobs",
                           icon: Briefcase,
+                        })}
+                        {renderNavLink({
+                          label: "Notifications",
+                          href: "/provider/notifications",
+                          icon: Bell,
                         })}
                       </>
                     ) : null}
