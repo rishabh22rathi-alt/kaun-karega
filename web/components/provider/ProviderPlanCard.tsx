@@ -60,6 +60,48 @@ const PLAN_COPY: Record<PlanCode, PlanCopy> = {
   },
 };
 
+type PlanComparisonEntry = {
+  code: PlanCode;
+  title: string;
+  subLabel: string;
+  positioning: string;
+  bullets: string[];
+  ctaLabel: string;
+  renewLabel: string;
+  popular?: boolean;
+};
+
+const PLAN_COMPARISON: PlanComparisonEntry[] = [
+  {
+    code: "free",
+    title: "Free",
+    subLabel: "1 region included",
+    positioning: "Perfect to get started",
+    bullets: ["Receive leads for 1 region", "No expiry"],
+    ctaLabel: "Included",
+    renewLabel: "Included",
+  },
+  {
+    code: "regions_5",
+    title: "₹31 / 5 Regions",
+    subLabel: "5 regions · 30 days",
+    positioning: "Best for active providers",
+    bullets: ["Serve up to 5 regions", "30-day validity"],
+    ctaLabel: "Upgrade — ₹31",
+    renewLabel: "Renew — ₹31",
+    popular: true,
+  },
+  {
+    code: "all_jodhpur",
+    title: "₹101 / Full Jodhpur",
+    subLabel: "All regions · 30 days",
+    positioning: "Maximum city-wide reach",
+    bullets: ["Every region in Jodhpur", "30-day validity"],
+    ctaLabel: "Upgrade — ₹101",
+    renewLabel: "Renew — ₹101",
+  },
+];
+
 function asKnownPlanCode(code: string | null | undefined): PlanCode {
   if (code === "regions_5" || code === "all_jodhpur") return code;
   return "free";
@@ -137,6 +179,24 @@ export default function ProviderPlanCard({
   const maxRegions = Math.max(1, plan?.maxRegions ?? 1);
   const usedRegions = Math.max(0, currentRegionsCount);
   const usageOverflow = usedRegions > maxRegions;
+  const usageAtCap = !usageOverflow && usedRegions >= maxRegions;
+  const usagePercent = Math.min(
+    100,
+    Math.max(0, (usedRegions / maxRegions) * 100)
+  );
+  // effectivePlan() already collapses expired-paid → code:"free", so this
+  // is functionally `code` in production. Kept explicit so the comparison
+  // grid's "current plan" highlight is correct even if a future API path
+  // ever forwards a non-collapsed expired row.
+  const effectiveCode: PlanCode = isExpired ? "free" : code;
+  const isUnlimitedCoverage = effectiveCode === "all_jodhpur";
+  const whyUpgradeCopy = isExpired
+    ? "Renew below to start getting matched with customers again."
+    : effectiveCode === "free"
+      ? "Upgrade to serve more regions and reach more customers."
+      : effectiveCode === "regions_5"
+        ? "Upgrade to ₹101 to cover all of Jodhpur."
+        : "You're on the top plan — full city coverage is active.";
 
   const scheduleDashboardRefresh = useCallback(() => {
     if (typeof window === "undefined") return;
@@ -291,17 +351,74 @@ export default function ProviderPlanCard({
         </div>
       </header>
 
-      <div className="mt-4 space-y-1 text-sm text-slate-700">
+      <div className="mt-4 space-y-3 text-sm text-slate-700">
+        {isExpired ? (
+          <div
+            data-testid="provider-plan-expired-banner"
+            role="alert"
+            className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3"
+          >
+            <p className="text-sm font-semibold text-rose-900">
+              Your plan expired{expiryLabel ? ` on ${expiryLabel}` : ""}.
+            </p>
+            <p className="mt-1 text-xs leading-relaxed text-rose-800">
+              You&rsquo;re back on the Free plan — 1 region only. Renew below
+              to restore your full coverage.
+            </p>
+          </div>
+        ) : null}
+
         <p className="font-medium" data-testid="provider-plan-max-regions">
           {maxRegionsLabel}
         </p>
-        <p className="text-slate-500" data-testid="provider-plan-usage">
-          You&rsquo;re using{" "}
-          <span className={usageOverflow ? "font-semibold text-rose-600" : "font-semibold text-slate-700"}>
-            {usedRegions}
-          </span>{" "}
-          of {maxRegions} region{maxRegions === 1 ? "" : "s"}.
-        </p>
+
+        {isUnlimitedCoverage ? (
+          <p
+            data-testid="provider-plan-usage-unlimited"
+            className="font-semibold text-emerald-700"
+          >
+            All Jodhpur regions covered
+          </p>
+        ) : (
+          <div className="space-y-1.5">
+            <p className="text-slate-500" data-testid="provider-plan-usage">
+              You&rsquo;re using{" "}
+              <span
+                className={
+                  usageOverflow
+                    ? "font-semibold text-rose-600"
+                    : usageAtCap
+                      ? "font-semibold text-amber-700"
+                      : "font-semibold text-slate-700"
+                }
+              >
+                {usedRegions}
+              </span>{" "}
+              of {maxRegions} region{maxRegions === 1 ? "" : "s"}.
+            </p>
+            <div
+              role="progressbar"
+              aria-valuemin={0}
+              aria-valuemax={maxRegions}
+              aria-valuenow={Math.min(usedRegions, maxRegions)}
+              data-testid="provider-plan-usage-bar"
+              className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100"
+            >
+              <div
+                data-testid="provider-plan-usage-bar-fill"
+                className={`h-full rounded-full transition-all ${
+                  usageOverflow
+                    ? "bg-rose-500"
+                    : usageAtCap
+                      ? "bg-amber-500"
+                      : "bg-emerald-500"
+                }`}
+                style={{ width: `${usagePercent}%` }}
+              />
+            </div>
+          </div>
+        )}
+
         {isExpired && code !== "free" ? (
           <p className="text-rose-600" data-testid="provider-plan-expired-hint">
             Previously: {PLAN_COPY[code].label}
@@ -311,11 +428,6 @@ export default function ProviderPlanCard({
         {isActive && hasExpiryHint && code !== "free" ? (
           <p className="text-slate-500" data-testid="provider-plan-expiry">
             Renews / Expires on {expiryLabel || "—"}
-          </p>
-        ) : null}
-        {isActive && code === "free" ? (
-          <p className="text-slate-500">
-            Upgrade your plan to expand your service coverage.
           </p>
         ) : null}
       </div>
@@ -352,12 +464,117 @@ export default function ProviderPlanCard({
               {busyPlan === "all_jodhpur"
                 ? "Opening checkout…"
                 : isExpired
-                  ? "Upgrade to Full Jodhpur — ₹101"
+                  ? "Renew Full Jodhpur — ₹101"
                   : "Upgrade to Full Jodhpur — ₹101"}
             </button>
           ) : null}
         </div>
       ) : null}
+
+      <div className="mt-5 border-t border-slate-200 pt-5">
+        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700">
+          Compare plans
+        </p>
+        <p
+          data-testid="provider-plan-why-upgrade"
+          className="mt-2 text-sm text-slate-600"
+        >
+          {whyUpgradeCopy}
+        </p>
+
+        <div
+          data-testid="provider-plan-comparison"
+          className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3"
+        >
+          {PLAN_COMPARISON.map((entry) => {
+            const isCurrent = effectiveCode === entry.code;
+            const isFree = entry.code === "free";
+            const busyOnThis = busyPlan === entry.code;
+            const ctaLabel = isCurrent
+              ? "Your plan"
+              : isFree
+                ? "Included"
+                : isExpired
+                  ? entry.renewLabel
+                  : entry.ctaLabel;
+            return (
+              <div
+                key={entry.code}
+                data-testid={`provider-plan-compare-${entry.code}`}
+                data-current={isCurrent ? "true" : "false"}
+                className={`relative flex flex-col rounded-2xl border p-4 ${
+                  isCurrent
+                    ? "border-[#003d20] bg-[#003d20]/5"
+                    : "border-slate-200 bg-white"
+                }`}
+              >
+                {entry.popular ? (
+                  <span
+                    data-testid="provider-plan-compare-popular-badge"
+                    className="absolute -top-2 right-3 inline-flex items-center rounded-full bg-amber-500 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white shadow-sm"
+                  >
+                    Most Popular
+                  </span>
+                ) : null}
+                {isCurrent ? (
+                  <span
+                    data-testid={`provider-plan-compare-current-badge-${entry.code}`}
+                    className="absolute -top-2 left-3 inline-flex items-center rounded-full bg-emerald-600 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white shadow-sm"
+                  >
+                    Your plan
+                  </span>
+                ) : null}
+                <p className="text-sm font-semibold text-[#003d20]">
+                  {entry.title}
+                </p>
+                <p className="mt-1 text-xs text-slate-500">{entry.subLabel}</p>
+                <p className="mt-2 text-xs italic text-slate-600">
+                  {entry.positioning}
+                </p>
+                <ul className="mt-3 flex-1 space-y-1 text-xs text-slate-600">
+                  {entry.bullets.map((bullet) => (
+                    <li key={bullet} className="flex gap-1.5">
+                      <span aria-hidden="true" className="text-emerald-600">
+                        ✓
+                      </span>
+                      <span>{bullet}</span>
+                    </li>
+                  ))}
+                </ul>
+                <div className="mt-4">
+                  {isFree ? (
+                    <button
+                      type="button"
+                      disabled
+                      data-testid={`provider-plan-compare-cta-${entry.code}`}
+                      className="inline-flex w-full items-center justify-center rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-500"
+                    >
+                      {isCurrent ? "Your plan" : "Included"}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      data-testid={`provider-plan-compare-cta-${entry.code}`}
+                      disabled={isCurrent || busyPlan !== null}
+                      onClick={() => {
+                        if (entry.code === "free") return;
+                        void handleUpgrade(entry.code);
+                      }}
+                      className={`inline-flex w-full items-center justify-center rounded-xl px-3 py-2 text-xs font-semibold transition active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 ${
+                        isCurrent
+                          ? "border border-[#003d20] bg-white text-[#003d20]"
+                          : "bg-[#003d20] text-white hover:bg-[#002a16]"
+                      }`}
+                    >
+                      {busyOnThis ? "Opening checkout…" : ctaLabel}
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
 
       {errorMessage ? (
         <p
