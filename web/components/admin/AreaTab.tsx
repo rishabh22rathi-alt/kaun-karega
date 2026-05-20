@@ -189,6 +189,16 @@ export default function AreaTab() {
   // Add-area form (top-level)
   const [newCanonical, setNewCanonical] = useState("");
   const [newRegion, setNewRegion] = useState("");
+
+  // Create-region form. Mirrors the add-area form's pattern but writes
+  // POST /api/admin/area-intelligence target:"region". Status pill is
+  // dedicated (not the global actionError banner) so feedback lands next
+  // to the Create button.
+  const [newRegionCodeDraft, setNewRegionCodeDraft] = useState("");
+  const [newRegionNameDraft, setNewRegionNameDraft] = useState("");
+  const [createRegionStatus, setCreateRegionStatus] = useState<RowStatus>({
+    state: "idle",
+  });
   // Per-region inline add — one in-progress text per region_code so two
   // regions' draft inputs don't collide. Each region renders its own
   // status pill so success/error feedback lands next to the form that
@@ -537,6 +547,98 @@ export default function AreaTab() {
       },
       onSuccess
     );
+  };
+
+  // Create a brand-new region via POST /api/admin/area-intelligence
+  // target:"region". Mirrors the inline-status pattern used by per-region
+  // area creation so feedback lands beside the form, not in the global
+  // actionError banner at the top of the tab. Client-side guards:
+  //   - non-empty code + name
+  //   - case-insensitive duplicate against the loaded `regions` list
+  // The server still enforces these (REQUIRED_FIELDS_MISSING /
+  // DUPLICATE_REGION_CODE / DB_ERROR); the client checks just avoid a
+  // pointless roundtrip and let us name the conflicting region.
+  const handleCreateRegion = async () => {
+    const code = newRegionCodeDraft.trim();
+    const name = newRegionNameDraft.trim();
+    if (!code) {
+      setCreateRegionStatus({
+        state: "error",
+        message: "Region code is required.",
+      });
+      return;
+    }
+    if (!name) {
+      setCreateRegionStatus({
+        state: "error",
+        message: "Region name is required.",
+      });
+      return;
+    }
+    const codeLower = code.toLowerCase();
+    const dup = regions.find(
+      (r) => r.region_code.trim().toLowerCase() === codeLower
+    );
+    if (dup) {
+      setCreateRegionStatus({
+        state: "error",
+        message: `Region code "${code}" already exists${
+          dup.region_name ? ` (${dup.region_name})` : ""
+        }.`,
+      });
+      return;
+    }
+    setCreateRegionStatus({ state: "saving" });
+    try {
+      const res = await fetch("/api/admin/area-intelligence", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          target: "region",
+          region_code: code,
+          region_name: name,
+          active: true,
+        }),
+      });
+      const json = (await res.json()) as {
+        ok?: boolean;
+        error?: string;
+        detail?: string;
+      };
+      if (!res.ok || !json?.ok) {
+        // Friendly translation for the two error codes postRegion can
+        // return; anything else (transient DB blip) falls through to the
+        // raw detail/error.
+        const errCode = json?.error;
+        const friendly =
+          errCode === "DUPLICATE_REGION_CODE"
+            ? `A region with code "${code}" already exists.`
+            : errCode === "REQUIRED_FIELDS_MISSING"
+              ? "Region code and name are both required."
+              : null;
+        setCreateRegionStatus({
+          state: "error",
+          message:
+            friendly ||
+            json?.detail ||
+            json?.error ||
+            `Create failed (HTTP ${res.status})`,
+        });
+        return;
+      }
+      setCreateRegionStatus({
+        state: "saved",
+        message: `Created region "${code} — ${name}".`,
+      });
+      setNewRegionCodeDraft("");
+      setNewRegionNameDraft("");
+      refresh();
+    } catch (err: unknown) {
+      setCreateRegionStatus({
+        state: "error",
+        message: err instanceof Error ? err.message : "Network error",
+      });
+    }
   };
 
   const handleAddArea = () => {
@@ -1176,6 +1278,84 @@ export default function AreaTab() {
 
           {activeTab === "approved" && (
             <div className="mt-4 space-y-4">
+              {/* Create Region — POST /api/admin/area-intelligence
+                  target:"region". Sits above the canonical-area add form
+                  because regions are the parent layer; until a region
+                  exists, no areas can be created inside it. The region
+                  code placeholder suggests the next R-NNN based on
+                  existing rows but the field stays fully editable. */}
+              <div>
+                <p className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  Create region
+                </p>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <input
+                    type="text"
+                    value={newRegionCodeDraft}
+                    onChange={(e) => {
+                      setNewRegionCodeDraft(e.target.value);
+                      if (createRegionStatus.state !== "idle") {
+                        setCreateRegionStatus({ state: "idle" });
+                      }
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") void handleCreateRegion();
+                    }}
+                    placeholder={`Region code (e.g. ${nextCode(
+                      regions.map((r) => r.region_code),
+                      "R-"
+                    )})`}
+                    aria-label="Region code"
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-[#003d20] focus:ring-2 focus:ring-[#003d20]/20 sm:max-w-[14rem]"
+                  />
+                  <input
+                    type="text"
+                    value={newRegionNameDraft}
+                    onChange={(e) => {
+                      setNewRegionNameDraft(e.target.value);
+                      if (createRegionStatus.state !== "idle") {
+                        setCreateRegionStatus({ state: "idle" });
+                      }
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") void handleCreateRegion();
+                    }}
+                    placeholder="Region name (e.g. South Jodhpur)"
+                    aria-label="Region name"
+                    className="flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-[#003d20] focus:ring-2 focus:ring-[#003d20]/20"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void handleCreateRegion()}
+                    disabled={
+                      !newRegionCodeDraft.trim() ||
+                      !newRegionNameDraft.trim() ||
+                      createRegionStatus.state === "saving"
+                    }
+                    className="rounded-lg bg-[#003d20] px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-[#002a15] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {createRegionStatus.state === "saving"
+                      ? "Creating…"
+                      : "Create"}
+                  </button>
+                </div>
+                {createRegionStatus.state === "saved" &&
+                createRegionStatus.message ? (
+                  <p className="mt-1.5 rounded bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700">
+                    {createRegionStatus.message}
+                  </p>
+                ) : null}
+                {createRegionStatus.state === "error" &&
+                createRegionStatus.message ? (
+                  <p
+                    className="mt-1.5 rounded bg-red-50 px-2 py-1 text-xs font-medium text-red-700"
+                    role="alert"
+                  >
+                    {createRegionStatus.message}
+                  </p>
+                ) : null}
+              </div>
+
               <div>
                 <div className="flex flex-col gap-2 sm:flex-row">
                   <input
