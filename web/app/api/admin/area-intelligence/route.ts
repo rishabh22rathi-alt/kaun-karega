@@ -387,22 +387,24 @@ async function patchArea(body: Json) {
     update.canonical_area = v;
   }
 
+  // region_code is immutable through this path. Re-parenting must go
+  // through target:"move_area", which enforces the destination-collision
+  // check and the optional alias cascade. An echo of the existing value
+  // (including with surrounding whitespace) is accepted as a silent
+  // no-op so clients that round-trip the row unchanged are not rejected.
   if (body.region_code !== undefined) {
     const v = trim(body.region_code);
-    if (!v) {
+    if (v !== existing.region_code) {
       return NextResponse.json(
-        { ok: false, error: "REGION_CODE_EMPTY" },
+        {
+          ok: false,
+          error: "REGION_CODE_NOT_MUTABLE_VIA_PATCH",
+          detail:
+            'region_code cannot be changed via PATCH target:"area". Use target:"move_area" with to_region_code.',
+        },
         { status: 400 }
       );
     }
-    const exists = await regionExists(v);
-    if (!exists) {
-      return NextResponse.json(
-        { ok: false, error: "REGION_NOT_FOUND" },
-        { status: 404 }
-      );
-    }
-    update.region_code = v;
   }
 
   if (body.active !== undefined) {
@@ -423,18 +425,16 @@ async function patchArea(body: Json) {
     return NextResponse.json({ ok: true, area: existing, changed: false });
   }
 
-  // Safety: refuse to rename canonical_area or move region_code if any
-  // alias rows still reference the old (canonical_area, region_code) pair.
-  // Forces the admin to deal with the aliases first, which protects against
-  // silent dangling-alias rows. Audit check 3 currently passes — keep it that way.
+  // Safety: refuse to rename canonical_area if any alias rows still
+  // reference the old (canonical_area, region_code) pair. Forces the
+  // admin to deal with the aliases first, which protects against silent
+  // dangling-alias rows. region_code mutation is blocked above so the
+  // "moving" case no longer needs a gate here.
   const renaming =
     update.canonical_area !== undefined &&
     update.canonical_area !== existing.canonical_area;
-  const moving =
-    update.region_code !== undefined &&
-    update.region_code !== existing.region_code;
 
-  if (renaming || moving) {
+  if (renaming) {
     const { data: dependentAliases, error: depErr } = await adminSupabase
       .from("service_region_area_aliases")
       .select("alias_code, alias")
@@ -528,22 +528,24 @@ async function patchAlias(body: Json) {
     update.canonical_area = v;
   }
 
+  // region_code is immutable through this path. Aliases move only as a
+  // side effect of target:"move_area" (with move_aliases:true), or by
+  // deactivating the alias and recreating it under the new region. An
+  // echo of the existing value (including with surrounding whitespace)
+  // is accepted as a silent no-op.
   if (body.region_code !== undefined) {
     const v = trim(body.region_code);
-    if (!v) {
+    if (v !== existing.region_code) {
       return NextResponse.json(
-        { ok: false, error: "REGION_CODE_EMPTY" },
+        {
+          ok: false,
+          error: "REGION_CODE_NOT_MUTABLE_VIA_PATCH",
+          detail:
+            'region_code cannot be changed via PATCH target:"alias". Move the parent area with target:"move_area" move_aliases:true, or deactivate and recreate the alias in the target region.',
+        },
         { status: 400 }
       );
     }
-    const exists = await regionExists(v);
-    if (!exists) {
-      return NextResponse.json(
-        { ok: false, error: "REGION_NOT_FOUND" },
-        { status: 404 }
-      );
-    }
-    update.region_code = v;
   }
 
   if (body.active !== undefined) {
@@ -564,20 +566,17 @@ async function patchAlias(body: Json) {
     return NextResponse.json({ ok: true, alias: existing, changed: false });
   }
 
-  // If (canonical_area, region_code) changed, the resulting pair must exist
-  // in service_region_areas — same invariant that audit check 3 enforces.
+  // If canonical_area changed, the resulting (canonical_area, region_code)
+  // pair must exist in service_region_areas. region_code is immutable on
+  // this path (see guard above), so nextRegion is always the existing
+  // region.
   const nextCanonical =
     update.canonical_area !== undefined
       ? (update.canonical_area as string)
       : existing.canonical_area;
-  const nextRegion =
-    update.region_code !== undefined
-      ? (update.region_code as string)
-      : existing.region_code;
+  const nextRegion = existing.region_code;
 
-  const pairChanged =
-    nextCanonical !== existing.canonical_area ||
-    nextRegion !== existing.region_code;
+  const pairChanged = nextCanonical !== existing.canonical_area;
 
   if (pairChanged) {
     const exists = await areaPairExists(nextCanonical, nextRegion);
