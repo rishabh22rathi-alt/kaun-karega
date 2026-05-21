@@ -42,9 +42,33 @@ async function fetchServiceRegionAreaExtras(
   legacyKeys: Set<string>
 ): Promise<string[]> {
   try {
+    // Phase A3: preload the set of active region codes so canonical
+    // areas whose parent region is inactive don't leak into the public
+    // autocomplete. If the regions read itself fails, fall back to the
+    // legacy list alone — never serve an unfiltered new-table union.
+    const { data: regionRows, error: regionErr } = await adminSupabase
+      .from("service_regions")
+      .select("region_code")
+      .eq("active", true)
+      .limit(1000);
+    if (regionErr) {
+      console.warn(
+        "[areas API] service_regions read failed; falling back to legacy list only",
+        regionErr
+      );
+      return [];
+    }
+    const activeRegionCodes = new Set<string>();
+    for (const r of regionRows ?? []) {
+      const rc = String(
+        (r as { region_code?: unknown }).region_code ?? ""
+      ).trim();
+      if (rc) activeRegionCodes.add(rc);
+    }
+
     const { data, error } = await adminSupabase
       .from("service_region_areas")
-      .select("canonical_area, active")
+      .select("canonical_area, region_code, active")
       .eq("active", true)
       .limit(SERVICE_REGION_AREAS_LIMIT);
 
@@ -59,9 +83,11 @@ async function fetchServiceRegionAreaExtras(
     const extras: string[] = [];
     const seen = new Set<string>(legacyKeys);
     for (const row of data ?? []) {
-      const name = normalizeAreaName(
-        (row as { canonical_area?: unknown }).canonical_area
-      );
+      const r = row as { canonical_area?: unknown; region_code?: unknown };
+      const rc = String(r.region_code ?? "").trim();
+      // Phase A3: drop areas whose parent region is inactive.
+      if (!rc || !activeRegionCodes.has(rc)) continue;
+      const name = normalizeAreaName(r.canonical_area);
       const k = toAreaKey(name);
       if (!name || !k) continue;
       // Dedupe against the legacy list AND prior extras — legacy display

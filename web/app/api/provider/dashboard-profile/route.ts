@@ -662,6 +662,31 @@ async function getProviderAreaCoverageFromSupabase(
   // here. See the patch report for the trade-off.
   let regionDerivedActiveAreas: ProviderCoverageArea[] | null = null;
   try {
+    // Phase A3: preload active region codes so areas whose parent
+    // region is inactive don't surface on the provider dashboard. On
+    // preload failure activeRegionCodes is left empty, which causes
+    // every area row to be filtered out below and the dashboard to fall
+    // back to fallbackActiveAreas — matches the fail-soft posture this
+    // block already uses for region-derived coverage.
+    const activeRegionsRes = await supabase
+      .from("service_regions")
+      .select("region_code")
+      .eq("active", true)
+      .limit(1000);
+    if (activeRegionsRes.error) {
+      console.warn(
+        "[provider/dashboard-profile] service_regions preload failed; skipping region-derived coverage",
+        activeRegionsRes.error.message
+      );
+    }
+    const activeRegionCodes = new Set<string>();
+    for (const r of activeRegionsRes.data ?? []) {
+      const rc = String(
+        (r as { region_code?: unknown }).region_code ?? ""
+      ).trim();
+      if (rc) activeRegionCodes.add(rc);
+    }
+
     const regionRes = await supabase
       .from("service_region_areas")
       .select("canonical_area, region_code, active")
@@ -686,6 +711,8 @@ async function getProviderAreaCoverageFromSupabase(
         const area = String(row.canonical_area || "").trim();
         const rc = String(row.region_code || "").trim();
         if (!area || !rc) continue;
+        // Phase A3: skip areas whose parent region is inactive.
+        if (!activeRegionCodes.has(rc)) continue;
         if (!regionToAreas.has(rc)) regionToAreas.set(rc, []);
         regionToAreas.get(rc)!.push(area);
         const key = normalizeKey(area);

@@ -42,6 +42,33 @@ export async function GET(request: Request) {
   }
 
   try {
+    // Phase A3: preload active region codes so alias and canonical-area
+    // hits whose parent region is inactive are skipped. The region match
+    // path below already gates on service_regions.active=true; this set
+    // makes the alias and canonical paths consistent with it.
+    const { data: activeRegions, error: activeRegionsErr } = await adminSupabase
+      .from("service_regions")
+      .select("region_code")
+      .eq("active", true)
+      .limit(1000);
+    if (activeRegionsErr) {
+      console.error(
+        "[area-intelligence/resolve] active-regions preload failed",
+        activeRegionsErr
+      );
+      return NextResponse.json(
+        { ok: false, input: rawInput, error: "Region lookup failed" },
+        { status: 500 }
+      );
+    }
+    const activeRegionCodes = new Set<string>();
+    for (const r of activeRegions ?? []) {
+      const rc = String(
+        (r as { region_code?: unknown }).region_code ?? ""
+      ).trim();
+      if (rc) activeRegionCodes.add(rc);
+    }
+
     // 1) Alias path — normalized(alias) === normalizedInput, active = true.
     const { data: aliasRows, error: aliasError } = await adminSupabase
       .from("service_region_area_aliases")
@@ -58,7 +85,10 @@ export async function GET(request: Request) {
     }
 
     const aliasHit = (aliasRows ?? []).find(
-      (row) => normalizeAreaInput(row.alias) === normalizedInput
+      (row) =>
+        // Phase A3: skip aliases whose parent region is inactive.
+        activeRegionCodes.has(String(row.region_code ?? "").trim()) &&
+        normalizeAreaInput(row.alias) === normalizedInput
     );
 
     if (aliasHit) {
@@ -90,7 +120,10 @@ export async function GET(request: Request) {
     }
 
     const areaHit = (areaRows ?? []).find(
-      (row) => normalizeAreaInput(row.canonical_area) === normalizedInput
+      (row) =>
+        // Phase A3: skip canonical areas whose parent region is inactive.
+        activeRegionCodes.has(String(row.region_code ?? "").trim()) &&
+        normalizeAreaInput(row.canonical_area) === normalizedInput
     );
 
     if (areaHit) {

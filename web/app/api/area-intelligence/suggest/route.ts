@@ -118,6 +118,10 @@ export async function GET(request: Request) {
       const label = String(row.alias ?? "").trim();
       const region_code = String(row.region_code ?? "").trim();
       if (!label || !region_code) continue;
+      // Phase A3: skip aliases whose parent region is inactive.
+      // regionNameByCode is built from service_regions.active=true only,
+      // so its keyset is the canonical "active regions" gate.
+      if (!regionNameByCode.has(region_code)) continue;
       const key = dedupeKey(label, region_code);
       if (seen.has(key)) continue;
       seen.add(key);
@@ -137,6 +141,8 @@ export async function GET(request: Request) {
         const label = String(row.canonical_area ?? "").trim();
         const region_code = String(row.region_code ?? "").trim();
         if (!label || !region_code) continue;
+        // Phase A3: skip canonical areas whose parent region is inactive.
+        if (!regionNameByCode.has(region_code)) continue;
         const key = dedupeKey(label, region_code);
         if (seen.has(key)) continue;
         seen.add(key);
