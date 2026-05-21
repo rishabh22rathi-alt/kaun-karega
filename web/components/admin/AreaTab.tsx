@@ -75,6 +75,17 @@ type RowStatus = {
   message?: string;
 };
 
+// Phase A5: per-region disable/re-enable status. Carries the same
+// state/message as RowStatus plus the list of active child areas the
+// server returned when REGION_HAS_ACTIVE_AREAS blocked a disable so the
+// card can render the friendly "still active under this region" hint.
+type RegionDisableStatus = {
+  state: "idle" | "saving" | "saved" | "error";
+  message?: string;
+  blockedActiveAreas?: Array<{ area_code: string; canonical_area: string }>;
+  blockedActiveAreaCount?: number;
+};
+
 // Compute the next `A-###` / `AL-###` code from existing codes.
 function nextCode(existingCodes: string[], prefix: string): string {
   const re = new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\d+)$`);
@@ -239,6 +250,11 @@ export default function AreaTab() {
   const [editingRegionStatus, setEditingRegionStatus] = useState<RowStatus>({
     state: "idle",
   });
+  // Phase A5: per-region status for the disable/re-enable flow. Keyed
+  // by region_code so simultaneous actions on two cards don't collide.
+  const [regionDisableStatusByCode, setRegionDisableStatusByCode] = useState<
+    Record<string, RegionDisableStatus>
+  >({});
   const [editingAreaCode, setEditingAreaCode] = useState<string | null>(null);
   const [editingAreaDraft, setEditingAreaDraft] = useState("");
   const [editingAliasCode, setEditingAliasCode] = useState<string | null>(null);
@@ -512,6 +528,174 @@ export default function AreaTab() {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Network error";
       setEditingRegionStatus({ state: "error", message: msg });
+    }
+  };
+
+  // Phase A5: disable a region. Server enforces REGION_HAS_ACTIVE_AREAS;
+  // when the guard fires we surface the listed active areas inline on
+  // the region card and auto-expand the region so the admin can act on
+  // each child. Uses a direct fetch (not callAi) so the response can
+  // route into the per-region status slot rather than the global banner.
+  const handleDisableRegion = async (region: RegionRow) => {
+    if (
+      typeof window !== "undefined" &&
+      !window.confirm(
+        `Disable region "${region.region_code}${
+          region.region_name ? ` — ${region.region_name}` : ""
+        }"? Its areas (and the aliases under them) will be hidden from public search, autocomplete, and provider dashboards while it is inactive.`
+      )
+    ) {
+      return;
+    }
+    setRegionDisableStatusByCode((prev) => ({
+      ...prev,
+      [region.region_code]: { state: "saving" },
+    }));
+    try {
+      const res = await fetch("/api/admin/area-intelligence", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          target: "region",
+          region_code: region.region_code,
+          active: false,
+        }),
+      });
+      const json = (await res.json()) as {
+        ok?: boolean;
+        error?: string;
+        detail?: string;
+        areas?: Array<{ area_code: string; canonical_area: string }>;
+        active_area_count?: number;
+      };
+      if (!res.ok || !json?.ok) {
+        if (json?.error === "REGION_HAS_ACTIVE_AREAS") {
+          // Auto-expand the region so the admin sees the blocking
+          // areas without an extra click.
+          setExpandedRegions((prev) => {
+            const next = new Set(prev);
+            next.add(region.region_code);
+            return next;
+          });
+          setRegionDisableStatusByCode((prev) => ({
+            ...prev,
+            [region.region_code]: {
+              state: "error",
+              message:
+                json?.detail ||
+                "This region still has active areas. Disable them first.",
+              blockedActiveAreas: Array.isArray(json.areas) ? json.areas : [],
+              blockedActiveAreaCount:
+                typeof json.active_area_count === "number"
+                  ? json.active_area_count
+                  : (json.areas?.length ?? 0),
+            },
+          }));
+          return;
+        }
+        setRegionDisableStatusByCode((prev) => ({
+          ...prev,
+          [region.region_code]: {
+            state: "error",
+            message:
+              json?.detail ||
+              json?.error ||
+              `Disable failed (HTTP ${res.status})`,
+          },
+        }));
+        return;
+      }
+      // Local state update — flip the region's active flag immediately
+      // so the card flips visual state without waiting for refresh().
+      setRegions((prev) =>
+        prev.map((r) =>
+          r.region_code === region.region_code ? { ...r, active: false } : r
+        )
+      );
+      setRegionDisableStatusByCode((prev) => ({
+        ...prev,
+        [region.region_code]: { state: "saved", message: "Region disabled" },
+      }));
+      refresh();
+      // Clear the success pill after a brief flash.
+      window.setTimeout(() => {
+        setRegionDisableStatusByCode((prev) => ({
+          ...prev,
+          [region.region_code]: { state: "idle" },
+        }));
+      }, 1200);
+    } catch (err: unknown) {
+      setRegionDisableStatusByCode((prev) => ({
+        ...prev,
+        [region.region_code]: {
+          state: "error",
+          message: err instanceof Error ? err.message : "Network error",
+        },
+      }));
+    }
+  };
+
+  // Phase A5: re-enable a region. Restorative; no confirm dialog. The
+  // server has no guard on this direction — children keep whatever
+  // active state they had when the region was disabled (A5 deliberately
+  // does NOT cascade), so this only flips the region row itself.
+  const handleReenableRegion = async (region: RegionRow) => {
+    setRegionDisableStatusByCode((prev) => ({
+      ...prev,
+      [region.region_code]: { state: "saving" },
+    }));
+    try {
+      const res = await fetch("/api/admin/area-intelligence", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          target: "region",
+          region_code: region.region_code,
+          active: true,
+        }),
+      });
+      const json = (await res.json()) as {
+        ok?: boolean;
+        error?: string;
+        detail?: string;
+      };
+      if (!res.ok || !json?.ok) {
+        setRegionDisableStatusByCode((prev) => ({
+          ...prev,
+          [region.region_code]: {
+            state: "error",
+            message:
+              json?.detail ||
+              json?.error ||
+              `Re-enable failed (HTTP ${res.status})`,
+          },
+        }));
+        return;
+      }
+      setRegions((prev) =>
+        prev.map((r) =>
+          r.region_code === region.region_code ? { ...r, active: true } : r
+        )
+      );
+      setRegionDisableStatusByCode((prev) => ({
+        ...prev,
+        [region.region_code]: { state: "saved", message: "Region re-enabled" },
+      }));
+      refresh();
+      window.setTimeout(() => {
+        setRegionDisableStatusByCode((prev) => ({
+          ...prev,
+          [region.region_code]: { state: "idle" },
+        }));
+      }, 1200);
+    } catch (err: unknown) {
+      setRegionDisableStatusByCode((prev) => ({
+        ...prev,
+        [region.region_code]: {
+          state: "error",
+          message: err instanceof Error ? err.message : "Network error",
+        },
+      }));
     }
   };
 
@@ -1533,6 +1717,17 @@ export default function AreaTab() {
                           editingRegionCode === region.region_code &&
                           editingRegionStatus.state === "saving"
                         }
+                        onDisable={() => {
+                          void handleDisableRegion(region);
+                        }}
+                        onReenable={() => {
+                          void handleReenableRegion(region);
+                        }}
+                        disableStatus={
+                          regionDisableStatusByCode[region.region_code] ?? {
+                            state: "idle",
+                          }
+                        }
                       >
                         <RegionInlineAddArea
                           regionCode={region.region_code}
@@ -2158,6 +2353,9 @@ function RegionCard({
   onCancelEdit,
   onSaveEdit,
   editInProgress,
+  onDisable,
+  onReenable,
+  disableStatus,
   children,
 }: {
   region: RegionRow;
@@ -2174,10 +2372,20 @@ function RegionCard({
   onCancelEdit: () => void;
   onSaveEdit: () => void;
   editInProgress: boolean;
+  // Phase A5
+  onDisable: () => void;
+  onReenable: () => void;
+  disableStatus: RegionDisableStatus;
   children: React.ReactNode;
 }) {
   return (
-    <div className="overflow-hidden rounded-xl border border-slate-200">
+    <div
+      className={`overflow-hidden rounded-xl ${
+        region.active
+          ? "border border-slate-200"
+          : "border border-dashed border-slate-300 bg-slate-50/40"
+      }`}
+    >
       <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-3 transition">
         <div className="min-w-0 flex flex-1 flex-wrap items-center gap-2">
           <span className="font-mono text-xs font-bold text-slate-700">
@@ -2257,6 +2465,43 @@ function RegionCard({
                   inactive
                 </span>
               ) : null}
+              {/* Phase A5: explicit disable / re-enable affordance. The
+                  Disable path triggers a confirm + REGION_HAS_ACTIVE_AREAS
+                  guard; the Re-enable path is restorative (no confirm). */}
+              {region.active ? (
+                <button
+                  type="button"
+                  onClick={onDisable}
+                  disabled={disableStatus.state === "saving"}
+                  aria-label={`Disable region ${region.region_code}`}
+                  title="Disable region (hides its areas from public surfaces)"
+                  className="inline-flex items-center gap-1 rounded border border-orange-300 px-1.5 py-0.5 text-[10px] font-medium text-orange-700 hover:bg-orange-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <X className="h-3 w-3" />
+                  {disableStatus.state === "saving"
+                    ? "Disabling…"
+                    : "Disable"}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={onReenable}
+                  disabled={disableStatus.state === "saving"}
+                  aria-label={`Re-enable region ${region.region_code}`}
+                  title="Re-enable region"
+                  className="inline-flex items-center gap-1 rounded border border-emerald-300 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <RotateCcw className="h-3 w-3" />
+                  {disableStatus.state === "saving"
+                    ? "Re-enabling…"
+                    : "Re-enable"}
+                </button>
+              )}
+              {disableStatus.state === "saved" && disableStatus.message ? (
+                <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-800">
+                  {disableStatus.message}
+                </span>
+              ) : null}
             </>
           )}
         </div>
@@ -2323,6 +2568,39 @@ function RegionCard({
         <p className="mx-3 mb-2 rounded bg-red-50 px-2 py-1 text-[11px] leading-tight text-red-700">
           {editError}
         </p>
+      ) : null}
+      {/* Phase A5: surface REGION_HAS_ACTIVE_AREAS inline with the
+          blocking child-area list. The card auto-expands when this
+          fires so the listed areas can be acted on without scrolling. */}
+      {disableStatus.state === "error" && disableStatus.message ? (
+        <div className="mx-3 mb-2 rounded border border-orange-200 bg-orange-50 px-2 py-2 text-[11px] leading-tight text-orange-800">
+          <p className="font-semibold" role="alert">
+            {disableStatus.message}
+          </p>
+          {disableStatus.blockedActiveAreas &&
+          disableStatus.blockedActiveAreas.length > 0 ? (
+            <ul className="mt-1 list-disc space-y-0.5 pl-5">
+              {disableStatus.blockedActiveAreas.map((a) => (
+                <li key={a.area_code}>
+                  <span className="font-mono text-[10px] text-orange-700">
+                    {a.area_code}
+                  </span>{" "}
+                  <span className="text-orange-900">{a.canonical_area}</span>
+                </li>
+              ))}
+              {typeof disableStatus.blockedActiveAreaCount === "number" &&
+              disableStatus.blockedActiveAreaCount >
+                disableStatus.blockedActiveAreas.length ? (
+                <li className="italic text-orange-700">
+                  +{" "}
+                  {disableStatus.blockedActiveAreaCount -
+                    disableStatus.blockedActiveAreas.length}{" "}
+                  more …
+                </li>
+              ) : null}
+            </ul>
+          ) : null}
+        </div>
       ) : null}
       {isExpanded ? (
         <div className="border-t border-slate-200 bg-slate-50/50">{children}</div>

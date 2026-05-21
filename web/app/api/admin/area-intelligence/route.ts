@@ -329,6 +329,58 @@ async function patchRegion(body: Json) {
     return NextResponse.json({ ok: true, region: existing, changed: false });
   }
 
+  // Phase A5: block disabling a region while it still has active child
+  // areas. Public surfaces (after A3) already hide everything under an
+  // inactive region; blocking here forces the admin to consciously
+  // disable each area first, so re-enabling the region later doesn't
+  // surprise them with which children come back live. The guard fires
+  // only on a true active→inactive transition; no-op writes (already
+  // inactive) and re-enables fall through unchanged.
+  if (update.active === false && existing.active === true) {
+    const { data: activeAreas, error: activeAreasErr } = await adminSupabase
+      .from("service_region_areas")
+      .select("area_code, canonical_area")
+      .eq("region_code", region_code)
+      .eq("active", true)
+      .order("canonical_area", { ascending: true })
+      .limit(51); // 50 + 1 sentinel for the "+ N more" UI hint
+    if (activeAreasErr) {
+      return NextResponse.json(
+        { ok: false, error: "DB_ERROR", detail: activeAreasErr.message },
+        { status: 500 }
+      );
+    }
+    if (activeAreas && activeAreas.length > 0) {
+      const has_more = activeAreas.length > 50;
+      const shown = has_more ? activeAreas.slice(0, 50) : activeAreas;
+      // Best-effort exact count when the list was capped. Second query
+      // keeps the common-case (≤50 active areas) round-trip cheap.
+      let active_area_count = shown.length;
+      if (has_more) {
+        const { count, error: countErr } = await adminSupabase
+          .from("service_region_areas")
+          .select("area_code", { count: "exact", head: true })
+          .eq("region_code", region_code)
+          .eq("active", true);
+        if (!countErr && typeof count === "number") {
+          active_area_count = count;
+        }
+      }
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "REGION_HAS_ACTIVE_AREAS",
+          detail: `Disable the ${active_area_count} active area${
+            active_area_count === 1 ? "" : "s"
+          } in this region first.`,
+          areas: shown,
+          active_area_count,
+        },
+        { status: 409 }
+      );
+    }
+  }
+
   const { data: updated, error: updErr } = await adminSupabase
     .from("service_regions")
     .update(update)
