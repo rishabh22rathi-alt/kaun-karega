@@ -12,7 +12,7 @@ import { adminSupabase } from "@/lib/supabase/admin";
 // Sources:
 //   service_regions              — region_code, region_name, active
 //   service_region_areas         — area_code, canonical_area, region_code, active
-//   service_region_area_aliases  — alias_code, alias, canonical_area, region_code, active=true
+//   service_region_area_aliases  — alias_code, alias, canonical_area, region_code, active (all rows; Phase A4)
 //
 // Join is performed in JS on (lower(canonical_area), region_code) so a
 // stray double-space or case drift in a stored value doesn't split an
@@ -107,12 +107,16 @@ export async function GET(request: Request) {
         .order("region_code", { ascending: true })
         .order("canonical_area", { ascending: true })
         .limit(MAX_ROWS),
+      // Phase A4: load ALL aliases (active + inactive). The admin editor
+      // now renders inactives differently and offers a re-enable affordance
+      // so soft-disable behaves as soft-delete, not irreversible delete.
+      // Public surfaces (resolve, suggest) continue to filter active=true
+      // server-side; this query is admin-only.
       adminSupabase
         .from("service_region_area_aliases")
         .select(
           "id, alias_code, alias, canonical_area, region_code, active, notes"
         )
-        .eq("active", true)
         .order("alias", { ascending: true })
         .limit(MAX_ROWS),
       adminSupabase
@@ -174,7 +178,10 @@ export async function GET(request: Request) {
     regionNameByCode.set(r.region_code, r.region_name ?? null);
   }
 
-  // Group active aliases by (canonical_area, region_code).
+  // Phase A4: group ALL aliases (active + inactive) by (canonical_area,
+  // region_code). The client renders inactive ones with a muted/struck
+  // treatment and surfaces a re-enable button. Provider density below
+  // continues to count only active aliases.
   type AliasRowDb = {
     id: string;
     alias_code: string;
@@ -247,15 +254,20 @@ export async function GET(request: Request) {
     regionsByCanonicalKey.set(k, set);
   }
 
-  // Map: alias key → set of region_codes. Active-only (aliasesRes is
-  // pre-filtered above). An alias resolves the provider_area to its
-  // parent canonical's region; we treat the alias text itself as a key.
+  // Map: alias key → set of region_codes. Active-only — Phase A4 stopped
+  // pre-filtering aliasesRes server-side so the editor can render
+  // inactives; provider density must still gate on active here to avoid
+  // attributing providers via a disabled alias. An alias resolves the
+  // provider_area to its parent canonical's region; we treat the alias
+  // text itself as a key.
   const regionsByAliasKey = new Map<string, Set<string>>();
   type AliasRowDb2 = {
     alias: string | null;
     region_code: string | null;
+    active: boolean | null;
   };
   for (const row of (aliasesRes.data ?? []) as AliasRowDb2[]) {
+    if (row.active !== true) continue; // density: active aliases only
     const k = toAreaKey(row.alias);
     const rc = String(row.region_code ?? "");
     if (!k || !rc) continue;

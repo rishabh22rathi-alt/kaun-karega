@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { ChevronDown, Pencil, X } from "lucide-react";
+import { ChevronDown, Pencil, RotateCcw, X } from "lucide-react";
 
 // Area Management accordion for /admin/dashboard.
 // Hierarchy: Region → Area → Aliases. Regions are the top-level cards;
@@ -1218,6 +1218,24 @@ export default function AreaTab() {
     );
   };
 
+  // Phase A4: restore a previously soft-disabled alias. No confirm
+  // dialog — re-enabling is restorative. Per-region alias uniqueness is
+  // already preserved on prod because aliasExistsInRegion (server) does
+  // not filter on active, so a same-text active alias cannot have been
+  // created while this one was disabled.
+  const handleReenableAlias = (alias: AliasRow) => {
+    void callAi(
+      "PATCH",
+      `reenableAlias::${alias.alias_code}`,
+      {
+        target: "alias",
+        alias_code: alias.alias_code,
+        active: true,
+      },
+      refresh
+    );
+  };
+
   const summary = areas
     ? `${areas.length} canonical area${areas.length === 1 ? "" : "s"} · ${regions.length} region${regions.length === 1 ? "" : "s"}`
     : "Region → Area → Alias management";
@@ -1604,6 +1622,9 @@ export default function AreaTab() {
                                     handleSaveAliasEdit(al)
                                   }
                                   onDisableAlias={(al) => handleDisableAlias(al)}
+                                  onReenableAlias={(al) =>
+                                    handleReenableAlias(al)
+                                  }
                                   dupEditAlias={dupEditAlias}
                                   addingAliasFor={addingAliasFor}
                                   newAliasDraft={newAliasDraft}
@@ -2330,6 +2351,7 @@ function AreaSubRow(props: {
   onCancelEditAlias: () => void;
   onSaveEditAlias: (al: AliasRow) => void;
   onDisableAlias: (al: AliasRow) => void;
+  onReenableAlias: (al: AliasRow) => void;
   dupEditAlias: { area: AreaRow; alias: AliasRow } | null;
   addingAliasFor: string | null;
   newAliasDraft: string;
@@ -2359,6 +2381,7 @@ function AreaSubRow(props: {
     onCancelEditAlias,
     onSaveEditAlias,
     onDisableAlias,
+    onReenableAlias,
     dupEditAlias,
     addingAliasFor,
     newAliasDraft,
@@ -2503,6 +2526,7 @@ function AreaSubRow(props: {
             const isEditingAlias = editingAliasCode === al.alias_code;
             const editAliasKey = `editAlias::${al.alias_code}`;
             const disableAliasKey = `disableAlias::${al.alias_code}`;
+            const reenableAliasKey = `reenableAlias::${al.alias_code}`;
             if (isEditingAlias) {
               return (
                 <div
@@ -2545,6 +2569,43 @@ function AreaSubRow(props: {
                     />
                   ) : null}
                 </div>
+              );
+            }
+            // Phase A4: inactive aliases render with a dashed border,
+            // muted + struck text, a small "inactive" badge, and a
+            // Re-enable button in place of the Disable X. Edit stays
+            // available so an admin can fix the text before re-enabling.
+            if (!al.active) {
+              return (
+                <span
+                  key={al.alias_code}
+                  className="inline-flex items-center gap-1 rounded-full border border-dashed border-slate-300 bg-slate-50 px-2 py-0.5 text-xs text-slate-400"
+                  title={al.alias_code}
+                >
+                  <span className="line-through">{al.alias}</span>
+                  <span className="rounded-full bg-slate-200 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-slate-600">
+                    inactive
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => onStartEditAlias(al)}
+                    aria-label={`Edit alias ${al.alias}`}
+                    title="Edit"
+                    className="ml-0.5 inline-flex h-4 w-4 items-center justify-center rounded text-slate-500 hover:bg-slate-200 hover:text-[#003d20]"
+                  >
+                    <Pencil className="h-3 w-3" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onReenableAlias(al)}
+                    disabled={actionInProgress === reenableAliasKey}
+                    aria-label={`Re-enable alias ${al.alias}`}
+                    title="Re-enable (active=true)"
+                    className="inline-flex h-4 w-4 items-center justify-center rounded text-slate-500 hover:bg-emerald-100 hover:text-emerald-700 disabled:opacity-50"
+                  >
+                    <RotateCcw className="h-3 w-3" />
+                  </button>
+                </span>
               );
             }
             return (
