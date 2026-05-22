@@ -1,5 +1,6 @@
 import { adminSupabase } from "@/lib/supabase/admin";
 import { NextResponse } from "next/server";
+import { resolveCityParam } from "@/lib/cities/cityContext";
 
 // Sandbox-only suggestion endpoint for Area Intelligence.
 // Does NOT touch live matching, provider registration, homepage search,
@@ -40,10 +41,22 @@ export async function GET(request: Request) {
   const raw = url.searchParams.get("query") || "";
   const q = raw.trim().toLowerCase();
 
+  // Phase 1.1: autocomplete must never break on a bad ?city= param.
+  // Malformed/inactive city falls back to the default rather than 400-ing
+  // the user mid-type. Missing ?city= also falls back to default.
+  const { city_code: cityCode } = await resolveCityParam(url, {
+    fallback: "default",
+  });
+
   // Minimum length guard. Empty response, not an error — keeps autocomplete
   // call sites simple (they always render the array).
   if (q.length < 2) {
-    return NextResponse.json({ ok: true, query: raw, suggestions: [] });
+    return NextResponse.json({
+      ok: true,
+      query: raw,
+      city_code: cityCode,
+      suggestions: [],
+    });
   }
 
   const pattern = `%${escapeIlike(q)}%`;
@@ -54,6 +67,7 @@ export async function GET(request: Request) {
         .from("service_region_area_aliases")
         .select("alias, canonical_area, region_code")
         .eq("active", true)
+        .eq("city_code", cityCode)
         .ilike("alias", pattern)
         .order("alias", { ascending: true })
         .limit(PER_TABLE_CAP),
@@ -61,6 +75,7 @@ export async function GET(request: Request) {
         .from("service_region_areas")
         .select("canonical_area, region_code")
         .eq("active", true)
+        .eq("city_code", cityCode)
         .ilike("canonical_area", pattern)
         .order("canonical_area", { ascending: true })
         .limit(PER_TABLE_CAP),
@@ -68,6 +83,7 @@ export async function GET(request: Request) {
         .from("service_regions")
         .select("region_code, region_name")
         .eq("active", true)
+        .eq("city_code", cityCode)
         .ilike("region_name", pattern)
         .order("region_name", { ascending: true })
         .limit(PER_TABLE_CAP),
@@ -85,11 +101,14 @@ export async function GET(request: Request) {
 
     // Build region_code → region_name map. Pull every active region once;
     // small set (≤ a few dozen), so the round-trip is cheap and keeps the
-    // alias/canonical sources from needing per-row joins.
+    // alias/canonical sources from needing per-row joins. Scoped to the
+    // resolved city so aliases/areas in other cities cannot be hydrated
+    // with a name from this city's region map by coincidence.
     const { data: allRegions, error: regionsAllErr } = await adminSupabase
       .from("service_regions")
       .select("region_code, region_name")
       .eq("active", true)
+      .eq("city_code", cityCode)
       .limit(1000);
     if (regionsAllErr) {
       console.error(
@@ -177,7 +196,12 @@ export async function GET(request: Request) {
       }
     }
 
-    return NextResponse.json({ ok: true, query: raw, suggestions });
+    return NextResponse.json({
+      ok: true,
+      query: raw,
+      city_code: cityCode,
+      suggestions,
+    });
   } catch (err: any) {
     console.error("[area-intelligence/suggest] unexpected", err);
     return NextResponse.json(

@@ -1,5 +1,6 @@
 import { adminSupabase } from "@/lib/supabase/admin";
 import { NextResponse } from "next/server";
+import { resolveCityParam } from "@/lib/cities/cityContext";
 
 // Sandbox-only public region listing for the provider register/edit UI.
 // Returns each active region with its active canonical areas attached
@@ -24,19 +25,31 @@ type AreaRowDb = {
   active: boolean | null;
 };
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    // Phase 1.1: provider register reads this endpoint and currently has
+    // no notion of "city" — sending it foreign-city regions would let a
+    // provider register against the wrong city. Default-fallback on a
+    // bad/missing ?city= keeps that path safe by anchoring to the
+    // configured default city.
+    const url = new URL(request.url);
+    const { city_code: cityCode } = await resolveCityParam(url, {
+      fallback: "default",
+    });
+
     const [regionsRes, areasRes] = await Promise.all([
       adminSupabase
         .from("service_regions")
         .select("region_code, region_name, active")
         .eq("active", true)
+        .eq("city_code", cityCode)
         .order("region_code", { ascending: true })
         .limit(MAX_ROWS),
       adminSupabase
         .from("service_region_areas")
         .select("canonical_area, region_code, active")
         .eq("active", true)
+        .eq("city_code", cityCode)
         .order("canonical_area", { ascending: true })
         .limit(MAX_ROWS),
     ]);
@@ -66,9 +79,10 @@ export async function GET() {
       region_code: r.region_code,
       region_name: String(r.region_name ?? ""),
       areas: areasByRegion.get(r.region_code) ?? [],
+      city_code: cityCode,
     }));
 
-    return NextResponse.json({ ok: true, regions });
+    return NextResponse.json({ ok: true, city_code: cityCode, regions });
   } catch (err: any) {
     console.error("[area-intelligence/regions] unexpected", err);
     return NextResponse.json(

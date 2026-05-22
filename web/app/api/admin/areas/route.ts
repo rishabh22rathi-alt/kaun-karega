@@ -2,6 +2,10 @@ import { NextResponse } from "next/server";
 
 import { requireAdminSession } from "@/lib/adminAuth";
 import { adminSupabase } from "@/lib/supabase/admin";
+import {
+  resolveCityParam,
+  InvalidCityCodeError,
+} from "@/lib/cities/cityContext";
 
 // GET /api/admin/areas
 // Returns regions + canonical areas (each with its currently-active aliases
@@ -88,6 +92,35 @@ export async function GET(request: Request) {
     );
   }
 
+  // Phase 1.1: city-aware catalog reads. Default-fallback on missing
+  // ?city= preserves today's behavior exactly (JOD is the only active
+  // city). Malformed/inactive ?city= returns 400 — the admin tab knows
+  // its city; a bad code is a programmer error, not a typo.
+  //
+  // Scope deliberately stops at the three catalog tables + the review
+  // queue. provider_areas and providers are NOT filtered:
+  //   • provider_areas.city_code is still nullable (Phase 1.2 backfills
+  //     writers); filtering here would drop density on canonicalization-
+  //     rewritten rows that haven't acquired city_code yet.
+  //   • providers has no city_code at all.
+  // Density derives from the canonical/alias maps which ARE city-filtered
+  // above, so a provider whose only mapped area is in another city
+  // naturally falls out of the per-region counts without an extra filter.
+  const url = new URL(request.url);
+  let cityCode: string;
+  try {
+    const r = await resolveCityParam(url, { fallback: "reject" });
+    cityCode = r.city_code;
+  } catch (e) {
+    if (e instanceof InvalidCityCodeError) {
+      return NextResponse.json(
+        { ok: false, error: "INVALID_CITY_CODE", input: e.input },
+        { status: 400 }
+      );
+    }
+    throw e;
+  }
+
   const [
     regionsRes,
     areasRes,
@@ -98,12 +131,14 @@ export async function GET(request: Request) {
   ] = await Promise.all([
       adminSupabase
         .from("service_regions")
-        .select("region_code, region_name, active")
+        .select("region_code, region_name, active, city_code")
+        .eq("city_code", cityCode)
         .order("region_code", { ascending: true })
         .limit(MAX_ROWS),
       adminSupabase
         .from("service_region_areas")
-        .select("area_code, canonical_area, region_code, active, notes")
+        .select("area_code, canonical_area, region_code, active, notes, city_code")
+        .eq("city_code", cityCode)
         .order("region_code", { ascending: true })
         .order("canonical_area", { ascending: true })
         .limit(MAX_ROWS),
@@ -115,8 +150,9 @@ export async function GET(request: Request) {
       adminSupabase
         .from("service_region_area_aliases")
         .select(
-          "id, alias_code, alias, canonical_area, region_code, active, notes"
+          "id, alias_code, alias, canonical_area, region_code, active, notes, city_code"
         )
+        .eq("city_code", cityCode)
         .order("alias", { ascending: true })
         .limit(MAX_ROWS),
       adminSupabase
@@ -130,9 +166,10 @@ export async function GET(request: Request) {
       adminSupabase
         .from("area_review_queue")
         .select(
-          "review_id, raw_area, occurrences, source_ref, source_type, last_seen_at"
+          "review_id, raw_area, occurrences, source_ref, source_type, last_seen_at, city_code"
         )
         .eq("status", "pending")
+        .eq("city_code", cityCode)
         .order("occurrences", { ascending: false })
         .order("last_seen_at", { ascending: false })
         .limit(200),
@@ -430,6 +467,7 @@ export async function GET(request: Request) {
 
   return NextResponse.json({
     ok: true,
+    city_code: cityCode,
     regions,
     areas,
     unmapped_provider_areas,

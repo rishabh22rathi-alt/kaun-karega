@@ -344,13 +344,19 @@
       "Bash(echo \"EXIT=$?\")",
       "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://127.0.0.1:3000/)",
       "Bash(npm run *)",
-      "Bash(rm build.out)"
+      "Bash(rm build.out)",
+      "Bash(Select-Object Name, FullName)",
+      "Bash(grep -E \"\\\\.\\(tsx|ts\\)$\")",
+      "Bash(ls \"c:/Users/kaunk/OneDrive/Desktop/kaun-karega/web/lib/cities\" 2>nul || echo \"MISSING\")",
+      "Bash(powershell -Command \"Get-Content package.json | Select-Object -First 40\")",
+      "Bash(echo \"EXIT: $?\")"
     ],
     "additionalDirectories": [
       "c:\\Users\\kaunk\\OneDrive\\Desktop\\kaun-karega\\web",
       "\\tmp",
       "c:\\Users\\kaunk\\OneDrive\\Desktop\\kaun-karega\\web\\app\\api\\admin\\providers",
-      "c:\\Users\\kaunk\\OneDrive\\Desktop\\kaun-karega\\web\\app\\local-needs"
+      "c:\\Users\\kaunk\\OneDrive\\Desktop\\kaun-karega\\web\\app\\local-needs",
+      "c:\\Users\\kaunk\\OneDrive\\Desktop\\kaun-karega"
     ]
   }
 }

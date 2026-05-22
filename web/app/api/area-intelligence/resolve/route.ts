@@ -1,5 +1,9 @@
 import { adminSupabase } from "@/lib/supabase/admin";
 import { NextResponse } from "next/server";
+import {
+  resolveCityParam,
+  InvalidCityCodeError,
+} from "@/lib/cities/cityContext";
 
 // Sandbox-only Area Intelligence resolver.
 // Does NOT touch live matching, provider registration, homepage search,
@@ -41,6 +45,23 @@ export async function GET(request: Request) {
     );
   }
 
+  // Phase 1.1: resolution is now strictly city-scoped. A bad ?city= is a
+  // 400 (resolve is a precision endpoint — silent fallback would mask
+  // misconfigured callers).
+  let cityCode: string;
+  try {
+    const r = await resolveCityParam(url, { fallback: "reject" });
+    cityCode = r.city_code;
+  } catch (e) {
+    if (e instanceof InvalidCityCodeError) {
+      return NextResponse.json(
+        { ok: false, input: rawInput, error: "INVALID_CITY_CODE" },
+        { status: 400 }
+      );
+    }
+    throw e;
+  }
+
   try {
     // Phase A3: preload active region codes so alias and canonical-area
     // hits whose parent region is inactive are skipped. The region match
@@ -50,6 +71,7 @@ export async function GET(request: Request) {
       .from("service_regions")
       .select("region_code")
       .eq("active", true)
+      .eq("city_code", cityCode)
       .limit(1000);
     if (activeRegionsErr) {
       console.error(
@@ -74,6 +96,7 @@ export async function GET(request: Request) {
       .from("service_region_area_aliases")
       .select("alias, canonical_area, region_code, active")
       .eq("active", true)
+      .eq("city_code", cityCode)
       .limit(MAX_ROWS);
 
     if (aliasError) {
@@ -101,6 +124,7 @@ export async function GET(request: Request) {
         canonical_area: aliasHit.canonical_area,
         region_code: aliasHit.region_code,
         region_name: regionName,
+        city_code: cityCode,
       });
     }
 
@@ -109,6 +133,7 @@ export async function GET(request: Request) {
       .from("service_region_areas")
       .select("canonical_area, region_code, active")
       .eq("active", true)
+      .eq("city_code", cityCode)
       .limit(MAX_ROWS);
 
     if (areaError) {
@@ -135,6 +160,7 @@ export async function GET(request: Request) {
         canonical_area: areaHit.canonical_area,
         region_code: areaHit.region_code,
         region_name: regionName,
+        city_code: cityCode,
       });
     }
 
@@ -143,6 +169,7 @@ export async function GET(request: Request) {
       .from("service_regions")
       .select("region_code, region_name, active")
       .eq("active", true)
+      .eq("city_code", cityCode)
       .limit(MAX_ROWS);
 
     if (regionError) {
@@ -165,6 +192,7 @@ export async function GET(request: Request) {
         canonical_area: null,
         region_code: regionHit.region_code,
         region_name: regionHit.region_name,
+        city_code: cityCode,
       });
     }
 
@@ -172,6 +200,7 @@ export async function GET(request: Request) {
     return NextResponse.json({
       ok: false,
       input: rawInput,
+      city_code: cityCode,
       error: "No area intelligence match found",
     });
   } catch (err: any) {

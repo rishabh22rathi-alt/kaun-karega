@@ -4,6 +4,11 @@ import {
   listActiveCanonicalAreas,
 } from "@/lib/admin/adminAreaMappings";
 import { adminSupabase } from "@/lib/supabase/admin";
+import {
+  getDefaultCityCode,
+  resolveCityParam,
+  InvalidCityCodeError,
+} from "@/lib/cities/cityContext";
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
@@ -16,7 +21,13 @@ type AreasCache = {
   areas: string[];
 };
 
-let areasCache: AreasCache | null = null;
+// Phase 1.1 — cache is now city-keyed. Each city resolves to a different
+// merged list (legacy + service_region_areas filtered to the city), so a
+// single cache entry would poison cross-city callers. Bounded at 10
+// entries to keep the working set tiny even if a future homepage runs an
+// "all cities" sweep.
+const MAX_CITY_CACHE_ENTRIES = 10;
+const areasCacheByCity = new Map<string, AreasCache>();
 
 // Mirrors lib/admin/adminAreaMappings.ts so the same canonical
 // (e.g. "high-court road" vs "High Court Road") collapses to one key.
@@ -38,8 +49,13 @@ function toAreaKey(value: unknown): string {
 //
 // Failure isolation: if the union read fails, we log and return the
 // legacy list alone. /api/areas continues to serve the pre-union set.
+//
+// Phase 1.1: scoped to a single city. Parent-region preload and the
+// canonical-area read both filter on city_code so a multi-city future
+// keeps the response correct without further changes here.
 async function fetchServiceRegionAreaExtras(
-  legacyKeys: Set<string>
+  legacyKeys: Set<string>,
+  cityCode: string
 ): Promise<string[]> {
   try {
     // Phase A3: preload the set of active region codes so canonical
@@ -50,6 +66,7 @@ async function fetchServiceRegionAreaExtras(
       .from("service_regions")
       .select("region_code")
       .eq("active", true)
+      .eq("city_code", cityCode)
       .limit(1000);
     if (regionErr) {
       console.warn(
@@ -70,6 +87,7 @@ async function fetchServiceRegionAreaExtras(
       .from("service_region_areas")
       .select("canonical_area, region_code, active")
       .eq("active", true)
+      .eq("city_code", cityCode)
       .limit(SERVICE_REGION_AREAS_LIMIT);
 
     if (error) {
@@ -107,18 +125,30 @@ async function fetchServiceRegionAreaExtras(
   }
 }
 
-async function fetchAllAreas(): Promise<string[]> {
+async function fetchAllAreas(cityCode: string): Promise<string[]> {
   const now = Date.now();
-  if (areasCache && areasCache.expiresAt > now) {
-    return areasCache.areas;
+  const cached = areasCacheByCity.get(cityCode);
+  if (cached && cached.expiresAt > now) {
+    return cached.areas;
   }
 
+  // Phase 1.1: the canonicalization side effect is intentionally city-blind.
+  // It rewrites `provider_areas` against the legacy `areas` / `area_aliases`
+  // tables — neither has a city_code column, and adding one here would
+  // silently change which providers get reconciled. Keep it untouched.
   const reconcileResult = await canonicalizeProviderAreasToCanonicalNames();
   if (!reconcileResult.ok) {
     throw new Error(reconcileResult.error);
   }
 
-  const legacyAreas = await listActiveCanonicalAreas();
+  // Legacy `areas` / `area_aliases` carry NO city_code. They are
+  // historically Jodhpur-only, so for the default city we include them
+  // as before; for any non-default city the legacy list is empty.
+  // Today JOD is the only active city, so default-city callers see the
+  // exact same legacy data they saw pre-Phase-1.1.
+  const defaultCity = await getDefaultCityCode();
+  const legacyAreas =
+    cityCode === defaultCity ? await listActiveCanonicalAreas() : [];
 
   // Build a key Set for the legacy list so the union can dedupe against
   // it cheaply. Keep the existing display name (legacy wins on collision).
@@ -128,7 +158,10 @@ async function fetchAllAreas(): Promise<string[]> {
     if (k) legacyKeys.add(k);
   }
 
-  const serviceRegionExtras = await fetchServiceRegionAreaExtras(legacyKeys);
+  const serviceRegionExtras = await fetchServiceRegionAreaExtras(
+    legacyKeys,
+    cityCode
+  );
 
   // Preserve the helper's ascending sort: legacy was sorted on `area_name`
   // ASC at fetch time. Sort the combined list alphabetically so newly
@@ -137,10 +170,16 @@ async function fetchAllAreas(): Promise<string[]> {
     a.localeCompare(b)
   );
 
-  areasCache = {
+  // FIFO trim before insert keeps the cache bounded even under a pathological
+  // sequence of distinct city params.
+  if (areasCacheByCity.size >= MAX_CITY_CACHE_ENTRIES) {
+    const oldestKey = areasCacheByCity.keys().next().value;
+    if (oldestKey !== undefined) areasCacheByCity.delete(oldestKey);
+  }
+  areasCacheByCity.set(cityCode, {
     expiresAt: now + CACHE_TTL_MS,
     areas: merged,
-  };
+  });
 
   return merged;
 }
@@ -149,7 +188,24 @@ export async function GET(request: Request) {
   try {
     const url = new URL(request.url);
     const q = (url.searchParams.get("q") || "").trim().toLowerCase();
-    const allAreas = await fetchAllAreas();
+
+    // Missing/blank ?city= → default city. Malformed/inactive ?city= →
+    // 400 so misconfigured callers fail loud rather than silently seeing
+    // an unexpected city's data.
+    let cityResolution;
+    try {
+      cityResolution = await resolveCityParam(url, { fallback: "reject" });
+    } catch (e) {
+      if (e instanceof InvalidCityCodeError) {
+        return NextResponse.json(
+          { ok: false, error: "INVALID_CITY_CODE", input: e.input },
+          { status: 400 }
+        );
+      }
+      throw e;
+    }
+
+    const allAreas = await fetchAllAreas(cityResolution.city_code);
 
     const filtered = q
       ? allAreas.filter((area) => {
@@ -166,6 +222,7 @@ export async function GET(request: Request) {
     return NextResponse.json({
       ok: true,
       areas: limited,
+      city_code: cityResolution.city_code,
     });
   } catch (error: any) {
     console.error("[areas API] error", error);

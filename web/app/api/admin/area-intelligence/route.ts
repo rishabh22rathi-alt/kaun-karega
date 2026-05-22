@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { adminSupabase } from "@/lib/supabase/admin";
 import { requireAdminSession } from "@/lib/adminAuth";
+import {
+  getDefaultCityCode,
+  resolveCityParam,
+  InvalidCityCodeError,
+} from "@/lib/cities/cityContext";
 
 // Sandbox admin editor for the Area Intelligence tables.
 // Does NOT touch live matching, provider registration, homepage search,
@@ -51,21 +56,42 @@ export async function GET(request: Request) {
   const auth = await requireAdminSession(request);
   if (!auth.ok) return unauthorized();
 
+  // Phase 1.1: scope the editor feed to a single city. Missing ?city=
+  // falls back to default — preserves today's behavior under a single-
+  // active-city deployment.
+  const url = new URL(request.url);
+  let cityCode: string;
+  try {
+    const r = await resolveCityParam(url, { fallback: "reject" });
+    cityCode = r.city_code;
+  } catch (e) {
+    if (e instanceof InvalidCityCodeError) {
+      return NextResponse.json(
+        { ok: false, error: "INVALID_CITY_CODE", input: e.input },
+        { status: 400 }
+      );
+    }
+    throw e;
+  }
+
   const [regions, areas, aliases] = await Promise.all([
     adminSupabase
       .from("service_regions")
-      .select("region_code, region_name, active, notes")
+      .select("region_code, region_name, active, notes, city_code")
+      .eq("city_code", cityCode)
       .order("region_code", { ascending: true })
       .limit(MAX_ROWS),
     adminSupabase
       .from("service_region_areas")
-      .select("area_code, canonical_area, region_code, active, notes")
+      .select("area_code, canonical_area, region_code, active, notes, city_code")
+      .eq("city_code", cityCode)
       .order("region_code", { ascending: true })
       .order("canonical_area", { ascending: true })
       .limit(MAX_ROWS),
     adminSupabase
       .from("service_region_area_aliases")
-      .select("alias_code, alias, canonical_area, region_code, active, notes")
+      .select("alias_code, alias, canonical_area, region_code, active, notes, city_code")
+      .eq("city_code", cityCode)
       .order("region_code", { ascending: true })
       .order("alias", { ascending: true })
       .limit(MAX_ROWS),
@@ -82,6 +108,7 @@ export async function GET(request: Request) {
 
   return NextResponse.json({
     ok: true,
+    city_code: cityCode,
     regions: regions.data ?? [],
     areas: areas.data ?? [],
     aliases: aliases.data ?? [],
@@ -782,6 +809,22 @@ export async function POST(request: Request) {
     );
   }
 
+  // Phase 1.1 stabilization hotfix — service_region_area_aliases.city_code
+  // is NOT NULL since 20260527120300. Without an explicit value here the
+  // insert would fail. Derive from the parent region (already validated
+  // by regionExists above) so the alias lands under the same city as
+  // its parent — survives a future where non-default-city regions exist.
+  // Fall back to default only if the parent lookup somehow returns no
+  // city_code (impossible given NOT NULL, but defended).
+  const { data: parentRegion } = await adminSupabase
+    .from("service_regions")
+    .select("city_code")
+    .eq("region_code", region_code)
+    .maybeSingle();
+  const cityCode =
+    String(parentRegion?.city_code ?? "").trim() ||
+    (await getDefaultCityCode());
+
   const { data: inserted, error: insertErr } = await adminSupabase
     .from("service_region_area_aliases")
     .insert({
@@ -791,8 +834,11 @@ export async function POST(request: Request) {
       region_code,
       active,
       notes,
+      city_code: cityCode,
     })
-    .select("alias_code, alias, canonical_area, region_code, active, notes")
+    .select(
+      "alias_code, alias, canonical_area, region_code, active, notes, city_code"
+    )
     .maybeSingle();
 
   if (insertErr) {
@@ -845,10 +891,15 @@ async function postRegion(body: Json) {
     );
   }
 
+  // Phase 1.1 stabilization hotfix — service_regions.city_code is NOT
+  // NULL since 20260527120100. Default-city is the only safe choice
+  // here: this admin POST has no city selector in the UI yet (Phase 1.2+).
+  const defaultCityCode = await getDefaultCityCode();
+
   const { data: inserted, error: insertErr } = await adminSupabase
     .from("service_regions")
-    .insert({ region_code, region_name, active, notes })
-    .select("region_code, region_name, active, notes")
+    .insert({ region_code, region_name, active, notes, city_code: defaultCityCode })
+    .select("region_code, region_name, active, notes, city_code")
     .maybeSingle();
   if (insertErr) {
     return NextResponse.json(
@@ -933,10 +984,33 @@ async function postArea(body: Json) {
     );
   }
 
+  // Phase 1.1 stabilization hotfix — service_region_areas.city_code is
+  // NOT NULL since 20260527120200. Prefer the parent region's city_code
+  // (already validated to exist by regionExists above) so this area is
+  // never accidentally created under the wrong city if a future seed
+  // adds a non-default-city region. Fall back to the default only if
+  // the parent lookup somehow returns no city_code (impossible given
+  // the NOT NULL constraint, but defended).
+  const { data: parentRegion } = await adminSupabase
+    .from("service_regions")
+    .select("city_code")
+    .eq("region_code", region_code)
+    .maybeSingle();
+  const cityCode =
+    String(parentRegion?.city_code ?? "").trim() ||
+    (await getDefaultCityCode());
+
   const { data: inserted, error: insertErr } = await adminSupabase
     .from("service_region_areas")
-    .insert({ area_code, canonical_area, region_code, active, notes })
-    .select("area_code, canonical_area, region_code, active, notes")
+    .insert({
+      area_code,
+      canonical_area,
+      region_code,
+      active,
+      notes,
+      city_code: cityCode,
+    })
+    .select("area_code, canonical_area, region_code, active, notes, city_code")
     .maybeSingle();
   if (insertErr) {
     return NextResponse.json(
