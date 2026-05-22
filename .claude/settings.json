@@ -349,7 +349,8 @@
       "Bash(grep -E \"\\\\.\\(tsx|ts\\)$\")",
       "Bash(ls \"c:/Users/kaunk/OneDrive/Desktop/kaun-karega/web/lib/cities\" 2>nul || echo \"MISSING\")",
       "Bash(powershell -Command \"Get-Content package.json | Select-Object -First 40\")",
-      "Bash(echo \"EXIT: $?\")"
+      "Bash(echo \"EXIT: $?\")",
+      "Bash(echo \"TSC EXIT: $?\")"
     ],
     "additionalDirectories": [
       "c:\\Users\\kaunk\\OneDrive\\Desktop\\kaun-karega\\web",

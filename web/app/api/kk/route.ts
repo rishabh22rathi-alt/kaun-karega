@@ -41,6 +41,7 @@ import {
   resolveUnmappedAreaInSupabase,
   queueUnmappedAreaForReview,
 } from "@/lib/admin/adminUnmappedAreas";
+import { getDefaultCityCode } from "@/lib/cities/cityContext";
 import { remindProvidersForTask } from "@/lib/admin/adminReminderMutations";
 import { getAdminRequestsFromSupabase } from "@/lib/admin/adminTaskReads";
 import { assignProviderToTask, closeTask } from "@/lib/admin/adminTaskMutations";
@@ -1916,9 +1917,15 @@ export async function POST(request: NextRequest) {
         }
       }
 
+      // Phase 1.2: stamp every provider_areas row with the resolved
+      // default city. Provider register has no city selector in the UI
+      // today; once one ships in a later phase, the selected value
+      // flows in here and the default only fires when missing.
+      const registerCityCode = await getDefaultCityCode();
       const areaRows = areas.map((area) => ({
         provider_id: providerId,
         area: String(area),
+        city_code: registerCityCode,
       }));
 
       const { error: areasError } = await supabase

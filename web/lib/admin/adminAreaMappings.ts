@@ -1,4 +1,5 @@
 import { adminSupabase } from "../supabase/admin";
+import { preserveOrDefaultCityCode } from "../cities/cityContext";
 
 // ---------------------------------------------------------------------------
 // Normalization — mirrors GAS normalizeAreaName_() and getNormalizedAreaKey_()
@@ -30,6 +31,10 @@ type AliasRow = {
 type ProviderAreaRow = {
   provider_id: string;
   area: string | null;
+  // Phase 1.2: carried through delete-then-insert rewrites so the column
+  // is preserved instead of NULLed. nullable in the schema (Phase 1.0
+  // intentionally left runtime tables nullable until 1.5 tightens them).
+  city_code?: string | null;
 };
 
 export type ManagedAreaAlias = {
@@ -145,7 +150,9 @@ async function runProviderAreaCanonicalization(): Promise<ProviderAreaCanonicali
   const [areasRes, aliasesRes, providerAreasRes] = await Promise.all([
     adminSupabase.from("areas").select("area_name, active"),
     adminSupabase.from("area_aliases").select("alias_name, canonical_area, active"),
-    adminSupabase.from("provider_areas").select("provider_id, area"),
+    // Phase 1.2: select city_code so the delete-then-insert below can
+    // preserve it rather than emitting NULL on every reconcile tick.
+    adminSupabase.from("provider_areas").select("provider_id, area, city_code"),
   ]);
 
   if (areasRes.error) {
@@ -174,12 +181,21 @@ async function runProviderAreaCanonicalization(): Promise<ProviderAreaCanonicali
     };
   }
 
+  // Phase 1.2: group provider rows AND track the first non-NULL city_code
+  // seen per provider. A provider's coverage rows historically share one
+  // city (today JOD for every row, by Phase 1.0 backfill). The first
+  // well-formed value wins; preserveOrDefaultCityCode later trims/validates
+  // and falls back to the configured default if every row arrived NULL.
   const rowsByProvider = new Map<string, string[]>();
+  const cityByProvider = new Map<string, string | null>();
   for (const row of providerAreaRows) {
     const providerId = String(row.provider_id || "").trim();
     if (!providerId) continue;
     if (!rowsByProvider.has(providerId)) rowsByProvider.set(providerId, []);
     rowsByProvider.get(providerId)!.push(String(row.area ?? ""));
+    if (!cityByProvider.has(providerId) || cityByProvider.get(providerId) == null) {
+      cityByProvider.set(providerId, row.city_code ?? null);
+    }
   }
 
   let updatedProviders = 0;
@@ -228,10 +244,19 @@ async function runProviderAreaCanonicalization(): Promise<ProviderAreaCanonicali
     }
 
     if (nextAreas.length > 0) {
+      // Phase 1.2: carry the provider's existing city_code through the
+      // rewrite. Resolved once per provider — preserveOrDefaultCityCode
+      // returns the existing value if well-formed, else the default. This
+      // stops the previously-destructive behaviour where every reconcile
+      // tick NULLed out city_code on every touched provider.
+      const cityCode = await preserveOrDefaultCityCode(
+        cityByProvider.get(providerId)
+      );
       const { error: insertError } = await adminSupabase.from("provider_areas").insert(
         nextAreas.map((area) => ({
           provider_id: providerId,
           area,
+          city_code: cityCode,
         }))
       );
       if (insertError) {
@@ -260,15 +285,23 @@ async function rewriteProviderAreasForRenamedCanonicalArea(
   const newKey = toAreaKey(newArea);
   if (!oldKey || !newKey) return { ok: true };
 
-  const { data, error } = await adminSupabase.from("provider_areas").select("provider_id, area");
+  // Phase 1.2: select city_code so the delete-then-insert below can
+  // preserve it. Same posture as runProviderAreaCanonicalization.
+  const { data, error } = await adminSupabase
+    .from("provider_areas")
+    .select("provider_id, area, city_code");
   if (error) return { ok: false, error: error.message };
 
   const rowsByProvider = new Map<string, string[]>();
+  const cityByProvider = new Map<string, string | null>();
   for (const row of (data ?? []) as ProviderAreaRow[]) {
     const providerId = String(row.provider_id || "").trim();
     if (!providerId) continue;
     if (!rowsByProvider.has(providerId)) rowsByProvider.set(providerId, []);
     rowsByProvider.get(providerId)!.push(String(row.area ?? ""));
+    if (!cityByProvider.has(providerId) || cityByProvider.get(providerId) == null) {
+      cityByProvider.set(providerId, row.city_code ?? null);
+    }
   }
 
   for (const [providerId, currentAreas] of rowsByProvider.entries()) {
@@ -305,10 +338,17 @@ async function rewriteProviderAreasForRenamedCanonicalArea(
     if (deleteError) return { ok: false, error: deleteError.message };
 
     if (nextAreas.length > 0) {
+      // Phase 1.2: preserve existing city_code per provider. The rename
+      // changes the area string only; city ownership of the provider's
+      // coverage is invariant under canonical-rename.
+      const cityCode = await preserveOrDefaultCityCode(
+        cityByProvider.get(providerId)
+      );
       const { error: insertError } = await adminSupabase.from("provider_areas").insert(
         nextAreas.map((area) => ({
           provider_id: providerId,
           area,
+          city_code: cityCode,
         }))
       );
       if (insertError) return { ok: false, error: insertError.message };

@@ -9,6 +9,7 @@ import { adminSupabase } from "@/lib/supabase/admin";
 // matching downstream.
 import { resolveCategoryAliasDetailed } from "@/lib/categoryAliases";
 import { isDisclaimerFresh } from "@/lib/disclaimer";
+import { getDefaultCityCode } from "@/lib/cities/cityContext";
 
 function normalizePhone10(value: unknown): string {
   return String(value || "").replace(/\D/g, "").slice(-10);
@@ -205,6 +206,10 @@ export async function POST(request: Request) {
     // /api/my-requests, ownership checks in /api/process-task-notifications,
     // and chat thread joins all line up against the 10-digit value.
     const ownerPhone10 = normalizePhone10(session.phone);
+    // Phase 1.2: tag every submitted task with the configured default
+    // city. Homepage has no CitySelector yet (later phase); this default
+    // is what every old client would have implicitly meant.
+    const taskCityCode = await getDefaultCityCode();
     const { data, error } = await supabase
       .from("tasks")
       .insert({
@@ -222,6 +227,7 @@ export async function POST(request: Request) {
         // those. See migration 20260512100000_tasks_work_tag.sql.
         work_tag: matchedAlias,
         status: "submitted",
+        city_code: taskCityCode,
       })
       .select("display_id")
       .single();

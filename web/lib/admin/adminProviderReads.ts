@@ -12,6 +12,7 @@
  */
 
 import { adminSupabase } from "../supabase/admin";
+import { getDefaultCityCode } from "../cities/cityContext";
 
 export type ProviderRow = {
   id: string;
@@ -261,9 +262,17 @@ export async function updateProviderInSupabase(
   if (deleteAreasError) return { success: false };
 
   if (areas.length > 0) {
+    // Phase 1.2: provider self-update + admin-edits-provider both flow
+    // through here. Delete-then-insert wipes whatever city_code the
+    // rows used to carry, so attach the default city to every new row.
+    // The single-active-city assumption today (JOD) makes this a 1:1
+    // restore; once multi-city ships, the edit UI will pass a city
+    // selector down and this default will only fire on truly absent
+    // input.
+    const cityCode = await getDefaultCityCode();
     const { error: insertAreasError } = await adminSupabase
       .from("provider_areas")
-      .insert(areas.map((area) => ({ provider_id: id, area })));
+      .insert(areas.map((area) => ({ provider_id: id, area, city_code: cityCode })));
     if (insertAreasError) return { success: false };
   }
 

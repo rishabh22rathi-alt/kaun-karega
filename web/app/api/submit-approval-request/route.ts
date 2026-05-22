@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getAuthSession } from "@/lib/auth";
 import { adminSupabase } from "@/lib/supabase/admin";
+import { getDefaultCityCode } from "@/lib/cities/cityContext";
 
 function normalizePhone10(value: unknown): string {
   return String(value || "").replace(/\D/g, "").slice(-10);
@@ -59,6 +60,11 @@ export async function POST(request: Request) {
     // Canonical storage: tasks.phone holds the last 10 digits only — see
     // /api/submit-request for the same normalization rationale.
     const ownerPhone10 = normalizePhone10(session.phone);
+    // Phase 1.2: same default-city stamp as /api/submit-request — the
+    // pending-category branch follows the same submission semantics; its
+    // city must match the canonical task path so admin reprocess hands
+    // off a row already attributed to the right city.
+    const approvalCityCode = await getDefaultCityCode();
     const { data: taskData, error: taskError } = await adminSupabase
       .from("tasks")
       .insert({
@@ -71,6 +77,7 @@ export async function POST(request: Request) {
         service_date: normalizedServiceDate || null,
         time_slot: timeSlot || null,
         status: "pending_category_review",
+        city_code: approvalCityCode,
       })
       .select("display_id")
       .single();

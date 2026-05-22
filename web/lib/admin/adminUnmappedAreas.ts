@@ -1,5 +1,6 @@
 import { adminSupabase } from "../supabase/admin";
 import { addAreaAliasToSupabase } from "./adminAreaMappings";
+import { getDefaultCityCode } from "../cities/cityContext";
 
 // ---------------------------------------------------------------------------
 // Normalization — same rules as adminAreaMappings.ts / GAS normalizeAreaName_
@@ -105,6 +106,14 @@ export async function queueUnmappedAreaForReview(params: {
         })
         .eq("review_id", existing.review_id);
     } else {
+      // Phase 1.2: stamp the queue row with the configured default city
+      // so admin views filtered by ?city=… (Phase 1.1 added the filter
+      // on /api/admin/areas) actually surface pending submissions. A raw
+      // unmapped area has no parent to derive a city from — default is
+      // the only safe choice. The UPDATE branch above intentionally
+      // does NOT touch city_code: a repeat sighting from a different
+      // city shouldn't retroactively change the first-seen attribution.
+      const queueCityCode = await getDefaultCityCode();
       await adminSupabase.from("area_review_queue").insert({
         review_id: makeReviewId(),
         raw_area: normalized,
@@ -117,6 +126,7 @@ export async function queueUnmappedAreaForReview(params: {
         last_seen_at: nowIso,
         resolved_canonical_area: "",
         resolved_at: null,
+        city_code: queueCityCode,
       });
     }
   } catch {

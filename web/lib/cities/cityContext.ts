@@ -196,6 +196,25 @@ export async function resolveCityParam(
   return { city_code: upper, was_default: false };
 }
 
+// Phase 1.2 — write-path preservation. Used by every runtime insert/rewrite
+// site to satisfy a single rule: if the row we are replacing already had a
+// city_code, keep it; otherwise fall back to the configured default.
+//
+// Why a dedicated helper instead of `existing ?? await getDefaultCityCode()`
+// at every call site: the rewrite loops in adminAreaMappings.ts may touch
+// thousands of rows. Centralising the trim + format check here keeps every
+// preservation site honest — a row whose city_code is "" or "  " or
+// otherwise malformed gets the same fallback treatment as a truly NULL one,
+// instead of being written back literally and tripping the format CHECK
+// constraint at a later phase.
+export async function preserveOrDefaultCityCode(
+  existing: string | null | undefined
+): Promise<string> {
+  const trimmed = String(existing ?? "").trim();
+  if (CITY_CODE_FORMAT.test(trimmed)) return trimmed;
+  return getDefaultCityCode();
+}
+
 // Test/dev escape hatch: discards both caches so a test that seeds a new
 // default city sees it without waiting on the TTL. Not exported through
 // any API surface; only test imports need it.
