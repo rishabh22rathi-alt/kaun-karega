@@ -973,13 +973,17 @@ async function postArea(body: Json) {
   }
 
   // No duplicate (canonical_area, region_code) — case-insensitive.
-  // Mirrors the resolver's normalize-on-input contract: two areas with the
-  // same name in the same region would resolve ambiguously.
+  // Mirrors the resolver's normalize-on-input contract: two ACTIVE areas
+  // with the same name in the same region would resolve ambiguously.
+  // Inactive rows are excluded so soft-deactivated legacy entries (e.g.
+  // R-* rows from the JOD-25 migration) do not block creation of a new
+  // active row.
   const { data: pairDup, error: pairDupErr } = await adminSupabase
     .from("service_region_areas")
     .select("area_code")
     .ilike("canonical_area", canonical_area)
     .eq("region_code", region_code)
+    .eq("active", true)
     .limit(1);
   if (pairDupErr) {
     return NextResponse.json(
@@ -1050,6 +1054,11 @@ async function regionExists(region_code: string): Promise<boolean> {
   return Boolean(data);
 }
 
+// Active-only guard: soft-deactivated rows (e.g. legacy R-* entries
+// retained by the JOD-25 migration for audit/re-enable) must NOT count
+// as existing parents or duplicates — otherwise new JOD-* writes 409
+// against the inactive ghosts. Re-enabling an inactive parent area is
+// a separate admin action; until then, treat it as absent.
 async function areaPairExists(
   canonical_area: string,
   region_code: string
@@ -1059,6 +1068,7 @@ async function areaPairExists(
     .select("area_code")
     .ilike("canonical_area", canonical_area)
     .eq("region_code", region_code)
+    .eq("active", true)
     .limit(1);
   return Boolean(data && data.length > 0);
 }
@@ -1072,7 +1082,8 @@ async function aliasExistsInRegion(
     .from("service_region_area_aliases")
     .select("alias_code")
     .ilike("alias", alias)
-    .eq("region_code", region_code);
+    .eq("region_code", region_code)
+    .eq("active", true);
   if (excludeAliasCode) q = q.neq("alias_code", excludeAliasCode);
   const { data } = await q.limit(1);
   return Boolean(data && data.length > 0);

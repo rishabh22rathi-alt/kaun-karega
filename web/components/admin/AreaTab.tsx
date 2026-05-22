@@ -104,6 +104,10 @@ function nextCode(existingCodes: string[], prefix: string): string {
 
 // Case-insensitive exact match. Returns the first area whose
 // canonical_area matches `text` (excluding `excludeAreaCode`), or null.
+// Inactive rows are skipped so soft-deactivated legacy entries (e.g.
+// the R-* rows retained by the JOD-25 migration for audit/re-enable)
+// do not trigger duplicate warnings when an admin creates a row in
+// the new JOD-* region structure.
 function findDuplicateArea(
   text: string,
   areas: AreaRow[],
@@ -113,13 +117,17 @@ function findDuplicateArea(
   if (!n) return null;
   for (const a of areas) {
     if (a.area_code === excludeAreaCode) continue;
+    if (a.active === false) continue;
     if (a.canonical_area.trim().toLowerCase() === n) return a;
   }
   return null;
 }
 
 // Returns the first (area, alias) pair whose alias text matches
-// (excluding `excludeAliasCode`), or null.
+// (excluding `excludeAliasCode`), or null. Inactive aliases and aliases
+// under inactive parent areas are skipped so soft-deactivated legacy
+// entries (e.g. R-* rows retained by the JOD-25 migration) do not
+// trigger duplicate warnings against new active JOD-* aliases.
 function findDuplicateAlias(
   text: string,
   areas: AreaRow[],
@@ -128,8 +136,10 @@ function findDuplicateAlias(
   const n = text.trim().toLowerCase();
   if (!n) return null;
   for (const a of areas) {
+    if (a.active === false) continue;
     for (const al of a.aliases) {
       if (al.alias_code === excludeAliasCode) continue;
+      if (al.active === false) continue;
       if (al.alias.trim().toLowerCase() === n) return { area: a, alias: al };
     }
   }
