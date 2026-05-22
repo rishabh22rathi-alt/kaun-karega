@@ -1729,6 +1729,48 @@ export async function POST(request: NextRequest) {
       const pendingNewAreas = Array.isArray(body.pendingNewAreas)
         ? body.pendingNewAreas
         : [];
+      // Optional city from the cascade UI. Validated against ^[A-Z]{3}$.
+      // Absence (old clients) falls back to getDefaultCityCode at the
+      // insert site — preserves the Phase 1.2 single-city default.
+      const rawCity =
+        typeof body.cityCode === "string" ? body.cityCode.trim().toUpperCase() : "";
+      const providedCityCode = /^[A-Z]{3}$/.test(rawCity) ? rawCity : null;
+      // Plan-aware region count for the fresh-registration path. New
+      // providers start on the implicit free plan (maxRegions=1) until
+      // an admin or the Razorpay webhook upserts a paid provider_plans
+      // row. The cap is enforced here so a tampered payload can't
+      // register a free provider with N regions and bypass the limit.
+      // The monthly-change cap does NOT apply to first registration —
+      // that's an INITIAL save, not a change. Future edits go through
+      // /api/provider/update, which logs and gates.
+      const rawSelectedRegionCodes = Array.isArray(body.selectedRegionCodes)
+        ? (body.selectedRegionCodes as unknown[])
+            .map((v) => String(v ?? "").trim())
+            .filter((v) => v.length > 0)
+        : [];
+      const dedupRegionCodes = Array.from(new Set(rawSelectedRegionCodes));
+      if (dedupRegionCodes.length > 0) {
+        // Fresh registration = implicit free plan. No DB read needed.
+        const { getPlanRule } = await import("@/lib/payments/planRules");
+        const freeRule = getPlanRule("free");
+        if (
+          freeRule.kind === "fixed" &&
+          dedupRegionCodes.length > freeRule.maxRegions
+        ) {
+          return withNoCache(
+            NextResponse.json(
+              {
+                ok: false,
+                error: "PLAN_LIMIT_EXCEEDED",
+                planCode: "free",
+                maxRegions: freeRule.maxRegions,
+                attempted: dedupRegionCodes.length,
+              },
+              { status: 400 }
+            )
+          );
+        }
+      }
       if (!phone || !name || categories.length === 0 || areas.length === 0) {
         return withNoCache(
           NextResponse.json(
@@ -1917,11 +1959,11 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      // Phase 1.2: stamp every provider_areas row with the resolved
-      // default city. Provider register has no city selector in the UI
-      // today; once one ships in a later phase, the selected value
-      // flows in here and the default only fires when missing.
-      const registerCityCode = await getDefaultCityCode();
+      // Phase 1.2 + cascade: use the cityCode supplied by the cascade
+      // UI when present, else fall back to the resolved default city.
+      // Old clients without the cascade still produce correctly-stamped
+      // rows via the default fallback (Phase 1.2 behavior preserved).
+      const registerCityCode = providedCityCode ?? (await getDefaultCityCode());
       const areaRows = areas.map((area) => ({
         provider_id: providerId,
         area: String(area),

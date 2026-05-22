@@ -144,6 +144,10 @@ export type ProviderByPhonePayload =
         Status: string;
         Services: { Category: string }[];
         Areas: { Area: string }[];
+        // Derived from the provider's first non-NULL provider_areas.city_code.
+        // Empty string when the provider has no provider_areas rows yet —
+        // edit-mode UI then falls back to the default city.
+        CityCode: string;
       };
     }
   | { ok: false; error: string };
@@ -184,9 +188,27 @@ export async function getProviderByPhoneFromSupabase(
         .eq("provider_id", providerId),
       adminSupabase
         .from("provider_areas")
-        .select("area")
+        .select("area, city_code")
         .eq("provider_id", providerId),
     ]);
+
+    const typedAreaRows = (areaRows ?? []) as Array<{
+      area: string | null;
+      city_code: string | null;
+    }>;
+
+    // Derive the provider's city from the first non-NULL, well-formed
+    // city_code in their provider_areas. Empty when no rows or all NULL —
+    // the register page's edit-mode falls back to the default city in
+    // that case.
+    let derivedCityCode = "";
+    for (const row of typedAreaRows) {
+      const candidate = String(row.city_code ?? "").trim().toUpperCase();
+      if (/^[A-Z]{3}$/.test(candidate)) {
+        derivedCityCode = candidate;
+        break;
+      }
+    }
 
     return {
       ok: true,
@@ -204,11 +226,10 @@ export async function getProviderByPhoneFromSupabase(
         )
           .map((s) => ({ Category: String(s.category || "").trim() }))
           .filter((s) => s.Category),
-        Areas: (
-          (areaRows ?? []) as Array<{ area: string | null }>
-        )
+        Areas: typedAreaRows
           .map((a) => ({ Area: String(a.area || "").trim() }))
           .filter((a) => a.Area),
+        CityCode: derivedCityCode,
       },
     };
   } catch (err) {
@@ -229,12 +250,121 @@ export type UpdateProviderInput = {
   phone: string;
   categories: string[];
   areas: string[];
+  // Optional. When provided, every new provider_areas row stamps this
+  // city. When absent (old clients), falls back to getDefaultCityCode —
+  // preserves Phase 1.2's behavior unchanged.
+  cityCode?: string;
+  // Optional. When supplied, used for region_change diff/log instead of
+  // attempting to reverse-derive from the expanded areas list. Old
+  // clients (admin tab, e2e mocks) that don't send it skip the
+  // region_change log entry — safest default for a payload field that
+  // didn't exist before.
+  selectedRegionCodes?: string[];
+  // Who initiated the change. Determines the `changed_by` column in
+  // any provider_change_log rows written here. Defaults to 'self'
+  // (provider self-edit via /provider/register?edit=…).
+  changedBy?: "self" | "admin" | "system";
 };
+
+// Sorted, deduped, lowercased — stable shape for diffing two sets.
+function normalizeSetForDiff(values: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const v of values) {
+    const k = String(v ?? "").trim().toLowerCase();
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    out.push(k);
+  }
+  return out.sort();
+}
+
+function setsDiffer(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return true;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return true;
+  }
+  return false;
+}
 
 export async function updateProviderInSupabase(
   input: UpdateProviderInput
 ): Promise<{ success: boolean }> {
-  const { id, name, phone, categories, areas } = input;
+  const {
+    id,
+    name,
+    phone,
+    categories,
+    areas,
+    cityCode,
+    selectedRegionCodes,
+    changedBy,
+  } = input;
+
+  // ── Snapshot previous state for change-log diffing ────────────────
+  // Read BEFORE the delete-then-insert overwrites it. Failures here are
+  // non-fatal — diff falls through to "no change logged" so the save
+  // still goes through. The monthly-limit enforcement happens at the
+  // route layer, not here.
+  let previousCategories: string[] = [];
+  let previousRegionCodes: string[] = [];
+  try {
+    const [{ data: prevServices }, { data: prevAreas }] = await Promise.all([
+      adminSupabase
+        .from("provider_services")
+        .select("category")
+        .eq("provider_id", id),
+      adminSupabase
+        .from("provider_areas")
+        .select("area, city_code")
+        .eq("provider_id", id),
+    ]);
+    previousCategories = normalizeSetForDiff(
+      ((prevServices ?? []) as Array<{ category: string | null }>)
+        .map((s) => String(s.category ?? ""))
+        .filter(Boolean)
+    );
+    // Reverse-derive previous region codes from the old areas list by
+    // joining through service_region_areas. Same overlap rule
+    // computeRegionDerivedCoverage uses; bounded to active rows.
+    const prevAreaList = ((prevAreas ?? []) as Array<{
+      area: string | null;
+      city_code: string | null;
+    }>).map((a) => String(a.area ?? "").trim()).filter(Boolean);
+    if (prevAreaList.length > 0) {
+      // Pick a city to scope the join — prefer the provider's stored
+      // city_code, fall back to the caller's supplied cityCode, then
+      // to no filter (legacy).
+      const prevCity =
+        ((prevAreas ?? []) as Array<{ city_code: string | null }>).find(
+          (r) => /^[A-Z]{3}$/.test(String(r.city_code ?? "").trim().toUpperCase())
+        )?.city_code ?? cityCode ?? "";
+      const sraQ = adminSupabase
+        .from("service_region_areas")
+        .select("canonical_area, region_code")
+        .eq("active", true)
+        .limit(10000);
+      if (prevCity) sraQ.eq("city_code", prevCity);
+      const { data: sraRows } = await sraQ;
+      const keyToRegion = new Map<string, string>();
+      for (const r of (sraRows ?? []) as Array<{
+        canonical_area: string | null;
+        region_code: string | null;
+      }>) {
+        const k = String(r.canonical_area ?? "").trim().toLowerCase();
+        const rc = String(r.region_code ?? "").trim();
+        if (k && rc) keyToRegion.set(k, rc);
+      }
+      const derived = new Set<string>();
+      for (const a of prevAreaList) {
+        const rc = keyToRegion.get(a.trim().toLowerCase());
+        if (rc) derived.add(rc);
+      }
+      previousRegionCodes = Array.from(derived).sort();
+    }
+  } catch {
+    // Best-effort. Continue without diff data; no log entries written.
+  }
 
   const { error: updateError } = await adminSupabase
     .from("providers")
@@ -262,18 +392,68 @@ export async function updateProviderInSupabase(
   if (deleteAreasError) return { success: false };
 
   if (areas.length > 0) {
-    // Phase 1.2: provider self-update + admin-edits-provider both flow
-    // through here. Delete-then-insert wipes whatever city_code the
-    // rows used to carry, so attach the default city to every new row.
-    // The single-active-city assumption today (JOD) makes this a 1:1
-    // restore; once multi-city ships, the edit UI will pass a city
-    // selector down and this default will only fire on truly absent
-    // input.
-    const cityCode = await getDefaultCityCode();
+    // Phase 1.2 + cascade: caller (UI cascade) supplies cityCode when the
+    // provider explicitly picked a city. Old clients that don't send it
+    // fall back to getDefaultCityCode — preserves the Phase 1.2 single-
+    // city default. Either way every provider_areas row is stamped, so
+    // the column is never NULL on a row we wrote.
+    const resolvedCityCode = cityCode ?? (await getDefaultCityCode());
     const { error: insertAreasError } = await adminSupabase
       .from("provider_areas")
-      .insert(areas.map((area) => ({ provider_id: id, area, city_code: cityCode })));
+      .insert(
+        areas.map((area) => ({ provider_id: id, area, city_code: resolvedCityCode }))
+      );
     if (insertAreasError) return { success: false };
+  }
+
+  // ── Change-log inserts (best-effort) ───────────────────────────────
+  // Log only when the relevant SET actually mutated. No-op saves don't
+  // count against the monthly limit. Failures here are non-fatal — the
+  // save already succeeded; missing a log row just means the limit
+  // counter might be off by one for this provider this month. Acceptable
+  // for MVP; the limit is enforced at the route layer BEFORE this
+  // function is even called, so under-logging doesn't open a bypass.
+  try {
+    const newCategoriesNormalized = normalizeSetForDiff(categories);
+    const newRegionCodesNormalized = Array.isArray(selectedRegionCodes)
+      ? normalizeSetForDiff(selectedRegionCodes)
+      : null; // caller didn't supply — skip region log
+
+    const logRows: Array<{
+      provider_id: string;
+      change_type: "region_change" | "category_change";
+      old_value: unknown;
+      new_value: unknown;
+      changed_by: "self" | "admin" | "system";
+    }> = [];
+
+    if (setsDiffer(previousCategories, newCategoriesNormalized)) {
+      logRows.push({
+        provider_id: id,
+        change_type: "category_change",
+        old_value: previousCategories,
+        new_value: newCategoriesNormalized,
+        changed_by: changedBy ?? "self",
+      });
+    }
+    if (
+      newRegionCodesNormalized !== null &&
+      setsDiffer(previousRegionCodes, newRegionCodesNormalized)
+    ) {
+      logRows.push({
+        provider_id: id,
+        change_type: "region_change",
+        old_value: previousRegionCodes,
+        new_value: newRegionCodesNormalized,
+        changed_by: changedBy ?? "self",
+      });
+    }
+
+    if (logRows.length > 0) {
+      await adminSupabase.from("provider_change_log").insert(logRows);
+    }
+  } catch {
+    // Swallow: change-log is observability, not the source of truth.
   }
 
   return { success: true };

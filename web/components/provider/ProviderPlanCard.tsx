@@ -42,21 +42,25 @@ type PlanCopy = {
   maxRegionsLabel: string;
 };
 
+// Business-friendly copy (per pricing/UX call). Internal plan_code
+// values (free / regions_5 / all_jodhpur) are unchanged to minimise
+// blast radius across schema, payment_orders, and the existing webhook
+// handler.
 const PLAN_COPY: Record<PlanCode, PlanCopy> = {
   free: {
     label: "Free",
     shortLabel: "Free",
-    maxRegionsLabel: "1 Region Included",
+    maxRegionsLabel: "1 region included",
   },
   regions_5: {
-    label: "₹31 / 5 Regions",
+    label: "₹31 — Get business from major areas",
     shortLabel: "₹31 Plan",
-    maxRegionsLabel: "5 Regions Allowed",
+    maxRegionsLabel: "Get business from major areas (up to 5 regions)",
   },
   all_jodhpur: {
-    label: "₹101 / Full Jodhpur",
+    label: "₹101 — Get business from whole city",
     shortLabel: "₹101 Plan",
-    maxRegionsLabel: "Full Jodhpur Coverage",
+    maxRegionsLabel: "Get business from whole city",
   },
 };
 

@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -6,58 +6,8 @@ import WhenNeedIt from "../components/WhenNeedIt";
 import AreaSelection, {
   normalizeAreaValue,
 } from "@/app/(public)/components/AreaSelection";
+import { PublicGeoProvider } from "@/lib/cities/publicGeoContext";
 
-const MASTER_AREAS = [
-  "Sardarpura",
-  "Shastri Nagar",
-  "Ratanada",
-  "Pal Road",
-  "Bhagat Ki Kothi",
-  "Chopasni Housing Board",
-  "Chopasni Road",
-  "Basni",
-  "Paota",
-  "Mandore",
-  "Residency Road",
-  "Rai Ka Bagh",
-  "High Court Colony",
-  "Civil Lines",
-  "Kamla Nehru Nagar",
-  "Kudi Bhagtasni Housing Board",
-  "Banar",
-  "Pratap Nagar",
-  "Nayapura",
-  "Shikargarh",
-  "Air Force Area",
-  "MIA",
-  "Jalori Gate",
-  "Sojati Gate",
-  "Clock Tower",
-  "Nandri",
-  "Paota Circle",
-  "Kabir Nagar",
-  "Vivek Vihar",
-  "BJS Colony",
-  "Umaid Stadium",
-  "Ashapurna Valley",
-  "Sangriya",
-  "Mogra",
-  "Khema Ka Kuan",
-  "Idgah",
-  "Agolai",
-  "Tinwari",
-  "Laxmi Nagar",
-  "Rajiv Gandhi Colony",
-  "Sursagar",
-  "Rikhtiya Bheruji",
-  "Sivanchi Gate",
-  "Chand Pole",
-  "Soorsagar Road",
-  "Panch Batti Circle",
-  "New Power House",
-  "Madar",
-  "Mahamandir",
-];
 
 export default function RequestFlowPage() {
   return (
@@ -70,7 +20,7 @@ export default function RequestFlowPage() {
         </div>
       }
     >
-      <PageContent />
+      <PublicGeoProvider><PageContent /></PublicGeoProvider>
     </Suspense>
   );
 }
@@ -206,10 +156,6 @@ function PageContent() {
       if (!json?.ok) {
         setError(json?.message || json?.error || "Apps Script rejected request. Check debug.");
         return;
-      }
-
-      if (typeof window !== "undefined") {
-        window.localStorage.setItem("kk_last_area", normalizedArea);
       }
       setIsRedirecting(true);
       router.push(

@@ -10,7 +10,13 @@ import {
   InvalidCityCodeError,
 } from "@/lib/cities/cityContext";
 
-const CACHE_TTL_MS = 5 * 60 * 1000;
+// Dropped from 5 min to 60 s as the belt-and-braces safety net for
+// admin-edit propagation. The primary freshness path is
+// invalidateAreasCacheByCity() called from /api/admin/area-intelligence
+// after every successful catalog write; this TTL bounds staleness on
+// the edge case where the invalidator wasn't reached (cross-process
+// admin edits, manual SQL, etc.).
+const CACHE_TTL_MS = 60 * 1000;
 
 // Cap on rows pulled for the service_region_areas union. The table is in
 // the low hundreds today; the cap keeps the response bounded if it grows.
@@ -28,6 +34,23 @@ type AreasCache = {
 // "all cities" sweep.
 const MAX_CITY_CACHE_ENTRIES = 10;
 const areasCacheByCity = new Map<string, AreasCache>();
+
+// Public invalidator. Called from /api/admin/area-intelligence after every
+// successful catalog write so the homepage reflects the change within one
+// request — no waiting on CACHE_TTL_MS.
+//
+//   invalidateAreasCacheByCity()           → drops the entire cache
+//   invalidateAreasCacheByCity("JOD")     → drops only JOD's entry
+//
+// Cross-route import is safe in the App Router runtime: both endpoints
+// share one Node process, so the in-memory Map is the same instance.
+export function invalidateAreasCacheByCity(cityCode?: string): void {
+  if (!cityCode) {
+    areasCacheByCity.clear();
+    return;
+  }
+  areasCacheByCity.delete(cityCode);
+}
 
 // Mirrors lib/admin/adminAreaMappings.ts so the same canonical
 // (e.g. "high-court road" vs "High Court Road") collapses to one key.

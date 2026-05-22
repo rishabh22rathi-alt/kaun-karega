@@ -23,11 +23,15 @@ export async function POST(request: Request) {
   const areas = Array.isArray(body.areas)
     ? (body.areas as unknown[]).map(String).filter(Boolean)
     : [];
+  // Optional city from the admin edit UI. Absence → helper falls back to
+  // default city (Phase 1.2 behavior).
+  const rawCity = typeof body.cityCode === "string" ? body.cityCode.trim().toUpperCase() : "";
+  const cityCode = /^[A-Z]{3}$/.test(rawCity) ? rawCity : undefined;
 
   if (!id) {
     return Response.json({ ok: false, error: "Missing required field: id" }, { status: 400 });
   }
 
-  const result = await updateProviderInSupabase({ id, name, phone, categories, areas });
+  const result = await updateProviderInSupabase({ id, name, phone, categories, areas, cityCode });
   return Response.json(result);
 }

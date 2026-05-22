@@ -4,8 +4,12 @@ import { adminSupabase } from "@/lib/supabase/admin";
 import { updateProviderInSupabase } from "@/lib/admin/adminProviderReads";
 import { findDuplicateNameProviders } from "@/lib/providerNameNormalize";
 import { queueUnmappedAreaForReview } from "@/lib/admin/adminUnmappedAreas";
-import { isPaymentEnforcementEnabled } from "@/lib/payments/server";
 import { effectivePlan } from "@/lib/payments/effectivePlan";
+import {
+  getPlanRule,
+  MONTHLY_CHANGE_LIMIT,
+  type ChangeType,
+} from "@/lib/payments/planRules";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -56,6 +60,17 @@ export async function POST(request: Request) {
   const name = typeof body.name === "string" ? body.name.trim() : "";
   const categories = sanitizeStringArray(body.categories);
   const areas = sanitizeStringArray(body.areas);
+  // Optional city from the cascade UI. Validated against ^[A-Z]{3}$ at
+  // the helper layer; absence (old clients) falls back to default city.
+  const rawCity = typeof body.cityCode === "string" ? body.cityCode.trim().toUpperCase() : "";
+  const cityCode = /^[A-Z]{3}$/.test(rawCity) ? rawCity : undefined;
+  // Plan-aware region count. The frontend cascade sends the deduped
+  // region-code list; absence means an old client that pre-dates the
+  // plan-aware flow. In that case we skip region-cap enforcement (the
+  // areas.length fallback path is hostile — it would reject any free
+  // provider with >1 canonical area).
+  const selectedRegionCodes = sanitizeStringArray(body.selectedRegionCodes);
+  const hasRegionCodes = Array.isArray(body.selectedRegionCodes);
 
   if (!name) {
     return NextResponse.json(
@@ -113,50 +128,179 @@ export async function POST(request: Request) {
     );
   }
 
-  // Stage 3A payment enforcement: cap how many areas the provider may
-  // save based on their active plan. Read the flag here (not at module
-  // load) so flipping it in Vercel env is instant. When the flag is
-  // off, this entire block is a no-op and existing behavior is
-  // preserved exactly.
+  // ── Plan-aware enforcement (replaces the prior Stage 3A area-count
+  //    check; always runs now, not gated by PAYMENT_ENFORCEMENT_ENABLED) ─
   //
-  // Free plan / no row / expired paid plan all resolve to maxRegions=1
-  // via effectivePlan(). We never mutate provider_areas on expiry —
-  // we only block the NEXT save that would push above the allowed
-  // count. Existing saved coverage is untouched and remains visible
-  // to the provider; only the matching pipeline (Stage 3C, not yet
-  // wired) will filter it down at lead-emission time.
+  // Compares the provider's REGION count (from selectedRegionCodes in
+  // the body) against their effective plan's maxRegions. Old clients
+  // that don't send selectedRegionCodes skip this check — they hit the
+  // legacy area-count path was incorrect (every region expands to N
+  // areas), so silently skipping is safer than wrongly rejecting.
   //
-  // Failure mode for the plan lookup: fail-OPEN with a loud warn. A
-  // transient single-row PK lookup blip should not lock a paying
-  // provider out of their own coverage. This matches the fail-open
-  // posture in process-task-notifications for category checks.
-  if (isPaymentEnforcementEnabled()) {
-    const { data: planRow, error: planLookupError } = await adminSupabase
-      .from("provider_plans")
-      .select("plan_code, max_regions, current_period_start, current_period_end")
-      .eq("provider_id", providerRow.provider_id)
-      .maybeSingle();
+  // The cityWide rule kind has no region cap (the plan == "every
+  // active region in the city"); we still verify against the city's
+  // actual region count to catch tampering.
+  //
+  // Failure mode for the plan lookup: fail-OPEN with a loud warn.
+  const { data: planRow, error: planLookupError } = await adminSupabase
+    .from("provider_plans")
+    .select("plan_code, max_regions, current_period_start, current_period_end")
+    .eq("provider_id", providerRow.provider_id)
+    .maybeSingle();
 
-    if (planLookupError) {
-      console.warn(
-        "[provider/update] provider_plans lookup failed; failing OPEN (no enforcement this request)",
-        planLookupError.message || planLookupError
+  const plan = effectivePlan(planLookupError ? null : (planRow ?? null));
+  if (planLookupError) {
+    console.warn(
+      "[provider/update] provider_plans lookup failed; failing OPEN (no enforcement this request)",
+      planLookupError.message || planLookupError
+    );
+  } else if (hasRegionCodes) {
+    const rule = getPlanRule(plan.code);
+    if (rule.kind === "fixed" && selectedRegionCodes.length > rule.maxRegions) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "PLAN_LIMIT_EXCEEDED",
+          planCode: plan.code,
+          maxRegions: rule.maxRegions,
+          attempted: selectedRegionCodes.length,
+        },
+        { status: 400 }
       );
-    } else {
-      const plan = effectivePlan(planRow ?? null);
-      if (areas.length > plan.maxRegions) {
+    }
+    // cityWide: no per-count check; the data shape IS the limit. A
+    // tampered payload that under-covers is allowed for now (provider
+    // can always opt to a subset of their plan's coverage).
+  }
+
+  // ── Monthly change-limit enforcement (3 per kind per calendar month) ─
+  // Count provider_change_log rows since the start of the current UTC
+  // month. We only count the kinds we're about to LOG (i.e. only the
+  // kinds whose set actually mutates this save). To know that, we need
+  // to snapshot the current state and diff against what's being saved
+  // — same logic updateProviderInSupabase will run again. Doing the
+  // diff here too is the price we pay for enforcing BEFORE the write.
+  // Failure mode: fail-OPEN (transient blip can't lock provider out).
+  try {
+    const monthStart = (() => {
+      const now = new Date();
+      return new Date(
+        Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)
+      ).toISOString();
+    })();
+
+    // Snapshot previous state for diffing.
+    const [{ data: prevServices }, { data: prevAreas }] = await Promise.all([
+      adminSupabase
+        .from("provider_services")
+        .select("category")
+        .eq("provider_id", providerRow.provider_id),
+      adminSupabase
+        .from("provider_areas")
+        .select("area, city_code")
+        .eq("provider_id", providerRow.provider_id),
+    ]);
+    const normalize = (vs: string[]) => {
+      const seen = new Set<string>();
+      const out: string[] = [];
+      for (const v of vs) {
+        const k = String(v ?? "").trim().toLowerCase();
+        if (!k || seen.has(k)) continue;
+        seen.add(k);
+        out.push(k);
+      }
+      return out.sort();
+    };
+    const prevCats = normalize(
+      ((prevServices ?? []) as Array<{ category: string | null }>)
+        .map((s) => String(s.category ?? ""))
+    );
+    const nextCats = normalize(categories);
+    const categoryChanging =
+      prevCats.length !== nextCats.length ||
+      prevCats.some((v, i) => v !== nextCats[i]);
+
+    // Region diff via reverse-derivation through service_region_areas.
+    // Only meaningful when the new submit included selectedRegionCodes;
+    // without it we cannot compute "is the region set changing".
+    let regionChanging = false;
+    if (hasRegionCodes) {
+      const nextRegions = normalize(selectedRegionCodes);
+      const prevAreaList = ((prevAreas ?? []) as Array<{
+        area: string | null;
+        city_code: string | null;
+      }>).map((a) => String(a.area ?? "")).filter(Boolean);
+      let prevRegions: string[] = [];
+      if (prevAreaList.length > 0) {
+        const prevCity =
+          ((prevAreas ?? []) as Array<{ city_code: string | null }>).find(
+            (r) => /^[A-Z]{3}$/.test(String(r.city_code ?? "").trim().toUpperCase())
+          )?.city_code ?? cityCode ?? "";
+        const sraQ = adminSupabase
+          .from("service_region_areas")
+          .select("canonical_area, region_code")
+          .eq("active", true)
+          .limit(10000);
+        if (prevCity) sraQ.eq("city_code", prevCity);
+        const { data: sraRows } = await sraQ;
+        const keyToRegion = new Map<string, string>();
+        for (const r of (sraRows ?? []) as Array<{
+          canonical_area: string | null;
+          region_code: string | null;
+        }>) {
+          const k = String(r.canonical_area ?? "").trim().toLowerCase();
+          const rc = String(r.region_code ?? "").trim();
+          if (k && rc) keyToRegion.set(k, rc);
+        }
+        const derived = new Set<string>();
+        for (const a of prevAreaList) {
+          const rc = keyToRegion.get(a.trim().toLowerCase());
+          if (rc) derived.add(rc);
+        }
+        prevRegions = Array.from(derived).sort();
+      }
+      regionChanging =
+        prevRegions.length !== nextRegions.length ||
+        prevRegions.some((v, i) => v !== nextRegions[i]);
+    }
+
+    // Count monthly logs for the kinds that are about to be incremented.
+    const kindsToCheck: ChangeType[] = [];
+    if (categoryChanging) kindsToCheck.push("category_change");
+    if (regionChanging) kindsToCheck.push("region_change");
+
+    for (const kind of kindsToCheck) {
+      const { count, error: countErr } = await adminSupabase
+        .from("provider_change_log")
+        .select("id", { count: "exact", head: true })
+        .eq("provider_id", providerRow.provider_id)
+        .eq("change_type", kind)
+        .gte("changed_at", monthStart);
+      if (countErr) {
+        console.warn(
+          "[provider/update] provider_change_log count failed; failing OPEN",
+          countErr.message || countErr
+        );
+        break;
+      }
+      if (Number(count ?? 0) >= MONTHLY_CHANGE_LIMIT) {
         return NextResponse.json(
           {
             ok: false,
-            error: "PLAN_LIMIT_EXCEEDED",
-            planCode: plan.code,
-            maxRegions: plan.maxRegions,
-            attempted: areas.length,
+            error: "MONTHLY_CHANGE_LIMIT_EXCEEDED",
+            changeType: kind,
+            monthlyLimit: MONTHLY_CHANGE_LIMIT,
+            usedThisMonth: Number(count ?? 0),
           },
-          { status: 400 }
+          { status: 429 }
         );
       }
     }
+  } catch (err) {
+    console.warn(
+      "[provider/update] monthly-limit precheck threw; failing OPEN",
+      err
+    );
   }
 
   // Detect categories the provider added that are NOT in the active master
@@ -198,6 +342,9 @@ export async function POST(request: Request) {
     phone: sessionPhone,
     categories: approvedSelectedCategories,
     areas,
+    cityCode,
+    selectedRegionCodes: hasRegionCodes ? selectedRegionCodes : undefined,
+    changedBy: "self",
   });
 
   if (!result.success) {

@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { usePublicGeo } from "@/lib/cities/publicGeoContext";
+
 type AreaSelectionProps = {
   selectedArea: string;
   onSelect: (area: string) => void;
@@ -9,20 +11,27 @@ type AreaSelectionProps = {
   showQuestionLabel?: boolean;
 };
 
-const POPULAR_1 = "Shastri Nagar";
-const POPULAR_2 = "Sardarpura";
-const LAST_AREA_KEY = "kk_last_area";
 const MAX_SUGGESTIONS = 8;
-const FALLBACK_AREAS = [
-  "Shastri Nagar",
-  "Sardarpura",
-  "Pratap Nagar",
-  "Pratap Nagar Jodhpur",
-  "Kamla Nehru Nagar",
-  "Choupasni Housing Board",
-  "Ratanada",
-  "Paota",
-];
+const AI_SUGGEST_DEBOUNCE_MS = 150;
+// Two popular-region chips at most. Combined with the optional last-used
+// chip, the row holds at most 3 entries — matches the homepage spec and
+// keeps the row single-line on mobile without scrolling. Source order
+// for popular regions is whatever /api/area-intelligence/regions returns
+// (region_code ASC by Phase 1.1).
+const MAX_POPULAR_REGION_CHIPS = 2;
+// Fallback-panel default count. When typing finds no match we surface
+// up to this many region chips collapsed; the "Show more regions" toggle
+// expands to the full active-region set for the city. Initial cap keeps
+// a 25-region city compact on mobile.
+const REGIONS_COLLAPSED_COUNT = 6;
+
+// City-scoped storage key for the last-used area. A user who picks
+// Sardarpura in JOD and then switches to JAI should not see Sardarpura as
+// "Last used" in JAI — the key is suffixed with the city code so each
+// city carries its own memory.
+const LAST_AREA_KEY_PREFIX = "kk_last_area:";
+const lastAreaKeyFor = (cityCode: string) =>
+  cityCode ? `${LAST_AREA_KEY_PREFIX}${cityCode}` : "";
 
 function toTitleCase(str: string) {
   return str
@@ -38,18 +47,11 @@ export function normalizeAreaValue(area: string): string {
   return toTitleCase(singleSpaced);
 }
 
-const isSameArea = (a: string, b: string) =>
-  normalizeAreaValue(a).toLowerCase() === normalizeAreaValue(b).toLowerCase();
-
-// Phase 1 Area Intelligence integration — see /api/area-intelligence/suggest.
-// Critical contract: the value handed to `onSelect` (and therefore the
-// submit payload) MUST be a canonical area present in `/api/areas`. The
-// suggest endpoint may return labels that are aliases (e.g. "HC Road"),
-// or canonicals that don't exist in the live `/api/areas` master list
-// (e.g. placeholder seed data). Both classes are filtered/remapped here
-// before they ever reach onSelect.
-const AI_SUGGEST_DEBOUNCE_MS = 150;
-
+// Area Intelligence integration — same safety contract as before the
+// cascade rebuild: the value handed to `onSelect` (and therefore the
+// submit payload) MUST be a canonical area present in `/api/areas` for
+// the currently-selected city. AI suggestions that aren't in that set
+// are dropped before they reach the user.
 type AiSuggestion = {
   type?: string;
   label?: string;
@@ -58,109 +60,105 @@ type AiSuggestion = {
   region_name?: string;
 };
 
+// Shape of one row from /api/area-intelligence/regions for the selected
+// city. `areas` is the canonical-area names that belong to this region —
+// already city-scoped (Phase 1.1) and active-filtered server-side.
+type RegionOption = {
+  region_code: string;
+  region_name: string;
+  areas: string[];
+  city_code?: string;
+};
+
 export default function AreaSelection({
   selectedArea,
   onSelect,
   errorMessage,
   showQuestionLabel = true,
 }: AreaSelectionProps) {
-  const [lastUsedArea, setLastUsedArea] = useState("");
-  const [showAreaInput, setShowAreaInput] = useState(false);
+  const {
+    isLoading: geoLoading,
+    cities,
+    states,
+    selectedState,
+    selectedCityCode,
+    selectedCityName,
+    citiesForState,
+    setState,
+    setCityCode,
+  } = usePublicGeo();
+
   const [typedArea, setTypedArea] = useState("");
   const [allowedAreas, setAllowedAreas] = useState<string[]>([]);
   const [loadingAreas, setLoadingAreas] = useState(false);
+  const [areasError, setAreasError] = useState<string>("");
   const [showSuggestions, setShowSuggestions] = useState(false);
-  const [showAllMode, setShowAllMode] = useState(false);
   const [inputError, setInputError] = useState("");
-  // Area Intelligence cache. `aiLabels` keeps insertion order for the
-  // dropdown; `aiCanonicalByLabel` is the lookup that maps a clicked
-  // label back to the canonical area string we should submit.
-  // Empty array = "no AI suggestions available, fall through to the
-  // existing client-side filter against allowedAreas".
+  // Region chip data. Populated from /api/area-intelligence/regions on
+  // every city change. Empty array while loading or on fetch failure —
+  // the chip row is hidden in both cases (graceful degradation: the
+  // cascade + input continue to work without chips).
+  const [regions, setRegions] = useState<RegionOption[]>([]);
+  // City-scoped last-used area for the leading "Last used: …" chip.
+  // Empty when the user has never selected an area in the active city,
+  // or when the stored value no longer matches the canonical catalogue
+  // (e.g. admin removed the area).
+  const [lastUsedArea, setLastUsedArea] = useState<string>("");
+  // Collapsed/expanded toggle for the no-match fallback panel's region
+  // list. Shared by both fallback variants (typing-time amber + Use-button
+  // red) because at most one renders at a time per the suppression rule.
+  const [regionsExpanded, setRegionsExpanded] = useState<boolean>(false);
+  // Area Intelligence cache for the active city. `aiLabels` keeps insertion
+  // order for the dropdown; `aiCanonicalByLabel` maps a clicked label back
+  // to the canonical area string we should submit.
   const [aiLabels, setAiLabels] = useState<string[]>([]);
   const [aiCanonicalByLabel, setAiCanonicalByLabel] = useState<
     Map<string, string>
   >(new Map());
   // Original user input that differs (case/spelling) from the canonical
-  // area finally selected. Shown beneath the "Selected area" chip so the
-  // user sees the canonical their request will use. Cleared on every
-  // direct (chip / suggestion) selection.
+  // area finally selected. Shown beneath the "Selected area" chip.
   const [aliasInput, setAliasInput] = useState("");
+
   const inputRef = useRef<HTMLInputElement | null>(null);
   const inputShellRef = useRef<HTMLDivElement | null>(null);
   const dropdownRef = useRef<HTMLDivElement | null>(null);
   const blurTimerRef = useRef<number | null>(null);
 
-  // Compact chip sizing — matches the Step 2 timing-tile polish on the
-  // homepage so both step blocks share a visual rhythm. Padding +
-  // font dropped from px-4 py-2 text-sm to px-3 py-1.5 text-xs; the
-  // border + selected/idle palette is unchanged so the selected-state
-  // meaning is preserved.
-  const chipClass = (active: boolean) =>
-    `rounded-full px-3 py-1.5 text-xs font-semibold transition border whitespace-nowrap ${
-      active
-        ? "bg-[#1B5E20] text-white border-[#1B5E20] shadow-sm"
-        : "border-[#1B5E20] text-[#1B5E20] bg-white hover:bg-[#1B5E20]/10"
-    }`;
+  // ── Cities-for-state options ───────────────────────────────────────────
+  const cityOptions = useMemo(
+    () => (selectedState ? citiesForState(selectedState) : []),
+    [selectedState, citiesForState]
+  );
 
-  const typedChipActive = useMemo(() => {
-    if (!selectedArea) return false;
-    if (lastUsedArea && isSameArea(selectedArea, lastUsedArea)) return false;
-    if (isSameArea(selectedArea, POPULAR_1)) return false;
-    if (isSameArea(selectedArea, POPULAR_2)) return false;
-    return true;
-  }, [lastUsedArea, selectedArea]);
-
-  const filteredSuggestions = useMemo(() => {
-    const pool = allowedAreas.length > 0 ? allowedAreas : FALLBACK_AREAS;
-    const trimmed = typedArea.trim();
-    const q = normalizeAreaValue(trimmed).toLowerCase();
-
-    // Show-All returns the FULL canonical list (no MAX_SUGGESTIONS slice)
-    // so the user can scroll through every area /api/areas serves.
-    // Ordering is whatever `/api/areas` returned. The dropdown's
-    // max-height + overflow keeps it usable on small viewports.
-    // Bypasses the AI path — Show All is an intentional "browse the full
-    // master list" affordance, not a fuzzy-search request.
-    if (showAllMode) {
-      return pool;
-    }
-
-    // Default threshold for normal typing
-    if (q.length < 2) return [];
-
-    // Area Intelligence path: when the AI returned at least one
-    // safety-gated suggestion, surface those instead of the client
-    // filter. Empty AI result falls through to the client filter so
-    // existing canonical-only matches still appear during loading or
-    // when the AI table is incomplete.
-    if (aiLabels.length > 0) {
-      return aiLabels.slice(0, MAX_SUGGESTIONS);
-    }
-
-    return pool
-      .filter((area) =>
-        normalizeAreaValue(area).toLowerCase().includes(q)
-      )
-      .slice(0, MAX_SUGGESTIONS);
-  }, [typedArea, allowedAreas, showAllMode, aiLabels]);
-
+  // ── Fetch /api/areas?city= when the active city changes ────────────────
+  // Re-fetch on every city change. The previous "fetch only when the input
+  // becomes visible" gate is gone — the input is always visible now and
+  // the cascade can change the underlying catalogue at any moment.
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    const area = window.localStorage.getItem(LAST_AREA_KEY) || "";
-    setLastUsedArea(normalizeAreaValue(area));
-  }, []);
-
-  useEffect(() => {
-    if (!showAreaInput || !inputRef.current) return;
-    inputRef.current.focus();
-  }, [showAreaInput]);
-
-  useEffect(() => {
-    if (!showAreaInput || allowedAreas.length > 0) return;
-    const controller = new AbortController();
+    // No city yet → bail without clearing state. Initial state is [] and
+    // selectedCityCode only goes empty → set during loading, so a stale
+    // value can never be displayed.
+    if (!selectedCityCode) return;
+    const ctrl = new AbortController();
+    // Legitimate effect-driven UI flags: the loading hint must show
+    // for the duration of the in-flight fetch, and prior errors must
+    // clear before the new request resolves. React 19's set-state-in-
+    // effect rule flags these conservatively; the ref-guarded fetch
+    // can't cascade — there's no second render path that re-enters
+    // this effect synchronously.
+    /* eslint-disable react-hooks/set-state-in-effect */
     setLoadingAreas(true);
-    fetch(`/api/areas`, { signal: controller.signal })
+    setAreasError("");
+    /* eslint-enable react-hooks/set-state-in-effect */
+    fetch(`/api/areas?city=${encodeURIComponent(selectedCityCode)}`, {
+      signal: ctrl.signal,
+      // Bypass browser HTTP cache. Server-side cache is bounded by
+      // CACHE_TTL_MS + invalidateAreasCacheByCity() on admin writes;
+      // adding no-store here removes the only remaining staleness
+      // layer (the browser's own cache) so admin edits are visible
+      // on the next homepage fetch without a hard refresh.
+      cache: "no-store",
+    })
       .then((res) => res.json())
       .then((data) => {
         const areas = Array.isArray(data?.areas)
@@ -170,33 +168,111 @@ export default function AreaSelection({
           : [];
         setAllowedAreas(areas);
       })
-      .catch(() => setAllowedAreas([]))
+      .catch((err: unknown) => {
+        if (err instanceof Error && err.name === "AbortError") return;
+        setAllowedAreas([]);
+        setAreasError("Could not load areas for this city.");
+      })
       .finally(() => setLoadingAreas(false));
-    return () => controller.abort();
-  }, [showAreaInput, allowedAreas.length]);
+    return () => ctrl.abort();
+  }, [selectedCityCode]);
 
-  // Area Intelligence suggestions — debounced, AbortController-guarded.
-  // Only fires when:
-  //   - the area input is visible
-  //   - the user has typed ≥ 2 chars
-  //   - the /api/areas master list is loaded (we need it as the safety
-  //     gate; without it we can't tell which AI suggestions are safe).
-  // A suggestion is kept only if its resolved canonical (alias → its
-  // canonical_area; canonical → its own label) appears in allowedAreas
-  // case-insensitively. Region suggestions are dropped entirely; the
-  // submit pipeline has no concept of a region today.
+  // ── Fetch /api/area-intelligence/regions?city= for the chip row ────────
+  // Independent of the /api/areas fetch above: regions carry the
+  // grouping needed for the quick-select chips, whereas /api/areas is
+  // the flat canonical catalogue used to gate AI suggestions. Fetching
+  // both in parallel keeps the chip row available as soon as it can be.
+  // Failures fall back to "no chips" — the rest of the picker still works.
   useEffect(() => {
-    if (!showAreaInput) return;
-    const q = typedArea.trim();
-    if (q.length < 2 || allowedAreas.length === 0) {
-      setAiLabels([]);
-      setAiCanonicalByLabel(new Map());
-      return;
+    // Same bail-without-clear pattern as the areas fetch above.
+    if (!selectedCityCode) return;
+    const ctrl = new AbortController();
+    fetch(
+      `/api/area-intelligence/regions?city=${encodeURIComponent(
+        selectedCityCode
+      )}`,
+      { signal: ctrl.signal, cache: "no-store" }
+    )
+      .then((res) => res.json())
+      .then((data: { ok?: boolean; regions?: RegionOption[] }) => {
+        if (ctrl.signal.aborted) return;
+        if (!data?.ok || !Array.isArray(data.regions)) {
+          setRegions([]);
+          return;
+        }
+        // Drop regions with no active areas — a chip that opens an empty
+        // dropdown is hostile UX. Phase 1.1 already filters by city +
+        // active=true server-side, so this is a defensive client gate.
+        setRegions(
+          data.regions.filter(
+            (r) =>
+              r?.region_code &&
+              r?.region_name &&
+              Array.isArray(r.areas) &&
+              r.areas.length > 0
+          )
+        );
+      })
+      .catch((err: unknown) => {
+        if (err instanceof Error && err.name === "AbortError") return;
+        setRegions([]);
+      });
+    return () => ctrl.abort();
+  }, [selectedCityCode]);
+
+  // ── Read city-scoped last-used area on city change ────────────────────
+  // Validates against allowedAreas at render time (see chip rendering
+  // below) so a stale value from a since-removed canonical area silently
+  // drops the chip instead of letting the user submit a string the
+  // matching layer no longer recognises.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!selectedCityCode) return;
+    try {
+      const stored = window.localStorage.getItem(
+        lastAreaKeyFor(selectedCityCode)
+      );
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setLastUsedArea(normalizeAreaValue(stored ?? ""));
+    } catch {
+      // localStorage disabled — no last-used memory, just hide the chip.
+      setLastUsedArea("");
     }
+  }, [selectedCityCode]);
+
+  // Persist last-used on every successful selection, keyed to the city
+  // the selection was made in. Called from every onSelect path inside
+  // this component (typed-and-confirmed, AI suggest pick, region chip,
+  // last-used chip). Empty selections (cascade reset) are skipped.
+  const persistLastUsed = (area: string) => {
+    if (!area || !selectedCityCode) return;
+    setLastUsedArea(area);
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(lastAreaKeyFor(selectedCityCode), area);
+    } catch {
+      // Quota / disabled — selection still succeeds; just no memory.
+    }
+  };
+
+  // ── AI suggest — debounced, AbortController-guarded, city-scoped ──────
+  // Fires only when allowedAreas is loaded (we use it as the safety gate)
+  // AND the user has typed ≥ 2 chars. Region-type suggestions are dropped
+  // because the submit pipeline has no concept of a region.
+  useEffect(() => {
+    if (!selectedCityCode) return;
+    const q = typedArea.trim();
+    // Below the trigger threshold → leave the cache as-is. The render path
+    // already gates display on typedArea.length via filteredSuggestions, so
+    // stale aiLabels are never shown to the user. Avoids a sync setState in
+    // an effect body (react-hooks/set-state-in-effect).
+    if (q.length < 2 || allowedAreas.length === 0) return;
     const ctrl = new AbortController();
     const t = window.setTimeout(() => {
       fetch(
-        `/api/area-intelligence/suggest?query=${encodeURIComponent(q)}`,
+        `/api/area-intelligence/suggest?query=${encodeURIComponent(
+          q
+        )}&city=${encodeURIComponent(selectedCityCode)}`,
         { signal: ctrl.signal, cache: "no-store" }
       )
         .then((res) => res.json())
@@ -222,8 +298,6 @@ export default function AreaSelection({
                 ? String(s?.canonical_area ?? "").trim()
                 : label;
             if (!canonical) continue;
-            // Safety gate: never surface a label that would submit a
-            // string the live matching layer (provider_areas) can't see.
             if (!allowedSet.has(canonical.toLowerCase())) continue;
             const labelKey = label.toLowerCase();
             if (seenLabels.has(labelKey)) continue;
@@ -236,8 +310,8 @@ export default function AreaSelection({
         })
         .catch((err: unknown) => {
           if (err instanceof Error && err.name === "AbortError") return;
-          // Silent fallback — the client filter against allowedAreas will
-          // take over via `filteredSuggestions` below.
+          // Silent fallback — the client filter against allowedAreas takes
+          // over via `filteredSuggestions` below.
           setAiLabels([]);
           setAiCanonicalByLabel(new Map());
         });
@@ -246,8 +320,9 @@ export default function AreaSelection({
       ctrl.abort();
       window.clearTimeout(t);
     };
-  }, [showAreaInput, typedArea, allowedAreas]);
+  }, [selectedCityCode, typedArea, allowedAreas]);
 
+  // ── Click-outside closes the dropdown ──────────────────────────────────
   useEffect(() => {
     const handleOutsideClick = (event: MouseEvent) => {
       if (
@@ -255,7 +330,6 @@ export default function AreaSelection({
         !inputShellRef.current.contains(event.target as Node)
       ) {
         setShowSuggestions(false);
-        setShowAllMode(false);
       }
     };
     document.addEventListener("mousedown", handleOutsideClick);
@@ -270,138 +344,54 @@ export default function AreaSelection({
     };
   }, []);
 
-  const storeSelection = (area: string) => {
-    const normalized = normalizeAreaValue(area);
-    if (!normalized) return;
-    setShowSuggestions(false);
-    setShowAllMode(false);
-    setInputError("");
-    setAliasInput("");
-    onSelect(normalized);
-  };
-
-  const handleTypeAreaClick = () => {
-    setShowAreaInput(true);
-    setInputError("");
-    setShowAllMode(false);
-    setShowSuggestions(true);
-    if (typedChipActive && !typedArea.trim()) {
-      setTypedArea(selectedArea);
-    }
-  };
-
-  const handleInputChange = (value: string) => {
-    if (blurTimerRef.current !== null) {
-      window.clearTimeout(blurTimerRef.current);
-      blurTimerRef.current = null;
-    }
-    setTypedArea(value);
-    // Only turn off showAllMode once we start actually filtering (length >= 2)
-    if (value.trim().length >= 2) {
-      setShowAllMode(false);
-    }
-    if (inputError) setInputError("");
-    // Immediately trigger visibility logic
-    setShowSuggestions(true);
-  };
-
-  const handleInputFocus = () => {
-    if (blurTimerRef.current !== null) {
-      window.clearTimeout(blurTimerRef.current);
-      blurTimerRef.current = null;
-    }
-    setShowSuggestions(true);
-  };
-
-  const handleInputBlur = () => {
-    if (blurTimerRef.current !== null) {
-      window.clearTimeout(blurTimerRef.current);
-    }
-    // Delay close to allow suggestion selection to fire first
-    blurTimerRef.current = window.setTimeout(() => {
-      setShowSuggestions(false);
-      setShowAllMode(false);
-      blurTimerRef.current = null;
-    }, 250);
-  };
-
-  const handleUseTypedArea = () => {
-    const normalized = normalizeAreaValue(typedArea);
-    if (!normalized) {
-      setInputError("Area required");
-      return;
-    }
-    const pool = allowedAreas.length > 0 ? allowedAreas : FALLBACK_AREAS;
-    const matchedKnownArea = pool.find(
-      (area) => area.toLowerCase() === normalized.toLowerCase()
-    );
-    if (!matchedKnownArea) {
-      setInputError(
-        "We don’t serve this exact area yet. Please select the nearest area from the list."
-      );
-      setShowAllMode(true);
-      setShowSuggestions(true);
-      return;
-    }
-    // Track the user's original input only when it differs from the
-    // canonical we resolved to (case / spacing variations). Identical
-    // values clear the alias hint so the confirmation card stays clean.
-    const typedTrimmed = typedArea.trim().replace(/\s+/g, " ");
-    setAliasInput(
-      typedTrimmed && typedTrimmed.toLowerCase() !== matchedKnownArea.toLowerCase()
-        ? typedTrimmed
-        : ""
-    );
-    setTypedArea("");
-    setShowSuggestions(false);
-    setShowAllMode(false);
-    setInputError("");
-    onSelect(matchedKnownArea);
-  };
-
-  const handleShowAllAreas = () => {
-    // Clear any typed text + lingering error so the full canonical list
-    // is what the user actually sees. Without this, leftover text in the
-    // input keeps the filter active and Show-All looks broken.
-    setTypedArea("");
-    setInputError("");
-    setShowAllMode(true);
-    setShowSuggestions(true);
-    inputRef.current?.focus();
-  };
-
-  const handleSuggestionSelect = (clickedLabel: string) => {
-    // When the clicked entry is an Area Intelligence alias suggestion,
-    // submit its canonical (not the alias text). Plain canonicals and
-    // client-filter results map to themselves.
-    const labelKey = clickedLabel.trim().toLowerCase();
-    const aiCanonical = aiCanonicalByLabel.get(labelKey);
-    const submitString = aiCanonical || clickedLabel;
-    const normalized = normalizeAreaValue(submitString);
-    if (!normalized) return;
-    if (blurTimerRef.current !== null) {
-      window.clearTimeout(blurTimerRef.current);
-      blurTimerRef.current = null;
-    }
-    setTypedArea("");
-    setShowSuggestions(false);
-    setShowAllMode(false);
-    setInputError("");
-    // When the user picked an alias label that resolved to a different
-    // canonical, surface that in the existing "Matched from …" hint on
-    // the confirmation card. Same field, same semantics as the existing
-    // typed-and-confirmed flow.
-    if (
-      aiCanonical &&
-      clickedLabel.trim().toLowerCase() !== aiCanonical.trim().toLowerCase()
-    ) {
-      setAliasInput(clickedLabel.trim());
-    } else {
+  // ── Cascade reset: when city changes, drop the typed/selected area ─────
+  // Avoids the "Sardarpura selected, then switched to Jaipur, submit still
+  // sends Sardarpura" foot-gun. Empty string round-trips through onSelect
+  // so the parent page's `selectedArea` state clears too.
+  // Cascade reset on real city changes. This IS a legitimate effect-driven
+  // state reset (the alternative — remounting via key — would lose
+  // unrelated UI state like focus and the input shell's blur timer). The
+  // ref-guard ensures we only fire on actual transitions, not on first
+  // mount, so cascading-render risk is bounded.
+  const prevCityRef = useRef<string>(selectedCityCode);
+  useEffect(() => {
+    if (prevCityRef.current && prevCityRef.current !== selectedCityCode) {
+      /* eslint-disable react-hooks/set-state-in-effect */
+      setTypedArea("");
       setAliasInput("");
+      setInputError("");
+      setShowSuggestions(false);
+      setAiLabels([]);
+      setAiCanonicalByLabel(new Map());
+      setRegionsExpanded(false);
+      if (selectedArea) onSelect("");
+      /* eslint-enable react-hooks/set-state-in-effect */
     }
-    inputRef.current?.blur();
-    onSelect(normalized);
-  };
+    prevCityRef.current = selectedCityCode;
+  }, [selectedCityCode, selectedArea, onSelect]);
+
+  // ── Suggestion list (the actual rows the dropdown renders) ─────────────
+  const filteredSuggestions = useMemo(() => {
+    const pool = allowedAreas;
+    const trimmed = typedArea.trim();
+    const q = normalizeAreaValue(trimmed).toLowerCase();
+
+    // Default threshold for normal typing
+    if (q.length < 2) return [];
+
+    // Prefer AI suggestions when present (they handle alias → canonical
+    // mapping inside the city's catalogue). Fall back to client-side
+    // substring filtering of `allowedAreas` when AI is empty / loading.
+    if (aiLabels.length > 0) {
+      return aiLabels.slice(0, MAX_SUGGESTIONS);
+    }
+
+    return pool
+      .filter((area) =>
+        normalizeAreaValue(area).toLowerCase().includes(q)
+      )
+      .slice(0, MAX_SUGGESTIONS);
+  }, [typedArea, allowedAreas, aiLabels]);
 
   const renderDropdown = showSuggestions && filteredSuggestions.length > 0;
   const noMatchesFound =
@@ -418,6 +408,122 @@ export default function AreaSelection({
     return () => cancelAnimationFrame(id);
   }, [renderDropdown]);
 
+  // ── Handlers ───────────────────────────────────────────────────────────
+  const handleInputChange = (value: string) => {
+    if (blurTimerRef.current !== null) {
+      window.clearTimeout(blurTimerRef.current);
+      blurTimerRef.current = null;
+    }
+    setTypedArea(value);
+    if (inputError) setInputError("");
+    setShowSuggestions(true);
+  };
+
+  const handleInputFocus = () => {
+    if (blurTimerRef.current !== null) {
+      window.clearTimeout(blurTimerRef.current);
+      blurTimerRef.current = null;
+    }
+    setShowSuggestions(true);
+  };
+
+  const handleInputBlur = () => {
+    if (blurTimerRef.current !== null) {
+      window.clearTimeout(blurTimerRef.current);
+    }
+    blurTimerRef.current = window.setTimeout(() => {
+      setShowSuggestions(false);
+      blurTimerRef.current = null;
+    }, 250);
+  };
+
+  const handleUseTypedArea = () => {
+    const normalized = normalizeAreaValue(typedArea);
+    if (!normalized) {
+      setInputError("Area required");
+      return;
+    }
+    const matchedKnownArea = allowedAreas.find(
+      (area) => area.toLowerCase() === normalized.toLowerCase()
+    );
+    if (!matchedKnownArea) {
+      setInputError(
+        `We don't serve this exact area in ${selectedCityName || "the selected city"} yet. Please pick from the list.`
+      );
+      setShowSuggestions(true);
+      return;
+    }
+    const typedTrimmed = typedArea.trim().replace(/\s+/g, " ");
+    setAliasInput(
+      typedTrimmed && typedTrimmed.toLowerCase() !== matchedKnownArea.toLowerCase()
+        ? typedTrimmed
+        : ""
+    );
+    setTypedArea("");
+    setShowSuggestions(false);
+    setInputError("");
+    persistLastUsed(matchedKnownArea);
+    onSelect(matchedKnownArea);
+  };
+
+  // ── Region chip click ──────────────────────────────────────────────────
+  // Region selection is terminal. Clicking any region chip — popular row
+  // or fallback panel — finalises the selection on the region name itself,
+  // regardless of whether the region has one, many, or zero canonical
+  // areas inside it. No more "fill input + open suggestions" friction.
+  //
+  // The matching layer later resolves whether the persisted string is a
+  // region or a canonical area; the onSelect(area: string) contract stays
+  // string-based, so parent pages (page.tsx, request-flow/page.tsx) need
+  // no changes.
+  const handleRegionChipClick = (region: RegionOption) => {
+    const regionName = normalizeAreaValue(region.region_name);
+    if (!regionName) return;
+    if (blurTimerRef.current !== null) {
+      window.clearTimeout(blurTimerRef.current);
+      blurTimerRef.current = null;
+    }
+    setTypedArea("");
+    setShowSuggestions(false);
+    setInputError("");
+    setAliasInput("");
+    setAiLabels([]);
+    setAiCanonicalByLabel(new Map());
+    inputRef.current?.blur();
+    persistLastUsed(regionName);
+    onSelect(regionName);
+  };
+
+  const handleSuggestionSelect = (clickedLabel: string) => {
+    const labelKey = clickedLabel.trim().toLowerCase();
+    const aiCanonical = aiCanonicalByLabel.get(labelKey);
+    const submitString = aiCanonical || clickedLabel;
+    const normalized = normalizeAreaValue(submitString);
+    if (!normalized) return;
+    if (blurTimerRef.current !== null) {
+      window.clearTimeout(blurTimerRef.current);
+      blurTimerRef.current = null;
+    }
+    setTypedArea("");
+    setShowSuggestions(false);
+    setInputError("");
+    if (
+      aiCanonical &&
+      clickedLabel.trim().toLowerCase() !== aiCanonical.trim().toLowerCase()
+    ) {
+      setAliasInput(clickedLabel.trim());
+    } else {
+      setAliasInput("");
+    }
+    inputRef.current?.blur();
+    persistLastUsed(normalized);
+    onSelect(normalized);
+  };
+
+  // ── Render ─────────────────────────────────────────────────────────────
+  const selectClass =
+    "rounded-lg border border-emerald-200 bg-white px-3 py-2 text-sm font-medium text-slate-800 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 disabled:opacity-60";
+
   return (
     <div className="w-full">
       {showQuestionLabel ? (
@@ -425,160 +531,311 @@ export default function AreaSelection({
           Where do you need it?
         </p>
       ) : null}
-      <div className="flex flex-wrap gap-x-1.5 gap-y-1.5">
-        {lastUsedArea ? (
-          <button
-            type="button"
-            onClick={() => storeSelection(lastUsedArea)}
-            className={chipClass(isSameArea(selectedArea, lastUsedArea))}
-          >
-            {`Last used: ${lastUsedArea}`}
-          </button>
-        ) : null}
 
-        <button
-          type="button"
-          onClick={() => storeSelection(POPULAR_1)}
-          className={chipClass(isSameArea(selectedArea, POPULAR_1))}
+      {/* State + City cascade */}
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="sr-only" htmlFor="geo-state">
+          State
+        </label>
+        <select
+          id="geo-state"
+          value={selectedState}
+          onChange={(e) => setState(e.target.value)}
+          disabled={geoLoading || states.length === 0}
+          className={selectClass}
         >
-          {POPULAR_1}
-        </button>
+          {geoLoading || states.length === 0 ? (
+            <option value="">Loading…</option>
+          ) : (
+            states.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))
+          )}
+        </select>
 
-        <button
-          type="button"
-          onClick={() => storeSelection(POPULAR_2)}
-          className={chipClass(isSameArea(selectedArea, POPULAR_2))}
+        <label className="sr-only" htmlFor="geo-city">
+          City
+        </label>
+        <select
+          id="geo-city"
+          value={selectedCityCode}
+          onChange={(e) => setCityCode(e.target.value)}
+          disabled={geoLoading || cityOptions.length === 0}
+          className={selectClass}
         >
-          {POPULAR_2}
-        </button>
-
-        <button
-          type="button"
-          onClick={handleTypeAreaClick}
-          className={chipClass(typedChipActive)}
-        >
-          Type your area
-        </button>
+          {geoLoading || cityOptions.length === 0 ? (
+            <option value="">Loading…</option>
+          ) : (
+            cityOptions.map((c) => (
+              <option key={c.city_code} value={c.city_code}>
+                {c.city_name}
+              </option>
+            ))
+          )}
+        </select>
       </div>
 
-      {showAreaInput && (
-        <div ref={inputShellRef} className="relative mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
-          <input
-            ref={inputRef}
-            type="text"
-            value={typedArea}
-            onChange={(e) => handleInputChange(e.target.value)}
-            onFocus={handleInputFocus}
-            onBlur={handleInputBlur}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                handleUseTypedArea();
-              }
-              if (event.key === "Escape") {
-                setShowSuggestions(false);
-                setShowAllMode(false);
-              }
-            }}
-            placeholder="Type your area"
-            className="w-full rounded-lg border border-emerald-200 px-3 py-2 text-sm text-slate-800 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 sm:w-auto sm:min-w-[220px] sm:flex-1"
-          />
-          <button
-            type="button"
-            onClick={handleUseTypedArea}
-            disabled={!normalizeAreaValue(typedArea)}
-            className="w-full rounded-lg border border-[#1B5E20] px-3 py-2 text-sm font-semibold text-[#1B5E20] transition hover:bg-[#1B5E20]/10 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
-          >
-            Use this area
-          </button>
+      {!geoLoading && cities.length === 0 ? (
+        <p className="mt-2 text-xs text-red-600">
+          Could not load locations. Please retry.
+        </p>
+      ) : null}
 
-          {loadingAreas ? (
-            <p className="w-full text-xs text-slate-500">Loading suggestions...</p>
-          ) : null}
-
-          {renderDropdown ? (
-            <div
-              ref={dropdownRef}
-              // Position below the input on every breakpoint. The previous
-              // `bottom-full mb-2` mobile rule put the dropdown above the
-              // input, which clipped offscreen when the input sat near the
-              // top of the viewport — perceived as "suggestions don't
-              // appear". `top-full` + a margin keeps it on-screen and lets
-              // the keyboard's space below the input host it cleanly.
-              // max-h-80 (~20rem / ~7-8 rows) keeps Show-All scrollable
-              // without dominating the viewport. Internal scroll via
-              // overflow-y-auto.
-              className="absolute left-0 right-0 top-full z-50 mt-2 max-h-80 overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg"
-            >
-              {filteredSuggestions.map((area) => (
+      {/* Quick-select chip row — capped at 3 entries:
+          1. "Last used: X" (city-scoped; rendered only when the stored
+             value still resolves to a canonical area in the current
+             city's catalogue).
+          2-3. Two popular regions from /api/area-intelligence/regions.
+          The row is hidden entirely while regions are still loading AND
+          no last-used chip is available, so the "Popular regions"
+          caption never sits over an empty row. */}
+      {(() => {
+        // Last-used is valid if it still matches EITHER an active
+        // canonical area OR an active region in the current city's
+        // catalogue. Region-chip selections persist the region name; the
+        // region branch keeps those chips alive across reloads.
+        const lastUsedValid =
+          lastUsedArea &&
+          (allowedAreas.some(
+            (a) => a.toLowerCase() === lastUsedArea.toLowerCase()
+          ) ||
+            regions.some(
+              (r) => r.region_name.toLowerCase() === lastUsedArea.toLowerCase()
+            ))
+            ? lastUsedArea
+            : "";
+        const popularChips = regions.slice(0, MAX_POPULAR_REGION_CHIPS);
+        if (!lastUsedValid && popularChips.length === 0) return null;
+        return (
+          <div className="mt-3">
+            <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              Popular regions
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {lastUsedValid ? (
                 <button
-                  key={area}
                   type="button"
-                  onMouseDown={(event) => {
-                    event.preventDefault();
-                    handleSuggestionSelect(area);
+                  onClick={() => {
+                    setTypedArea("");
+                    setShowSuggestions(false);
+                    setInputError("");
+                    setAliasInput("");
+                    inputRef.current?.blur();
+                    persistLastUsed(lastUsedValid);
+                    onSelect(lastUsedValid);
                   }}
-                  onPointerDown={(event) => {
-                    event.preventDefault();
-                    handleSuggestionSelect(area);
-                  }}
-                  className="block w-full border-b border-slate-100 px-3 py-2 text-left text-sm text-slate-700 transition hover:bg-slate-50 last:border-b-0"
+                  className="rounded-full border border-[#1B5E20] bg-[#1B5E20]/10 px-3 py-1.5 text-xs font-semibold text-[#1B5E20] transition hover:bg-[#1B5E20]/20 whitespace-nowrap"
                 >
-                  {area}
+                  {`Last used: ${lastUsedValid}`}
+                </button>
+              ) : null}
+              {popularChips.map((region) => (
+                <button
+                  key={region.region_code}
+                  type="button"
+                  onClick={() => handleRegionChipClick(region)}
+                  className="rounded-full border border-[#1B5E20] bg-white px-3 py-1.5 text-xs font-semibold text-[#1B5E20] transition hover:bg-[#1B5E20]/10 whitespace-nowrap"
+                >
+                  {region.region_name}
                 </button>
               ))}
             </div>
-          ) : null}
+          </div>
+        );
+      })()}
 
-          {noMatchesFound ? (
-            <div className="w-full rounded-lg border border-amber-200 bg-amber-50 p-2">
-              <p className="text-xs text-amber-800">
-                No matching area found. Try nearest area or{" "}
-                <button
-                  type="button"
-                  onClick={handleShowAllAreas}
-                  className="font-bold underline"
-                >
-                  Show all areas
-                </button>
-                .
-              </p>
-            </div>
-          ) : null}
+      {/* Always-visible area input */}
+      <div
+        ref={inputShellRef}
+        className="relative mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center"
+      >
+        <input
+          ref={inputRef}
+          type="text"
+          value={typedArea}
+          onChange={(e) => handleInputChange(e.target.value)}
+          onFocus={handleInputFocus}
+          onBlur={handleInputBlur}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              handleUseTypedArea();
+            }
+            if (event.key === "Escape") {
+              setShowSuggestions(false);
+            }
+          }}
+          placeholder="Type your area..."
+          disabled={geoLoading || !selectedCityCode}
+          className="w-full rounded-lg border border-emerald-200 px-3 py-2 text-sm text-slate-800 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 disabled:opacity-60 sm:w-auto sm:min-w-[220px] sm:flex-1"
+        />
+        <button
+          type="button"
+          onClick={handleUseTypedArea}
+          disabled={!normalizeAreaValue(typedArea) || !selectedCityCode}
+          className="w-full rounded-lg border border-[#1B5E20] px-3 py-2 text-sm font-semibold text-[#1B5E20] transition hover:bg-[#1B5E20]/10 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+        >
+          Use this area
+        </button>
 
-          {inputError ? (
-            <div className="w-full flex items-center gap-3">
-              <p className="text-xs text-red-600">{inputError}</p>
+        {loadingAreas ? (
+          <p className="w-full text-xs text-slate-500">Loading suggestions...</p>
+        ) : null}
+        {!loadingAreas && areasError ? (
+          <p className="w-full text-xs text-red-600">{areasError}</p>
+        ) : null}
+
+        {renderDropdown ? (
+          <div
+            ref={dropdownRef}
+            className="absolute left-0 right-0 top-full z-50 mt-2 max-h-80 overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg"
+          >
+            {filteredSuggestions.map((area) => (
               <button
+                key={area}
                 type="button"
-                onClick={handleShowAllAreas}
-                className="text-xs font-semibold text-[#1B5E20] underline underline-offset-2 hover:text-[#154b1a]"
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  handleSuggestionSelect(area);
+                }}
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  handleSuggestionSelect(area);
+                }}
+                className="block w-full border-b border-slate-100 px-3 py-2 text-left text-sm text-slate-700 transition hover:bg-slate-50 last:border-b-0"
               >
-                Show all areas
+                {area}
               </button>
-            </div>
-          ) : null}
-          {!inputError && renderDropdown ? (
-            <p className="w-full text-xs text-slate-500">
-              Try selecting: {filteredSuggestions.slice(0, 3).join(", ")}
-            </p>
-          ) : null}
-        </div>
-      )}
+            ))}
+          </div>
+        ) : null}
 
-      {/* Selection confirmation — visible whenever an area is chosen,
-          regardless of source (preset chip, last-used, dropdown
-          suggestion, or typed-and-confirmed). The matched-to line shows
-          only when the user's original input differs from the canonical
-          resolved area. Mobile-clean: stacks vertically, truncates long
-          area names. */}
+        {noMatchesFound && !inputError ? (
+          <div className="w-full rounded-lg border border-amber-200 bg-amber-50 p-3">
+            <p className="mb-2 text-xs font-semibold text-amber-900">
+              No exact area found. Choose your nearest region:
+            </p>
+            {regions.length > 0 ? (
+              <>
+                <div className="flex flex-wrap gap-1.5">
+                  {(regionsExpanded
+                    ? regions
+                    : regions.slice(0, REGIONS_COLLAPSED_COUNT)
+                  ).map((region) => (
+                    <button
+                      key={region.region_code}
+                      type="button"
+                      onMouseDown={(event) => {
+                        // Prevent the input's blur-close from firing before
+                        // the chip click registers (mirrors the suggestion
+                        // dropdown's mouseDown handler).
+                        event.preventDefault();
+                        handleRegionChipClick(region);
+                      }}
+                      onPointerDown={(event) => {
+                        event.preventDefault();
+                        handleRegionChipClick(region);
+                      }}
+                      className="rounded-full border border-[#1B5E20] bg-white px-3 py-1.5 text-xs font-semibold text-[#1B5E20] transition hover:bg-[#1B5E20]/10 whitespace-nowrap"
+                    >
+                      {region.region_name}
+                    </button>
+                  ))}
+                </div>
+                {regions.length > REGIONS_COLLAPSED_COUNT ? (
+                  <button
+                    type="button"
+                    onMouseDown={(event) => {
+                      // mouseDown + preventDefault so the input's blur
+                      // doesn't close the parent panel before the toggle
+                      // registers (the panel depends on showSuggestions
+                      // which the blur timer clears).
+                      event.preventDefault();
+                      setRegionsExpanded((v) => !v);
+                    }}
+                    className="mt-2 inline-block text-[11px] font-semibold text-amber-800 underline underline-offset-2 hover:text-amber-900"
+                  >
+                    {regionsExpanded
+                      ? "Show fewer regions"
+                      : "Show more regions"}
+                  </button>
+                ) : null}
+              </>
+            ) : (
+              <p className="text-xs text-amber-800">
+                No regions available for the selected city.
+              </p>
+            )}
+          </div>
+        ) : null}
+
+        {inputError ? (
+          <div className="w-full rounded-lg border border-red-200 bg-red-50 p-3">
+            <p className="mb-2 text-xs font-semibold text-red-700">
+              {inputError}
+            </p>
+            {regions.length > 0 ? (
+              <>
+                <p className="mb-1.5 text-[11px] text-red-700">
+                  Choose your nearest region:
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {(regionsExpanded
+                    ? regions
+                    : regions.slice(0, REGIONS_COLLAPSED_COUNT)
+                  ).map((region) => (
+                    <button
+                      key={region.region_code}
+                      type="button"
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                        handleRegionChipClick(region);
+                      }}
+                      onPointerDown={(event) => {
+                        event.preventDefault();
+                        handleRegionChipClick(region);
+                      }}
+                      className="rounded-full border border-[#1B5E20] bg-white px-3 py-1.5 text-xs font-semibold text-[#1B5E20] transition hover:bg-[#1B5E20]/10 whitespace-nowrap"
+                    >
+                      {region.region_name}
+                    </button>
+                  ))}
+                </div>
+                {regions.length > REGIONS_COLLAPSED_COUNT ? (
+                  <button
+                    type="button"
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      setRegionsExpanded((v) => !v);
+                    }}
+                    className="mt-2 inline-block text-[11px] font-semibold text-red-700 underline underline-offset-2 hover:text-red-800"
+                  >
+                    {regionsExpanded
+                      ? "Show fewer regions"
+                      : "Show more regions"}
+                  </button>
+                ) : null}
+              </>
+            ) : null}
+          </div>
+        ) : null}
+        {!inputError && renderDropdown ? (
+          <p className="w-full text-xs text-slate-500">
+            Try selecting: {filteredSuggestions.slice(0, 3).join(", ")}
+          </p>
+        ) : null}
+      </div>
+
+      {/* Selection confirmation — visible whenever an area is chosen */}
       {selectedArea ? (
         <div
           className="mt-3 flex flex-col gap-1 rounded-2xl border border-[#1B5E20] bg-[#1B5E20]/10 px-3 py-2 sm:flex-row sm:items-center sm:gap-2"
           aria-live="polite"
         >
           <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-[#1B5E20]/80 sm:text-xs">
-            Selected area
+            Selected area/region
           </span>
           <span className="min-w-0 truncate text-sm font-bold text-[#1B5E20] sm:text-base">
             {selectedArea}
@@ -586,7 +843,7 @@ export default function AreaSelection({
           {aliasInput &&
           aliasInput.toLowerCase() !== selectedArea.toLowerCase() ? (
             <span className="min-w-0 truncate text-[11px] text-[#1B5E20]/80 sm:ml-auto sm:text-xs">
-              Matched from “{aliasInput}”
+              Matched from &ldquo;{aliasInput}&rdquo;
             </span>
           ) : null}
         </div>

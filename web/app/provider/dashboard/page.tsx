@@ -110,6 +110,14 @@ type ProviderAreaCoverage = {
   ActiveApprovedAreas?: ProviderCoverageArea[];
   PendingAreaRequests?: ProviderPendingAreaRequest[];
   ResolvedOutcomes?: ProviderResolvedAreaRequest[];
+  // Cascade-aware fields (Phase R-sync). Surfaced by /api/provider/
+  // dashboard-profile so the dashboard can render the provider's
+  // city/state and the inferred region picks alongside the legacy
+  // area list. All optional for backward compat with cached payloads.
+  CityCode?: string;
+  CityName?: string;
+  State?: string;
+  SelectedRegionCodes?: string[];
 };
 
 type ProviderProfile = {
@@ -1058,13 +1066,21 @@ function ProviderDashboardInner() {
           </section>
         ) : null}
 
-        {/* Stage 4A: Current Plan card. Reads provider.Plan (added by
-            /api/provider/dashboard-profile) and the live coverage count
-            from provider.Areas. Absent Plan resolves to the implicit
-            Free plan inside the component. */}
+        {/* Stage 4A + region-cap: Current Plan card. `currentRegionsCount`
+            now reflects the SELECTED REGION count (from Phase R-sync's
+            SelectedRegionCodes), not the expanded area count. Free
+            providers picking one region (which may expand to 15
+            canonical areas) now correctly show "1 of 1 regions" instead
+            of "15 of 1". Falls back to areas.length only when
+            SelectedRegionCodes is absent (legacy payload from before
+            Phase R-sync shipped). */}
         <ProviderPlanCard
           plan={profile.Plan ?? null}
-          currentRegionsCount={profile.Areas?.length ?? 0}
+          currentRegionsCount={
+            Array.isArray(areaCoverage.SelectedRegionCodes)
+              ? areaCoverage.SelectedRegionCodes.length
+              : profile.Areas?.length ?? 0
+          }
           providerName={profile.ProviderName}
         />
 
@@ -1215,6 +1231,45 @@ function ProviderDashboardInner() {
                 </Link>
               </div>
               <div className="mt-5 space-y-5">
+                {/* Phase R-sync: cascade summary above the area chips.
+                    Shows the provider's state, city, and inferred
+                    region picks. Hidden when none of those are known
+                    (legacy data with no city_code, no region overlap). */}
+                {(() => {
+                  const state = String(areaCoverage.State ?? "").trim();
+                  const cityName = String(areaCoverage.CityName ?? "").trim();
+                  const regions = Array.isArray(areaCoverage.SelectedRegionCodes)
+                    ? areaCoverage.SelectedRegionCodes
+                    : [];
+                  if (!state && !cityName && regions.length === 0) return null;
+                  return (
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                        Service area &amp; region
+                      </p>
+                      <p className="mt-1 text-sm font-semibold text-slate-800">
+                        {state || "—"} / {cityName || "—"}
+                      </p>
+                      {regions.length > 0 ? (
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {regions.map((rc) => (
+                            <span
+                              key={rc}
+                              className="rounded-full border border-emerald-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-emerald-700"
+                            >
+                              {rc}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="mt-2 text-[11px] text-slate-500">
+                          No regions inferred yet — your selected areas
+                          don&apos;t overlap an active region.
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
                     Areas Under Your Selected Regions

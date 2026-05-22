@@ -28,7 +28,13 @@ const MAX_CATEGORIES = 1;
 // area_review_queue for the admin approval lifecycle and are explicitly
 // excluded from the region count.
 const MIN_REGIONS = 1;
-const MAX_REGIONS = 3;
+// Hard ceiling kept as a UX safety net. The effective per-render cap is
+// `effectiveMaxRegions` (derived from the provider's plan via
+// /api/provider/plan). Today's largest single-city region count is 25
+// (Jodhpur post-25-region migration), so this number doubles as the
+// natural city-wide ceiling. Reduce to 3 if you need to roll the plan-
+// aware flow back to the pre-payments behavior.
+const MAX_REGIONS = 25;
 // Legacy area-count caps — kept only for any downstream code that still
 // references them; the new flow gates on region count instead.
 const MIN_AREAS = 1;
@@ -82,8 +88,22 @@ type ProviderByPhoneResponse = {
     Verified?: string;
     Services?: { Category: string }[];
     Areas?: { Area: string }[];
+    // Cascade hydration source for edit mode. Empty when the provider
+    // has no city_code on any of their provider_areas rows yet.
+    CityCode?: string;
   };
   error?: string;
+};
+
+// Shape of /api/cities response (Phase 1.1 — public, unauthed). Local
+// type instead of importing from publicGeoContext to avoid pulling the
+// public cookie+context surface into the provider session.
+type CityRow = {
+  city_code: string;
+  city_name: string;
+  state: string;
+  country: string;
+  is_default: boolean;
 };
 
 function normalizePhoneToTen(value: string): string {
@@ -247,6 +267,37 @@ function ProviderRegisterPageInner() {
   const [selectedRegions, setSelectedRegions] = useState<string[]>([]);
   const [customLocalities, setCustomLocalities] = useState<string[]>([]);
   const [customLocalityInput, setCustomLocalityInput] = useState<string>("");
+  // ── Geo cascade state (Phase R-sync) ───────────────────────────────────
+  // Mirrors the homepage Step 3 cascade but kept local to the provider
+  // session — we deliberately don't share the public `kk_geo` cookie
+  // because provider scope is a separate concern from public browsing.
+  const [availableCities, setAvailableCities] = useState<CityRow[]>([]);
+  const [selectedState, setSelectedStateRaw] = useState<string>("");
+  const [selectedCityCode, setSelectedCityCodeRaw] = useState<string>("");
+  // True briefly after a city switch so the UI can render a small
+  // "City changed — coverage selection reset" notice; cleared on the
+  // next meaningful user action (selecting a region or category).
+  const [cityChangedNotice, setCityChangedNotice] = useState<boolean>(false);
+  // ── Plan-aware region cap (Stage A + B) ───────────────────────────────
+  // Hydrated from /api/provider/plan on mount. Defaults to the implicit
+  // free plan (1 region) until the fetch resolves — safer than
+  // optimistically rendering a higher cap. `planRuleKind` distinguishes
+  // fixed-count plans from cityWide, which auto-selects every active
+  // region and disables the chip toggles.
+  const [planCode, setPlanCode] = useState<string>("free");
+  const [planMaxRegions, setPlanMaxRegions] = useState<number>(1);
+  const [planRuleKind, setPlanRuleKind] = useState<"fixed" | "cityWide">("fixed");
+  const [remainingRegionChanges, setRemainingRegionChanges] = useState<number>(3);
+  const [remainingCategoryChanges, setRemainingCategoryChanges] = useState<number>(3);
+  const [monthlyChangeLimit, setMonthlyChangeLimit] = useState<number>(3);
+  const [planLoaded, setPlanLoaded] = useState<boolean>(false);
+  // Effective per-render cap. Lower of (plan's max) and (hard ceiling).
+  // cityWide is treated as MAX_REGIONS — every region in the city is
+  // selectable (and auto-selected via the effect below).
+  const effectiveMaxRegions =
+    planRuleKind === "cityWide"
+      ? MAX_REGIONS
+      : Math.min(MAX_REGIONS, Math.max(MIN_REGIONS, planMaxRegions));
   // One-shot flag that gates both the edit-mode inference effect and the
   // region→area expansion sync effect. Declared up-front because the sync
   // effect (defined earlier in the file) references it in its deps array.
@@ -485,15 +536,136 @@ function ProviderRegisterPageInner() {
     loadAreas();
   }, []);
 
-  // Region catalog — drives the new Step 3 region picker.
+  // Backfill: when availableCities loads AFTER selectedCityCode was
+  // hydrated (edit-mode race), pair the city with its state so the
+  // State <select> renders the right option.
   useEffect(() => {
+    if (!selectedCityCode || selectedState) return;
+    const cityRow = availableCities.find((c) => c.city_code === selectedCityCode);
+    if (cityRow) setSelectedStateRaw(cityRow.state);
+  }, [availableCities, selectedCityCode, selectedState]);
+
+  // ── Cities catalog (Phase R-sync) ──────────────────────────────────
+  // Fetch once on mount. Initial selectedCityCode comes from the API's
+  // default_city_code; edit mode overrides this below from the
+  // provider's stored city_code, so this default only sticks for fresh
+  // registrations.
+  useEffect(() => {
+    const ctrl = new AbortController();
+    fetch("/api/cities", { signal: ctrl.signal, cache: "no-store" })
+      .then((res) => res.json())
+      .then((data: { ok?: boolean; cities?: CityRow[]; default_city_code?: string }) => {
+        if (ctrl.signal.aborted) return;
+        const cities = Array.isArray(data?.cities) ? data.cities : [];
+        setAvailableCities(cities);
+        // Only seed defaults when the cascade hasn't been set yet (e.g.
+        // edit-mode hydration hasn't run). Avoids overriding a value
+        // that already came from the provider's stored data.
+        if (!selectedCityCode) {
+          const def = String(data?.default_city_code ?? "").trim();
+          const defCity = cities.find((c) => c.city_code === def);
+          if (defCity) {
+            setSelectedStateRaw(defCity.state);
+            setSelectedCityCodeRaw(defCity.city_code);
+          }
+        }
+      })
+      .catch((err) => {
+        if (err?.name === "AbortError") return;
+        // /api/cities failed — leave selectors empty. The region fetch
+        // below bails when selectedCityCode is empty.
+      });
+    return () => ctrl.abort();
+    // Run once on mount. selectedCityCode is intentionally NOT in deps —
+    // we only want to seed defaults when there's nothing yet.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── Provider plan + remaining monthly changes (Stage A + B) ──────────
+  // Fetch on mount + after a successful save. The endpoint is auth-
+  // scoped (cookie); fresh-registration (no provider row yet) returns
+  // the implicit free defaults — the page renders correct caps before
+  // the very first save.
+  useEffect(() => {
+    const ctrl = new AbortController();
+    fetch("/api/provider/plan", { signal: ctrl.signal, cache: "no-store" })
+      .then((res) => res.json())
+      .then(
+        (data: {
+          ok?: boolean;
+          plan?: {
+            code?: string;
+            maxRegions?: number;
+            ruleKind?: "fixed" | "cityWide";
+          };
+          remaining?: { region_change?: number; category_change?: number };
+          monthlyLimit?: number;
+        }) => {
+          if (ctrl.signal.aborted) return;
+          if (!data?.ok) return; // keep defaults
+          setPlanCode(String(data.plan?.code ?? "free"));
+          setPlanMaxRegions(
+            Number.isFinite(data.plan?.maxRegions) && (data.plan?.maxRegions ?? 0) >= 1
+              ? Number(data.plan?.maxRegions)
+              : 1
+          );
+          setPlanRuleKind(
+            data.plan?.ruleKind === "cityWide" ? "cityWide" : "fixed"
+          );
+          setRemainingRegionChanges(
+            Number.isFinite(data.remaining?.region_change)
+              ? Number(data.remaining?.region_change)
+              : 3
+          );
+          setRemainingCategoryChanges(
+            Number.isFinite(data.remaining?.category_change)
+              ? Number(data.remaining?.category_change)
+              : 3
+          );
+          if (Number.isFinite(data.monthlyLimit)) {
+            setMonthlyChangeLimit(Number(data.monthlyLimit));
+          }
+          setPlanLoaded(true);
+        }
+      )
+      .catch((err) => {
+        if (err?.name === "AbortError") return;
+        // Keep the free defaults on fetch failure.
+        setPlanLoaded(true);
+      });
+    return () => ctrl.abort();
+  }, []);
+
+  // ── cityWide auto-select ──────────────────────────────────────────────
+  // For "all city" plans, the provider doesn't pick specific regions —
+  // every active region in the selected city is included. Auto-select
+  // whenever regionOptions or the plan changes; user cannot opt-out of
+  // individual regions within a cityWide plan (the chip toggles are
+  // disabled in render below).
+  useEffect(() => {
+    if (planRuleKind !== "cityWide") return;
+    if (regionOptions.length === 0) return;
+    const all = regionOptions.map((r) => r.region_code);
+    // Only update when actually different — avoids a re-render loop.
+    const sameLength = all.length === selectedRegions.length;
+    const sameSet =
+      sameLength && all.every((c, i) => c === selectedRegions[i]);
+    if (sameSet) return;
+    setSelectedRegions(all);
+  }, [planRuleKind, regionOptions, selectedRegions]);
+
+  // Region catalog — refetches whenever the selected city changes. Empty
+  // selectedCityCode (during initial load) skips the fetch.
+  useEffect(() => {
+    if (!selectedCityCode) return;
     const loadRegions = async () => {
       setIsLoadingRegions(true);
       setRegionsError("");
       try {
-        const res = await fetch("/api/area-intelligence/regions", {
-          cache: "no-store",
-        });
+        const res = await fetch(
+          `/api/area-intelligence/regions?city=${encodeURIComponent(selectedCityCode)}`,
+          { cache: "no-store" }
+        );
         const data = (await res.json()) as {
           ok?: boolean;
           regions?: RegionOption[];
@@ -522,7 +694,46 @@ function ProviderRegisterPageInner() {
       }
     };
     loadRegions();
-  }, []);
+  }, [selectedCityCode]);
+
+  // ── Cascade setters ───────────────────────────────────────────────────
+  // Wrappers around the raw state setters so a city change cascades to
+  // the same clears the audit demanded: selectedRegions empty,
+  // customLocalities empty, plus a small notice the UI can render.
+  // Edit-mode hydration also uses these so the cascade-clear runs there
+  // too (which is correct — switching city in edit mode invalidates the
+  // saved region picks).
+  const setCity = (next: string) => {
+    if (!next || next === selectedCityCode) return;
+    const found = availableCities.find((c) => c.city_code === next);
+    if (!found) return;
+    setSelectedStateRaw(found.state);
+    setSelectedCityCodeRaw(found.city_code);
+    setSelectedRegions([]);
+    setCustomLocalities([]);
+    setHasInferredRegions(false); // re-infer for new city in edit mode
+    setCityChangedNotice(true);
+  };
+  const setState = (next: string) => {
+    if (!next || next === selectedState) return;
+    const firstCityInState = availableCities.find((c) => c.state === next);
+    if (!firstCityInState) return;
+    setCity(firstCityInState.city_code);
+  };
+  const statesList = (() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const c of availableCities) {
+      if (!seen.has(c.state)) {
+        seen.add(c.state);
+        out.push(c.state);
+      }
+    }
+    return out;
+  })();
+  const citiesInSelectedState = availableCities.filter(
+    (c) => c.state === selectedState
+  );
 
   useEffect(() => {
     if (!isEditMode || !/^\d{10}$/.test(phone) || hasLoadedEditProfile) {
@@ -558,6 +769,23 @@ function ProviderRegisterPageInner() {
         setSelectedAreas(serviceAreas);
         setCustomCategoryKeys([]);
         setCustomAreaKeys([]);
+        // Cascade hydration (Phase R-sync): preselect the provider's
+        // stored city. The cascade-reset clears that the setCity wrapper
+        // normally runs (selectedRegions / customLocalities empty) are
+        // appropriate here too — region inference will populate them
+        // from the saved areas in the dedicated inference effect once
+        // both the area list and the city's region catalog are loaded.
+        const editCityCode = String(
+          (data.provider as { CityCode?: unknown }).CityCode ?? ""
+        ).trim().toUpperCase();
+        if (/^[A-Z]{3}$/.test(editCityCode)) {
+          // Bypass setCity's notice (this is an initial hydration, not a
+          // user-initiated change). The dedicated backfill effect pairs
+          // selectedState to this city_code as soon as availableCities
+          // lands — keeps the load closure free of `availableCities`
+          // (and the exhaustive-deps lint clean).
+          setSelectedCityCodeRaw(editCityCode);
+        }
         // Capture ProviderID so the work-term panel mounted below in edit
         // mode can call /api/provider/work-terms + /api/provider/aliases.
         setEditingProviderId(
@@ -652,7 +880,7 @@ function ProviderRegisterPageInner() {
       if (!everyAreaSaved) continue;
       inferredRegions.push(region.region_code);
       for (const k of regionKeys) coveredByInferred.add(k);
-      if (inferredRegions.length >= MAX_REGIONS) break;
+      if (inferredRegions.length >= effectiveMaxRegions) break;
     }
     setSelectedRegions(inferredRegions);
     const leftovers = selectedAreas.filter(
@@ -666,6 +894,7 @@ function ProviderRegisterPageInner() {
     hasLoadedEditProfile,
     regionOptions,
     selectedAreas,
+    effectiveMaxRegions,
   ]);
 
   // Region / locality edits should clear the most recent submit error so
@@ -1036,15 +1265,18 @@ function ProviderRegisterPageInner() {
     if (!canSubmit || !/^\d{10}$/.test(phone)) return;
 
     // Region-count gate — moved out of `canSubmit` so the button stays
-    // clickable. Rule: at least MIN_REGIONS (1), at most MAX_REGIONS (3).
-    // Custom localities are explicitly excluded from this count. Surface
-    // a clear inline error instead of silently disabling Save.
+    // clickable. Rule: at least MIN_REGIONS (1), at most effectiveMaxRegions
+    // (plan-derived). Custom localities are explicitly excluded from
+    // this count. Surface a clear inline error instead of silently
+    // disabling Save.
     if (selectedRegions.length < MIN_REGIONS) {
       setSubmitError("Please pick at least 1 service region before saving.");
       return;
     }
-    if (selectedRegions.length > MAX_REGIONS) {
-      setSubmitError(`You can choose up to ${MAX_REGIONS} service regions.`);
+    if (planRuleKind === "fixed" && selectedRegions.length > effectiveMaxRegions) {
+      setSubmitError(
+        `Your plan covers ${effectiveMaxRegions} region${effectiveMaxRegions === 1 ? "" : "s"}. Reduce your selection or upgrade to save.`
+      );
       return;
     }
 
@@ -1078,6 +1310,13 @@ function ProviderRegisterPageInner() {
             name: name.trim().toUpperCase(),
             categories: uniqueCategoryValues(selectedCategories),
             areas: selectedAreas,
+            // Phase R-sync: cascade-supplied city. Server falls back to
+            // default city when omitted.
+            cityCode: selectedCityCode,
+            // Stage A + B: explicit region-code list drives the plan-
+            // aware enforcement on the server. Without this field the
+            // server skips the region cap (legacy clients).
+            selectedRegionCodes: selectedRegions,
           }),
         });
         const updateData = (await parseJsonSafe(updateRes)) as
@@ -1090,17 +1329,29 @@ function ProviderRegisterPageInner() {
               planCode?: string;
               maxRegions?: number;
               attempted?: number;
+              // Stage A + B monthly-cap shape.
+              changeType?: "region_change" | "category_change";
+              monthlyLimit?: number;
+              usedThisMonth?: number;
             }
           | null;
         if (!updateRes.ok || updateData?.ok !== true) {
-          // Surface a clear plan-limit message when enforcement rejects
-          // the save. The catch below stuffs error.message into
-          // submitError, which is what the form already renders.
+          // Surface clear messages for the two enforcement gates.
           if (updateData?.error === "PLAN_LIMIT_EXCEEDED") {
             const allowed = Number(updateData.maxRegions ?? 1);
             const regionLabel = allowed === 1 ? "region" : "regions";
             throw new Error(
               `Your current plan supports only ${allowed} ${regionLabel}. Upgrade to add more regions.`
+            );
+          }
+          if (updateData?.error === "MONTHLY_CHANGE_LIMIT_EXCEEDED") {
+            const kindLabel =
+              updateData.changeType === "category_change"
+                ? "service category"
+                : "service regions";
+            const limit = Number(updateData.monthlyLimit ?? 3);
+            throw new Error(
+              `You've already changed your ${kindLabel} ${limit} times this month. Try again next month.`
             );
           }
           throw new Error(
@@ -1146,6 +1397,15 @@ function ProviderRegisterPageInner() {
         // generates and stores pledge_accepted_at itself; we deliberately
         // do NOT send a client-side timestamp.
         pledgeVersion: PROVIDER_PLEDGE_VERSION,
+        // Phase R-sync: cascade-supplied city. /api/kk register_provider
+        // validates ^[A-Z]{3}$ and falls back to default city when
+        // missing/malformed — preserves old-client compatibility.
+        cityCode: selectedCityCode,
+        // Stage A + B: explicit region-code list drives the free-plan
+        // cap on first registration. The server rejects with
+        // PLAN_LIMIT_EXCEEDED when length > 1 (free) and no paid plan
+        // is on the provider yet.
+        selectedRegionCodes: selectedRegions,
       };
 
       const response = await fetch("/api/kk", {
@@ -1299,6 +1559,15 @@ function ProviderRegisterPageInner() {
                   </span>
                 </div>
                 <p className="mb-2 text-xs text-slate-500">(Choose the services you actually provide)</p>
+                {planLoaded && remainingCategoryChanges < monthlyChangeLimit ? (
+                  <p className="mb-2 text-[11px] text-slate-500">
+                    Service category changes left this month:{" "}
+                    <span className="font-semibold text-slate-700">
+                      {remainingCategoryChanges}
+                    </span>{" "}
+                    of {monthlyChangeLimit}.
+                  </p>
+                ) : null}
                 <input
                   type="text"
                   value={catQuery}
@@ -1507,19 +1776,205 @@ function ProviderRegisterPageInner() {
                   nudgeSelectCategory();
                 }}
               >
+                {/* Phase R-sync: State + City cascade above the region
+                    picker. Mirrors the homepage Step 3 cascade. Today
+                    (single active city) both selects show one option;
+                    rails are in place for multi-city without further
+                    component changes. */}
+                <div className="mb-3 flex flex-wrap items-center gap-2">
+                  <label className="sr-only" htmlFor="provider-geo-state">
+                    State
+                  </label>
+                  <select
+                    id="provider-geo-state"
+                    value={selectedState}
+                    onChange={(e) => setState(e.target.value)}
+                    disabled={availableCities.length === 0}
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-800 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 disabled:opacity-60"
+                  >
+                    {statesList.length === 0 ? (
+                      <option value="">Loading…</option>
+                    ) : (
+                      statesList.map((s) => (
+                        <option key={s} value={s}>
+                          {s}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                  <label className="sr-only" htmlFor="provider-geo-city">
+                    City
+                  </label>
+                  <select
+                    id="provider-geo-city"
+                    value={selectedCityCode}
+                    onChange={(e) => setCity(e.target.value)}
+                    disabled={citiesInSelectedState.length === 0}
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-800 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 disabled:opacity-60"
+                  >
+                    {citiesInSelectedState.length === 0 ? (
+                      <option value="">Loading…</option>
+                    ) : (
+                      citiesInSelectedState.map((c) => (
+                        <option key={c.city_code} value={c.city_code}>
+                          {c.city_name}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </div>
+                {cityChangedNotice ? (
+                  <div className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                    City changed — coverage selection reset.
+                    <button
+                      type="button"
+                      onClick={() => setCityChangedNotice(false)}
+                      className="ml-2 font-semibold underline underline-offset-2 hover:text-amber-900"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                ) : null}
                 <div className="mb-2 flex items-center justify-between gap-3">
                   <label className="block text-sm font-semibold text-slate-700">
-                    Step 3: Service regions — pick {MIN_REGIONS}–{MAX_REGIONS}
+                    Step 3: Service regions —{" "}
+                    {planRuleKind === "cityWide"
+                      ? "whole city coverage"
+                      : effectiveMaxRegions === 1
+                        ? "1 free region included"
+                        : `up to ${effectiveMaxRegions} regions`}
                   </label>
                   <span className="text-xs font-medium text-slate-500">
-                    {selectedRegions.length}/{MAX_REGIONS}
+                    {planRuleKind === "cityWide"
+                      ? `${selectedRegions.length} regions (all)`
+                      : `${selectedRegions.length}/${effectiveMaxRegions}`}
                   </span>
                 </div>
                 <p className="mb-3 text-xs text-slate-500">
-                  Pick {MIN_REGIONS} to {MAX_REGIONS} regions you cover.
-                  We&apos;ll expand each into the areas inside it for
-                  matching.
+                  {planRuleKind === "cityWide"
+                    ? "All active regions in this city are included."
+                    : effectiveMaxRegions === 1
+                      ? "Pick 1 region you cover. Upgrade to reach more areas."
+                      : `Pick up to ${effectiveMaxRegions} major regions you cover.`}
                 </p>
+
+                {/* Plan summary + upgrade card. Always rendered above the
+                    chip grid so the provider sees their cap and the
+                    upgrade path in one place. Upgrade buttons are
+                    INTENTIONALLY disabled — Razorpay integration is
+                    deferred; the rails (provider_plans table, webhook
+                    handler, signature verify) exist in the codebase but
+                    are off until checkout UI is wired in a later phase. */}
+                {planLoaded ? (
+                  <div className="mb-4 rounded-2xl border border-emerald-200 bg-emerald-50/60 p-4">
+                    <div className="flex flex-wrap items-baseline justify-between gap-2">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-emerald-800">
+                        Current plan:{" "}
+                        <span className="text-emerald-900">
+                          {planCode === "all_jodhpur"
+                            ? "₹101 — Whole City"
+                            : planCode === "regions_5"
+                              ? "₹31 — Major Areas"
+                              : "Free"}
+                        </span>
+                      </p>
+                      <p className="text-[11px] font-medium text-emerald-900/80">
+                        Selected:{" "}
+                        <span className="font-bold">
+                          {selectedRegions.length}
+                        </span>
+                        {planRuleKind === "fixed"
+                          ? ` / ${effectiveMaxRegions}`
+                          : " (all)"}{" "}
+                        region{selectedRegions.length === 1 ? "" : "s"}
+                      </p>
+                    </div>
+                    <p className="mt-1 text-xs text-emerald-900/80">
+                      {planRuleKind === "cityWide"
+                        ? "Get business from whole city — every active region included."
+                        : effectiveMaxRegions === 1
+                          ? "1 free region included — upgrade to reach more areas."
+                          : "Get business from major areas — up to 5 regions."}
+                    </p>
+                    {remainingRegionChanges < monthlyChangeLimit ? (
+                      <p className="mt-2 text-[11px] text-emerald-900/70">
+                        Region changes left this month:{" "}
+                        <span className="font-semibold text-emerald-900">
+                          {remainingRegionChanges}
+                        </span>{" "}
+                        of {monthlyChangeLimit}.
+                      </p>
+                    ) : null}
+
+                    {/* Upgrade CTAs. For free → both ₹31 and ₹101 cards
+                        with action CTAs. For regions_5 → only the ₹101
+                        upgrade. For all_jodhpur → status badge only
+                        (highest tier). Buttons are disabled today —
+                        /api/payments/create-order exists but is gated by
+                        PAYMENT_ENABLED env and needs the Razorpay JS
+                        SDK + post-success handler on the client. Wiring
+                        the CTA without those produces a broken checkout
+                        — keeping disabled per the "Do not build new
+                        payment gateway flow from scratch" rule. */}
+                    {planRuleKind === "cityWide" ? (
+                      <div className="mt-3 inline-flex items-center gap-2 rounded-full border border-emerald-300 bg-emerald-100 px-3 py-1.5 text-xs font-bold text-emerald-900">
+                        <span aria-hidden="true">✓</span>
+                        <span>Whole city coverage active</span>
+                      </div>
+                    ) : (
+                      <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                        {planCode === "free" ? (
+                          <div className="flex-1 rounded-xl border border-emerald-300 bg-white p-3 shadow-sm">
+                            <p className="text-sm font-bold text-[#1B5E20]">
+                              ₹31 — Get business from major areas
+                            </p>
+                            <p className="mt-0.5 text-[11px] text-slate-600">
+                              Up to 5 regions in your city.
+                            </p>
+                            <button
+                              type="button"
+                              disabled
+                              title="Payment coming soon"
+                              aria-label="Expand to 5 regions — payment coming soon"
+                              className="mt-2 inline-flex w-full cursor-not-allowed items-center justify-center rounded-lg bg-[#ea580c] px-3 py-2 text-xs font-bold text-white opacity-70 transition disabled:bg-[#ea580c] sm:w-auto"
+                            >
+                              Expand to 5 regions
+                            </button>
+                            <p className="mt-1 text-[10px] uppercase tracking-wide text-slate-500">
+                              Payment coming soon
+                            </p>
+                          </div>
+                        ) : null}
+                        <div className="flex-1 rounded-xl border border-emerald-300 bg-white p-3 shadow-sm">
+                          <p className="text-sm font-bold text-[#1B5E20]">
+                            ₹101 — Get business from whole city
+                          </p>
+                          <p className="mt-0.5 text-[11px] text-slate-600">
+                            All active regions in your city.
+                          </p>
+                          <button
+                            type="button"
+                            disabled
+                            title="Payment coming soon"
+                            aria-label={
+                              planCode === "regions_5"
+                                ? "Upgrade to whole city — payment coming soon"
+                                : "Get whole city coverage — payment coming soon"
+                            }
+                            className="mt-2 inline-flex w-full cursor-not-allowed items-center justify-center rounded-lg bg-[#ea580c] px-3 py-2 text-xs font-bold text-white opacity-70 transition disabled:bg-[#ea580c] sm:w-auto"
+                          >
+                            {planCode === "regions_5"
+                              ? "Upgrade to whole city"
+                              : "Get whole city coverage"}
+                          </button>
+                          <p className="mt-1 text-[10px] uppercase tracking-wide text-slate-500">
+                            Payment coming soon
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : null}
                 {isLoadingRegions ? (
                   <p className="text-xs text-slate-500">Loading regions…</p>
                 ) : null}
@@ -1533,7 +1988,13 @@ function ProviderRegisterPageInner() {
                   {regionOptions.map((region) => {
                     const isSelected = selectedRegions.includes(region.region_code);
                     const isAtMax =
-                      !isSelected && selectedRegions.length >= MAX_REGIONS;
+                      planRuleKind === "fixed" &&
+                      !isSelected &&
+                      selectedRegions.length >= effectiveMaxRegions;
+                    // cityWide: every region is auto-selected and the
+                    // toggle is read-only (provider can't opt out of
+                    // single regions within an all-city plan).
+                    const isReadOnly = planRuleKind === "cityWide";
                     const areaPreview = region.areas.slice(0, 6).join(" · ");
                     const moreCount = Math.max(0, region.areas.length - 6);
                     return (
@@ -1573,17 +2034,18 @@ function ProviderRegisterPageInner() {
                               nudgeSelectCategory();
                               return;
                             }
+                            if (isReadOnly) return;
                             setSelectedRegions((prev) => {
                               if (prev.includes(region.region_code)) {
                                 return prev.filter(
                                   (rc) => rc !== region.region_code
                                 );
                               }
-                              if (prev.length >= MAX_REGIONS) return prev;
+                              if (prev.length >= effectiveMaxRegions) return prev;
                               return [...prev, region.region_code];
                             });
                           }}
-                          disabled={isAtMax || showSuccessCelebration}
+                          disabled={isAtMax || isReadOnly || showSuccessCelebration}
                           className={`mt-3 inline-flex items-center justify-center rounded-lg px-3 py-1.5 text-xs font-bold shadow-sm transition disabled:cursor-not-allowed disabled:opacity-50 ${
                             isSelected
                               ? "bg-emerald-600 text-white hover:bg-emerald-700"
@@ -1610,7 +2072,10 @@ function ProviderRegisterPageInner() {
                     Add a custom locality (optional). Admin will review and
                     map it to a region for future matching. Custom
                     localities don&apos;t count toward your{" "}
-                    {MIN_REGIONS}–{MAX_REGIONS} region selection.
+                    {planRuleKind === "cityWide"
+                      ? "whole-city"
+                      : `${MIN_REGIONS}–${effectiveMaxRegions}`}{" "}
+                    region selection.
                   </p>
                   <div className="mt-3 flex flex-col gap-2 sm:flex-row">
                     <input

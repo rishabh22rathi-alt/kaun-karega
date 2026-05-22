@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import { adminSupabase } from "@/lib/supabase/admin";
 import { getProviderByPhoneFromSupabase } from "@/lib/admin/adminProviderReads";
 import { effectivePlan } from "@/lib/payments/effectivePlan";
+import { getDefaultCityCode } from "@/lib/cities/cityContext";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -183,12 +184,24 @@ type ProviderAreaCoverage = {
   ActiveApprovedAreas: ProviderCoverageArea[];
   PendingAreaRequests: ProviderPendingAreaRequest[];
   ResolvedOutcomes: ProviderResolvedAreaRequest[];
+  // Cascade-aware additions. Derived from the provider's own
+  // provider_areas.city_code (first non-NULL) + service_regions /
+  // cities tables. Empty strings + empty array when the provider has
+  // no provider_areas rows yet.
+  CityCode: string;
+  CityName: string;
+  State: string;
+  SelectedRegionCodes: string[];
 };
 
 const EMPTY_AREA_COVERAGE: ProviderAreaCoverage = {
   ActiveApprovedAreas: [],
   PendingAreaRequests: [],
   ResolvedOutcomes: [],
+  CityCode: "",
+  CityName: "",
+  State: "",
+  SelectedRegionCodes: [],
 };
 
 type TaskCategoryTimestampRow = {
@@ -638,8 +651,17 @@ function normalizeKey(value: string): string {
 async function getProviderAreaCoverageFromSupabase(
   supabase: ServerSupabase,
   providerId: string,
-  providerAreas: string[]
+  providerAreas: string[],
+  // Cascade-aware filter. When provided, region inference reads only
+  // service_regions / service_region_areas rows for THIS city — prevents
+  // attribution to regions in a different city once multi-city seed
+  // exists. Empty string skips the filter (today's legacy behavior).
+  providerCityCode: string
 ): Promise<ProviderAreaCoverage> {
+  // Track region inference output so the caller can expose
+  // SelectedRegionCodes alongside the derived areas. Empty for legacy
+  // providers with no region overlap; never null.
+  const selectedRegionCodes: string[] = [];
   // Legacy fallback: raw provider_areas as ActiveApprovedAreas. Used when
   // the provider has no region overlap (pre-region migration) OR when the
   // region-derived path errors out.
@@ -668,11 +690,18 @@ async function getProviderAreaCoverageFromSupabase(
     // every area row to be filtered out below and the dashboard to fall
     // back to fallbackActiveAreas — matches the fail-soft posture this
     // block already uses for region-derived coverage.
-    const activeRegionsRes = await supabase
+    // Cascade-aware filter (Phase R-sync): scope region preload to the
+    // provider's own city when known. Multi-city safe; today's single-
+    // city deployment is a no-op (every region is JOD anyway).
+    const activeRegionsQuery = supabase
       .from("service_regions")
       .select("region_code")
       .eq("active", true)
       .limit(1000);
+    if (providerCityCode) {
+      activeRegionsQuery.eq("city_code", providerCityCode);
+    }
+    const activeRegionsRes = await activeRegionsQuery;
     if (activeRegionsRes.error) {
       console.warn(
         "[provider/dashboard-profile] service_regions preload failed; skipping region-derived coverage",
@@ -687,11 +716,16 @@ async function getProviderAreaCoverageFromSupabase(
       if (rc) activeRegionCodes.add(rc);
     }
 
-    const regionRes = await supabase
+    // Same cascade-aware filter as above for the area pre-load.
+    const regionAreasQuery = supabase
       .from("service_region_areas")
       .select("canonical_area, region_code, active")
       .eq("active", true)
       .limit(10000);
+    if (providerCityCode) {
+      regionAreasQuery.eq("city_code", providerCityCode);
+    }
+    const regionRes = await regionAreasQuery;
 
     if (regionRes.error) {
       console.warn(
@@ -728,6 +762,12 @@ async function getProviderAreaCoverageFromSupabase(
         }
       }
 
+      // Surface the inferred set to the caller. Sorted for deterministic
+      // payload ordering (snapshot tests, log readability).
+      for (const rc of Array.from(selectedRegions).sort()) {
+        selectedRegionCodes.push(rc);
+      }
+
       if (selectedRegions.size > 0) {
         const derived = new Set<string>();
         for (const rc of selectedRegions) {
@@ -760,7 +800,11 @@ async function getProviderAreaCoverageFromSupabase(
       : fallbackActiveAreas;
 
   if (!providerId) {
-    return { ...EMPTY_AREA_COVERAGE, ActiveApprovedAreas: activeApprovedAreas };
+    return {
+      ...EMPTY_AREA_COVERAGE,
+      ActiveApprovedAreas: activeApprovedAreas,
+      SelectedRegionCodes: selectedRegionCodes,
+    };
   }
 
   // activeAreaKeys is consumed below by the resolved-outcome
@@ -867,6 +911,12 @@ async function getProviderAreaCoverageFromSupabase(
     ActiveApprovedAreas: activeApprovedAreas,
     PendingAreaRequests: pendingAreaRequests,
     ResolvedOutcomes: resolvedOutcomes,
+    // Cascade caller hydrates City/State separately; this function owns
+    // only the area/region inference.
+    CityCode: "",
+    CityName: "",
+    State: "",
+    SelectedRegionCodes: selectedRegionCodes,
   };
 }
 
@@ -1152,7 +1202,7 @@ export async function GET(request: NextRequest) {
         .eq("provider_id", provider.provider_id),
       supabase
         .from("provider_areas")
-        .select("area")
+        .select("area, city_code")
         .eq("provider_id", provider.provider_id),
       supabase
         .from("provider_task_matches")
@@ -1223,6 +1273,50 @@ export async function GET(request: NextRequest) {
           .map((item) => String(item.area || "").trim())
           .filter((area) => area.length > 0)
       : [];
+
+    // Cascade-aware provider city derivation. Use the first non-NULL
+    // city_code found across the provider's own provider_areas rows;
+    // fall back to the default city when the provider has no rows yet
+    // (e.g. a brand-new registration mid-flight). Validate format so a
+    // stray bad value doesn't poison region inference.
+    let providerCityCode = "";
+    if (Array.isArray(providerAreas)) {
+      for (const row of providerAreas as Array<{ city_code?: string | null }>) {
+        const candidate = String(row?.city_code ?? "").trim().toUpperCase();
+        if (/^[A-Z]{3}$/.test(candidate)) {
+          providerCityCode = candidate;
+          break;
+        }
+      }
+    }
+    if (!providerCityCode) {
+      try {
+        providerCityCode = await getDefaultCityCode();
+      } catch {
+        // City config error — leave empty, region inference skips the
+        // city filter (today's behavior) and the response carries empty
+        // CityCode/State strings.
+        providerCityCode = "";
+      }
+    }
+
+    // Look up city_name + state for the resolved city. One small read
+    // per dashboard fetch; cities is tiny and cached server-side in
+    // getDefaultCityCode's neighbor, but this query is direct because
+    // we may resolve a non-default city.
+    let providerCityName = "";
+    let providerState = "";
+    if (providerCityCode) {
+      const { data: cityRow } = await supabase
+        .from("cities")
+        .select("city_name, state")
+        .eq("city_code", providerCityCode)
+        .maybeSingle();
+      if (cityRow) {
+        providerCityName = String(cityRow.city_name ?? "");
+        providerState = String(cityRow.state ?? "");
+      }
+    }
 
     let metrics: ProviderMetrics = EMPTY_PROVIDER_METRICS;
     let categoryDemandByRange: CategoryDemandByRange = EMPTY_CATEGORY_DEMAND_BY_RANGE;
@@ -1321,8 +1415,14 @@ export async function GET(request: NextRequest) {
         const v = await getProviderAreaCoverageFromSupabase(
           supabase,
           providerIdString,
-          providerAreaList
+          providerAreaList,
+          providerCityCode
         );
+        // Hydrate the cascade-aware city fields from the surrounding scope.
+        // The function itself doesn't query the cities table.
+        v.CityCode = providerCityCode;
+        v.CityName = providerCityName;
+        v.State = providerState;
         recordTiming("provider_area_coverage", t);
         return v;
       })(),

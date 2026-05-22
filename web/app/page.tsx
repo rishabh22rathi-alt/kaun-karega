@@ -18,58 +18,8 @@ import {
   readLocalDisclaimer,
   writeLocalDisclaimer,
 } from "@/lib/disclaimer";
+import { PublicGeoProvider } from "@/lib/cities/publicGeoContext";
 
-const MASTER_AREAS = [
-  "Sardarpura",
-  "Shastri Nagar",
-  "Ratanada",
-  "Pal Road",
-  "Bhagat Ki Kothi",
-  "Chopasni Housing Board",
-  "Chopasni Road",
-  "Basni",
-  "Paota",
-  "Mandore",
-  "Residency Road",
-  "Rai Ka Bagh",
-  "High Court Colony",
-  "Civil Lines",
-  "Kamla Nehru Nagar",
-  "Kudi Bhagtasni Housing Board",
-  "Banar",
-  "Pratap Nagar",
-  "Nayapura",
-  "Shikargarh",
-  "Air Force Area",
-  "MIA",
-  "Jalori Gate",
-  "Sojati Gate",
-  "Clock Tower",
-  "Nandri",
-  "Paota Circle",
-  "Kabir Nagar",
-  "Vivek Vihar",
-  "BJS Colony",
-  "Umaid Stadium",
-  "Ashapurna Valley",
-  "Sangriya",
-  "Mogra",
-  "Khema Ka Kuan",
-  "Idgah",
-  "Agolai",
-  "Tinwari",
-  "Laxmi Nagar",
-  "Rajiv Gandhi Colony",
-  "Sursagar",
-  "Rikhtiya Bheruji",
-  "Sivanchi Gate",
-  "Chand Pole",
-  "Soorsagar Road",
-  "Panch Batti Circle",
-  "New Power House",
-  "Madar",
-  "Mahamandir",
-];
 
 
 function getTodayLocalDateString() {
@@ -307,7 +257,7 @@ export default function Home() {
           </div>
         }
       >
-        <PageContent />
+        <PublicGeoProvider><PageContent /></PublicGeoProvider>
       </Suspense>
     </>
   );
@@ -1156,9 +1106,6 @@ const submitResolvedRequest = async (resolution: CategoryResolution) => {
       if (normalizedArea) params.set("area", normalizedArea);
 
       setShowDirectContactOption(false);
-      if (typeof window !== "undefined") {
-        window.localStorage.setItem("kk_last_area", normalizedArea);
-      }
       clearTaskDraftFromSessionStorage();
       setIsRedirecting(true);
       router.replace(`/success?${params.toString()}`);
@@ -1249,9 +1196,6 @@ const submitResolvedRequest = async (resolution: CategoryResolution) => {
     });
 
     setShowDirectContactOption(true);
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem("kk_last_area", normalizedArea);
-    }
     clearTaskDraftFromSessionStorage();
     setIsRedirecting(true);
     router.replace(

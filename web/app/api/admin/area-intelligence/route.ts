@@ -6,6 +6,11 @@ import {
   resolveCityParam,
   InvalidCityCodeError,
 } from "@/lib/cities/cityContext";
+// Cache-bust the public /api/areas city-keyed map after every successful
+// catalog write so the homepage reflects the change within one request,
+// not after the (now 60 s) TTL. Cross-route import is fine — both
+// endpoints share one Node process and the Map is a single instance.
+import { invalidateAreasCacheByCity } from "@/app/api/areas/route";
 
 // Sandbox admin editor for the Area Intelligence tables.
 // Does NOT touch live matching, provider registration, homepage search,
@@ -287,6 +292,10 @@ async function moveArea(body: Json) {
     }
   }
 
+  // Global clear: a region move can span cities (source region's city
+  // and dest region's city may differ). Cache is small (≤ 10 entries)
+  // so dropping all is cheaper than reasoning about both sides.
+  invalidateAreasCacheByCity();
   return NextResponse.json({
     ok: true,
     moved_area: movedArea,
@@ -305,7 +314,7 @@ async function patchRegion(body: Json) {
 
   const { data: existing, error: lookupErr } = await adminSupabase
     .from("service_regions")
-    .select("region_code, region_name, active, notes")
+    .select("region_code, region_name, active, notes, city_code")
     .eq("region_code", region_code)
     .maybeSingle();
   if (lookupErr) {
@@ -421,6 +430,7 @@ async function patchRegion(body: Json) {
     );
   }
 
+  invalidateAreasCacheByCity(existing.city_code ?? undefined);
   return NextResponse.json({ ok: true, region: updated, changed: true });
 }
 
@@ -437,7 +447,7 @@ async function patchArea(body: Json) {
   // the right safety checks.
   const { data: existing, error: lookupErr } = await adminSupabase
     .from("service_region_areas")
-    .select("area_code, canonical_area, region_code, active, notes")
+    .select("area_code, canonical_area, region_code, active, notes, city_code")
     .eq("area_code", area_code)
     .maybeSingle();
   if (lookupErr) {
@@ -553,6 +563,7 @@ async function patchArea(body: Json) {
     );
   }
 
+  invalidateAreasCacheByCity(existing.city_code ?? undefined);
   return NextResponse.json({ ok: true, area: updated, changed: true });
 }
 
@@ -567,7 +578,7 @@ async function patchAlias(body: Json) {
 
   const { data: existing, error: lookupErr } = await adminSupabase
     .from("service_region_area_aliases")
-    .select("alias_code, alias, canonical_area, region_code, active, notes")
+    .select("alias_code, alias, canonical_area, region_code, active, notes, city_code")
     .eq("alias_code", alias_code)
     .maybeSingle();
   if (lookupErr) {
@@ -703,6 +714,7 @@ async function patchAlias(body: Json) {
     );
   }
 
+  invalidateAreasCacheByCity(existing.city_code ?? undefined);
   return NextResponse.json({ ok: true, alias: updated, changed: true });
 }
 
@@ -848,6 +860,7 @@ export async function POST(request: Request) {
     );
   }
 
+  invalidateAreasCacheByCity(cityCode);
   return NextResponse.json({ ok: true, alias: inserted });
 }
 
@@ -908,6 +921,7 @@ async function postRegion(body: Json) {
     );
   }
 
+  invalidateAreasCacheByCity(defaultCityCode);
   return NextResponse.json({ ok: true, region: inserted });
 }
 
@@ -1019,6 +1033,7 @@ async function postArea(body: Json) {
     );
   }
 
+  invalidateAreasCacheByCity(cityCode);
   return NextResponse.json({ ok: true, area: inserted });
 }
 
