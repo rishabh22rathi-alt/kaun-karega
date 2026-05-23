@@ -6,6 +6,7 @@ import { ChevronDown, Pencil, RotateCcw, X } from "lucide-react";
 import CacheStatusBar, {
   type CacheStatusBarMetadata,
 } from "@/components/admin/CacheStatusBar";
+import ProviderAreaResolutionSection from "@/components/admin/ProviderAreaResolutionSection";
 import {
   type AdminCacheInterval,
   getAdminCacheInterval,
@@ -1729,6 +1730,25 @@ export default function AreaTab() {
 
       {isOpen && (
         <div id="area-tab-body" className="border-t border-slate-200 px-5 py-5">
+          {/* Provider Area Resolution Center — collapsible triage UI for
+              unresolved provider_areas rows (city='JOD', region_code IS
+              NULL). Sits above the tab switcher so it's reachable from
+              either Approved or Pending Approval views. Lazy-loads its
+              own data on first expand and refreshes the AreaTab tree on
+              each successful resolve so newly-added aliases/canonicals
+              and recomputed provider counts surface immediately. */}
+          <div className="mb-4">
+            <ProviderAreaResolutionSection
+              regions={regions}
+              areas={(areas ?? []).map((a) => ({
+                canonical_area: a.canonical_area,
+                region_code: a.region_code,
+                active: a.active,
+              }))}
+              onResolved={refresh}
+            />
+          </div>
+
           <div className="flex gap-2 border-b border-slate-200">
             <button
               type="button"
