@@ -3,6 +3,9 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { ChevronDown } from "lucide-react";
 
+import CacheStatusBar from "@/components/admin/CacheStatusBar";
+import { useCachedAdminEndpoint } from "@/lib/admin/useCachedAdminEndpoint";
+
 type ProviderStats = {
   total: number;
   verified: number;
@@ -121,14 +124,32 @@ function drilldownKey(
 
 export default function ProvidersTab() {
   const [isOpen, setIsOpen] = useState(false);
-  const [data, setData] = useState<ProviderStats | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  // Bumped on each tab open + on every CATEGORY_CHANGED_EVENT so the
-  // top-level stats useEffect re-runs and refetches /api/admin/provider-stats.
-  // Without this, the previous "if (data) return" guard pinned the
-  // verified tile to its initial value forever.
+  // Bumped on every CATEGORY_CHANGED_EVENT so the snapshot-cache
+  // hook below sees a refreshKey change and re-runs its read-through
+  // fetch. Tab-open is NOT a bump source — the hook already refetches
+  // when its `enabled` prop flips from false to true, and double-
+  // bumping caused a second duplicate GET on every tab open.
   const [statsRefreshKey, setStatsRefreshKey] = useState(0);
+  // Snapshot-cache wiring — single hook owns fetch, cacheMeta,
+  // refresh, and the localStorage-backed interval choice. See
+  // web/lib/admin/useCachedAdminEndpoint.ts for the read-through
+  // and auto-refresh semantics.
+  const {
+    data,
+    cacheMeta,
+    loading,
+    refreshing,
+    error,
+    interval,
+    setInterval,
+    refresh,
+  } = useCachedAdminEndpoint<ProviderStats>({
+    url: "/api/admin/provider-stats",
+    enabled: isOpen,
+    intervalStorageKey: "provider_stats",
+    defaultInterval: "manual",
+    refreshKey: statsRefreshKey,
+  });
 
   // Two cached datasets — one per breakdown mode. Lazy-loaded on first
   // click of the corresponding tile.
@@ -200,43 +221,13 @@ export default function ProvidersTab() {
     Record<string, Array<{ providerId: string; name: string }>>
   >({});
 
-  // Top-level provider stats. Re-runs every time the tab opens or a
-  // category mutation fires CATEGORY_CHANGED_EVENT. Including `loading`
-  // in the deps array would cancel the in-flight fetch on its own state
-  // change and leave the card on "Loading…" — keep this list explicit.
-  useEffect(() => {
-    if (!isOpen) return;
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    fetch("/api/admin/provider-stats")
-      .then((r) => r.json())
-      .then((res: { ok?: boolean; data?: ProviderStats; error?: string }) => {
-        if (cancelled) return;
-        if (res?.ok && res.data) setData(res.data);
-        else setError(res?.error || "Failed to load provider stats");
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        setError(err instanceof Error ? err.message : "Network error");
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, statsRefreshKey]);
-
-  // Bump statsRefreshKey when the tab transitions to open and on each
-  // CATEGORY_CHANGED_EVENT. Together with the effect above this gives
-  // "always fresh on tab open" + "fresh after archive/restore".
-  useEffect(() => {
-    if (!isOpen) return;
-    setStatsRefreshKey((prev) => prev + 1);
-  }, [isOpen]);
-
+  // CATEGORY_CHANGED_EVENT path: a category mutation (archive /
+  // restore / pending-approval flow) bumps statsRefreshKey here. The
+  // hook below treats refreshKey as a fetch dependency so a bump
+  // while the tab is open triggers an immediate read-through fetch;
+  // a bump while the tab is closed simply means the next open sees
+  // a different refreshKey and refetches once via the hook's normal
+  // enable-driven effect (no double fire).
   useEffect(() => {
     function bump() {
       setStatsRefreshKey((prev) => prev + 1);
@@ -931,6 +922,19 @@ export default function ProvidersTab() {
 
       {isOpen && (
         <div id="providers-tab-body" className="border-t border-slate-200 px-5 py-5">
+          {/* Stage 1 snapshot cache: /api/admin/provider-stats reads
+              through a 6-hour Supabase-backed cache. The bar shows
+              "Last updated", an auto-refresh interval dropdown
+              (persisted in localStorage), and a manual Refresh
+              button. Auto refresh is paused while the tab is
+              collapsed (the hook keys on `enabled`). */}
+          <CacheStatusBar
+            cache={cacheMeta}
+            refreshing={refreshing || loading}
+            onRefresh={refresh}
+            interval={interval}
+            onIntervalChange={setInterval}
+          />
           {loading && (
             <p className="text-sm text-slate-500">Loading provider data…</p>
           )}
@@ -1034,7 +1038,8 @@ export default function ProvidersTab() {
                     {data.verified.toLocaleString()}
                   </p>
                   <p className="mt-1 text-[10px] text-slate-500">
-                    Active category + login last 30 days (excludes under review)
+                    Verified = OTP valid within 30 days + active approved
+                    category + not under review.
                   </p>
                 </button>
               </div>

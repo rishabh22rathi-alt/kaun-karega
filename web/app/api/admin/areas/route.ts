@@ -6,6 +6,29 @@ import {
   resolveCityParam,
   InvalidCityCodeError,
 } from "@/lib/cities/cityContext";
+import { buildVerifiedProviderSet } from "@/lib/admin/verifiedProviders";
+import { buildProvidersUnderReview } from "@/lib/admin/adminProviderReview";
+import {
+  readThroughSnapshotCache,
+  invalidateSnapshots,
+} from "@/lib/admin/snapshotCache";
+
+// Stage A snapshot cache for AreaTab. Whole response payload (regions
+// + areas + aliases + pending area requests) is cached per-city under
+// "area_stats.<city_code>" with a 6-hour TTL. ?refresh=1 forces
+// recompute. Region/area/alias/cleanup mutations invalidate
+// area_stats.<city_code> (see those routes' invalidation calls).
+const CACHE_TTL_SECONDS = 6 * 60 * 60;
+
+// Stage 2 toggle — the "Unmapped Provider Areas" UI in AreaTab is
+// currently hidden (see AreaTab.tsx, the JSX block was removed during
+// the JOD-25 migration cleanup). While the UI is hidden, computing the
+// unmapped_provider_areas array and shipping it in the response is
+// wasted JS work + wasted HTTP bandwidth. Flip this to `true` once the
+// provider-allocation phase brings the section back; no other code
+// change is required because the per-region density loop preserves the
+// same iteration shape either way.
+const INCLUDE_UNMAPPED_PROVIDER_AREAS = false;
 
 // GET /api/admin/areas
 // Returns regions + canonical areas (each with its currently-active aliases
@@ -28,7 +51,6 @@ const MAX_ROWS = 5000;
 // provider_areas is the largest table read here. ~thousands today; cap
 // generously to avoid silent truncation if it grows.
 const PROVIDER_AREAS_LIMIT = 20000;
-const PROVIDERS_LIMIT = 10000;
 
 type RegionRow = {
   region_code: string;
@@ -52,14 +74,11 @@ const toAreaKey = (value: unknown) =>
     .toLowerCase()
     .replace(/[^a-z0-9]/g, "");
 
-// Verified predicate — same defensive check the admin stats page uses.
-// providers.verified is stored as the string "yes"/"no" in the live DB;
-// a stray boolean true is accepted too in case any code path writes it.
-const isVerified = (value: unknown) =>
-  value === true ||
-  String(value ?? "")
-    .trim()
-    .toLowerCase() === "yes";
+// Verified predicate REMOVED. The legacy text-column check
+// (providers.verified === "yes") over-counted imported / never-logged-in
+// providers and drifted from the dashboard tile. Verified counting now
+// goes through buildVerifiedProviderSet() — see
+// web/lib/admin/verifiedProviders.ts for the canonical rule.
 
 type AliasOut = {
   id: string;
@@ -83,7 +102,30 @@ const norm = (v: unknown) => String(v ?? "").trim().toLowerCase();
 const pairKey = (canonical: unknown, region: unknown) =>
   `${norm(canonical)}||${String(region ?? "")}`;
 
+// Cached payload shape — exactly what the GET response embedded in
+// `data` returns. The cache helper is generic over this; matters
+// because the route puts these fields at the response root for
+// backward compatibility with the AreaTab fetch.
+type AreaStatsPayload = {
+  city_code: string;
+  regions: RegionWithCounts[];
+  areas: AreaOut[];
+  unmapped_provider_areas: Array<{ area: string; provider_count: number }>;
+  pending_area_requests: Array<{
+    review_id: string;
+    raw_area: string;
+    occurrences: number;
+    source_ref: string | null;
+    source_type: string | null;
+    last_seen_at: string | null;
+    submitter_name: string | null;
+    submitter_phone: string | null;
+  }>;
+};
+
 export async function GET(request: Request) {
+  // Stage 1 timing — every log line is prefixed [admin-perf] for grep.
+  const tRoute0 = Date.now();
   const auth = await requireAdminSession(request);
   if (!auth.ok) {
     return NextResponse.json(
@@ -121,12 +163,29 @@ export async function GET(request: Request) {
     throw e;
   }
 
+  // ?refresh=1 forces a recompute, bypassing the snapshot cache.
+  const forceRefresh = url.searchParams.get("refresh") === "1";
+
+  // Heavy work — full Supabase read fan-out + JS-side aggregation —
+  // lives inside a compute() closure so readThroughSnapshotCache can
+  // hand us back a fresh payload OR a cached one transparently.
+  // Errors thrown from inside compute() bubble out; the outer try
+  // catches them and surfaces the 500 the same way the old route did.
+  let payload: AreaStatsPayload;
+  let cacheBlock: import("@/lib/admin/snapshotCache").CacheMetadata;
+  try {
+    const result = await readThroughSnapshotCache<AreaStatsPayload>({
+      key: `area_stats.${cityCode}`,
+      ttlSeconds: CACHE_TTL_SECONDS,
+      forceRefresh,
+      adminPhone: auth.admin.phone,
+      compute: async (): Promise<AreaStatsPayload> => {
+  const tFetch0 = Date.now();
   const [
     regionsRes,
     areasRes,
     aliasesRes,
     providerAreasRes,
-    providersRes,
     pendingReviewRes,
   ] = await Promise.all([
       adminSupabase
@@ -160,10 +219,6 @@ export async function GET(request: Request) {
         .select("provider_id, area")
         .limit(PROVIDER_AREAS_LIMIT),
       adminSupabase
-        .from("providers")
-        .select("provider_id, verified")
-        .limit(PROVIDERS_LIMIT),
-      adminSupabase
         .from("area_review_queue")
         .select(
           "review_id, raw_area, occurrences, source_ref, source_type, last_seen_at, city_code"
@@ -174,32 +229,30 @@ export async function GET(request: Request) {
         .order("last_seen_at", { ascending: false })
         .limit(200),
     ]);
+  console.log(
+    `[admin-perf] admin/areas initial Promise.all took ${
+      Date.now() - tFetch0
+    }ms (regions=${(regionsRes.data ?? []).length}, areas=${
+      (areasRes.data ?? []).length
+    }, aliases=${(aliasesRes.data ?? []).length}, provider_areas=${
+      (providerAreasRes.data ?? []).length
+    }, pending_review=${(pendingReviewRes.data ?? []).length})`
+  );
 
   // Hard-fail only on the three core tables. Provider-density reads
   // fail soft: if either errors, regions still render and the counts
   // surface as 0 with a warning so admins see "0 / 0" instead of an
-  // outright 500.
+  // outright 500. Inside the snapshot-cache compute() we throw — the
+  // outer GET wrapper turns the throw into the same DB_ERROR 500
+  // shape callers saw before caching was wrapped around this route.
   if (regionsRes.error || areasRes.error || aliasesRes.error) {
     const err = regionsRes.error || areasRes.error || aliasesRes.error;
-    return NextResponse.json(
-      {
-        ok: false,
-        error: "DB_ERROR",
-        detail: err?.message,
-      },
-      { status: 500 }
-    );
+    throw new Error(`DB_ERROR: ${err?.message ?? "unknown"}`);
   }
   if (providerAreasRes.error) {
     console.warn(
       "[admin/areas] provider_areas read failed; counts will be 0",
       providerAreasRes.error
-    );
-  }
-  if (providersRes.error) {
-    console.warn(
-      "[admin/areas] providers read failed; verified counts will be 0",
-      providersRes.error
     );
   }
   if (pendingReviewRes.error) {
@@ -208,6 +261,52 @@ export async function GET(request: Request) {
       pendingReviewRes.error
     );
   }
+
+  // Stage 2: build the under-review set ONCE here and pass it into the
+  // canonical verified helper. Previously this route called
+  // buildVerifiedProviderSet() with no args, which made the helper
+  // internally call buildProvidersUnderReview() — a 3-table fan-out
+  // (pending_category_requests, category_aliases, area_review_queue,
+  // plus a providers hydrate). With the pre-built set passed through,
+  // the helper skips that work entirely. /api/admin/provider-stats was
+  // already wired this way; admin/areas now matches.
+  const tUr0 = Date.now();
+  let underReviewSet = new Set<string>();
+  try {
+    const review = await buildProvidersUnderReview();
+    underReviewSet = review.providerIdSet;
+  } catch (err) {
+    console.warn(
+      "[admin/areas] under-review aggregation failed; treating as empty",
+      err instanceof Error ? err.message : err
+    );
+  }
+  console.log(
+    `[admin-perf] admin/areas buildProvidersUnderReview took ${
+      Date.now() - tUr0
+    }ms (size=${underReviewSet.size})`
+  );
+
+  // Canonical verified provider set (shared helper — matches the
+  // dashboard tile exactly). Soft-fail to an empty set so a transient
+  // DB error doesn't 500 the whole tab; the per-region counts will
+  // show 0 verified in that case, which is correct conservative
+  // behavior.
+  const tVer0 = Date.now();
+  let verifiedProviderIds = new Set<string>();
+  try {
+    verifiedProviderIds = await buildVerifiedProviderSet({ underReviewSet });
+  } catch (err) {
+    console.warn(
+      "[admin/areas] verified provider set build failed; verified counts will be 0",
+      err instanceof Error ? err.message : err
+    );
+  }
+  console.log(
+    `[admin-perf] admin/areas buildVerifiedProviderSet took ${
+      Date.now() - tVer0
+    }ms (verified_size=${verifiedProviderIds.size})`
+  );
 
   // region_code → region_name lookup for hydration.
   const regionNameByCode = new Map<string, string | null>();
@@ -327,25 +426,17 @@ export async function GET(request: Request) {
     return merged;
   };
 
-  // Verified provider id set.
-  const verifiedProviderIds = new Set<string>();
-  for (const p of (providersRes.data ?? []) as Array<{
-    provider_id: string;
-    verified: unknown;
-  }>) {
-    if (isVerified(p.verified)) {
-      const id = String(p.provider_id ?? "").trim();
-      if (id) verifiedProviderIds.add(id);
-    }
-  }
-
   // Per-region provider Sets — built by walking provider_areas once.
-  // Same pass also collects unmapped provider_areas (rows whose
-  // normalized key matches no active service_region_areas canonical),
-  // grouped by raw area string so admins can see the exact variants.
+  // When INCLUDE_UNMAPPED_PROVIDER_AREAS is true the same pass also
+  // collects unmapped provider_areas (rows whose normalized key matches
+  // no active service_region_areas canonical), grouped by raw area
+  // string. While the AreaTab UI hides that section the unmapped
+  // accumulator is skipped to save JS work and JSON payload.
+  const tDensity0 = Date.now();
   const providersByRegion = new Map<string, Set<string>>();
   const verifiedByRegion = new Map<string, Set<string>>();
-  const unmappedByRawArea = new Map<string, Set<string>>();
+  const unmappedByRawArea: Map<string, Set<string>> | null =
+    INCLUDE_UNMAPPED_PROVIDER_AREAS ? new Map<string, Set<string>>() : null;
   for (const row of (providerAreasRes.data ?? []) as Array<{
     provider_id: string | null;
     area: string | null;
@@ -360,8 +451,9 @@ export async function GET(request: Request) {
     const regions = resolveRegionsForProviderKey(k);
     if (!regions || regions.size === 0) {
       // Unmapped — group by raw display string so casing/spacing
-      // variants surface separately (the cleanup target).
-      if (rawArea) {
+      // variants surface separately (the cleanup target). Skipped
+      // entirely when the UI section is hidden (see flag above).
+      if (unmappedByRawArea && rawArea) {
         const set = unmappedByRawArea.get(rawArea) ?? new Set<string>();
         set.add(providerId);
         unmappedByRawArea.set(rawArea, set);
@@ -383,18 +475,27 @@ export async function GET(request: Request) {
 
   // Sort unmapped by provider_count desc, then alphabetically on tie.
   // Cap at 50 — the long tail is bounded but the admin only needs the
-  // high-impact rows.
-  const unmapped_provider_areas = [...unmappedByRawArea.entries()]
-    .map(([area, providerSet]) => ({
-      area,
-      provider_count: providerSet.size,
-    }))
-    .sort((a, b) => {
-      if (b.provider_count !== a.provider_count)
-        return b.provider_count - a.provider_count;
-      return a.area.localeCompare(b.area);
-    })
-    .slice(0, 50);
+  // high-impact rows. When the flag is off the array is just [].
+  const unmapped_provider_areas = unmappedByRawArea
+    ? [...unmappedByRawArea.entries()]
+        .map(([area, providerSet]) => ({
+          area,
+          provider_count: providerSet.size,
+        }))
+        .sort((a, b) => {
+          if (b.provider_count !== a.provider_count)
+            return b.provider_count - a.provider_count;
+          return a.area.localeCompare(b.area);
+        })
+        .slice(0, 50)
+    : ([] as Array<{ area: string; provider_count: number }>);
+  console.log(
+    `[admin-perf] admin/areas density loop took ${
+      Date.now() - tDensity0
+    }ms (unmapped_enabled=${INCLUDE_UNMAPPED_PROVIDER_AREAS}, unmapped_returned=${
+      unmapped_provider_areas.length
+    })`
+  );
 
   const regions: RegionWithCounts[] = (regionsRes.data ?? []).map((r) => {
     const rc = (r as RegionRow).region_code;
@@ -407,21 +508,13 @@ export async function GET(request: Request) {
     };
   });
 
-  // Hydrate pending area requests with submitter info. Best-effort
-  // join: providers were already loaded above for the verified set,
-  // but we only kept verified ids. Re-build a quick id → {name, phone}
-  // map from the same providersRes payload to avoid a second query.
+  // Hydrate pending area requests with submitter info. The providers
+  // table is no longer pre-loaded by this route (verified counting
+  // moved to the shared helper), so we do one targeted lookup scoped
+  // to the submitter ids we actually need — keeps the GET cheap when
+  // the queue is empty.
   type ProviderMini = { provider_id: string; full_name?: string; phone?: string };
   const providerInfoById = new Map<string, ProviderMini>();
-  for (const p of (providersRes.data ?? []) as Array<
-    ProviderMini & { verified: unknown }
-  >) {
-    const id = String(p.provider_id ?? "").trim();
-    if (id) providerInfoById.set(id, p);
-  }
-  // providersRes was selected with only (provider_id, verified). To get
-  // names + phones, do one extra lookup scoped to the ids we actually
-  // need — keeps the GET cheap when the queue is empty.
   type PendingReviewRow = {
     review_id: string;
     raw_area: string | null;
@@ -465,13 +558,46 @@ export async function GET(request: Request) {
       };
     });
 
+        return {
+          city_code: cityCode,
+          regions,
+          areas,
+          unmapped_provider_areas,
+          pending_area_requests,
+        };
+      },
+    });
+    payload = result.payload;
+    cacheBlock = result.cache;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "compute failed";
+    const detail = message.startsWith("DB_ERROR:")
+      ? message.slice("DB_ERROR:".length).trim()
+      : message;
+    console.error(`[admin-perf] admin/areas compute failed: ${message}`);
+    return NextResponse.json(
+      { ok: false, error: "DB_ERROR", detail },
+      { status: 500 }
+    );
+  }
+
+  console.log(
+    `[admin-perf] admin/areas route TOTAL ${
+      Date.now() - tRoute0
+    }ms (city=${cityCode}, regions=${payload.regions.length}, areas=${
+      payload.areas.length
+    }, pending_review=${payload.pending_area_requests.length}, cached=${
+      cacheBlock.cached
+    }, refresh=${forceRefresh})`
+  );
   return NextResponse.json({
     ok: true,
-    city_code: cityCode,
-    regions,
-    areas,
-    unmapped_provider_areas,
-    pending_area_requests,
+    city_code: payload.city_code,
+    regions: payload.regions,
+    areas: payload.areas,
+    unmapped_provider_areas: payload.unmapped_provider_areas,
+    pending_area_requests: payload.pending_area_requests,
+    cache: cacheBlock,
   });
 }
 
@@ -531,5 +657,10 @@ export async function POST(request: Request) {
     );
   }
 
+  // Resolving a review removes an item from the pending list shown
+  // inside AreaTab; invalidate the city-scoped snapshot so the next
+  // read recomputes. JOD is the only active city today; same caveat
+  // as the area-intelligence route applies if a second city joins.
+  await invalidateSnapshots(["area_stats.JOD"]);
   return NextResponse.json({ ok: true, review_id });
 }

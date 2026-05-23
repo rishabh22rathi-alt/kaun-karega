@@ -1,7 +1,17 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, Pencil, RotateCcw, X } from "lucide-react";
+
+import CacheStatusBar, {
+  type CacheStatusBarMetadata,
+} from "@/components/admin/CacheStatusBar";
+import {
+  type AdminCacheInterval,
+  getAdminCacheInterval,
+  msUntilNextAutoRefresh,
+  setAdminCacheInterval,
+} from "@/lib/admin/adminCachePreferences";
 
 // Area Management accordion for /admin/dashboard.
 // Hierarchy: Region → Area → Aliases. Regions are the top-level cards;
@@ -206,6 +216,25 @@ export default function AreaTab() {
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  // Snapshot-cache wiring for AreaTab. We keep the existing fetch
+  // effect (it has many setters) and layer cache metadata, manual
+  // refresh, and interval-driven auto refresh on top.
+  const [cacheMeta, setCacheMeta] =
+    useState<CacheStatusBarMetadata | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  // forceRefreshOnce → next fetch appends ?refresh=1. Reset by the
+  // fetch effect after it runs. Lets the Refresh button trigger a
+  // recompute without growing a second copy of the load logic.
+  const [forceRefreshOnce, setForceRefreshOnce] = useState(false);
+  const [autoInterval, setAutoIntervalState] = useState<AdminCacheInterval>(
+    () => getAdminCacheInterval("area_stats", "manual")
+  );
+  const setAutoInterval = useCallback((next: AdminCacheInterval) => {
+    setAutoIntervalState(next);
+    setAdminCacheInterval("area_stats", next);
+  }, []);
+  // Single-shot setTimeout for auto refresh — never a polling loop.
+  const autoTimerRef = useRef<number | null>(null);
 
   // Add-area form (top-level)
   const [newCanonical, setNewCanonical] = useState("");
@@ -278,47 +307,252 @@ export default function AreaTab() {
   const [actionInProgress, setActionInProgress] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
+  // Legacy R-* region cleanup — temporary admin maintenance widget.
+  // Two-click flow: first click runs a dry-run (GET); the result is
+  // surfaced inline; a second click on the confirm button triggers the
+  // POST with ?dryRun=false. See
+  // /api/admin/area-intelligence/cleanup-legacy-regions for the safety
+  // rules — orphan-risk regions are skipped, not deleted.
+  type CleanupReference = {
+    table: "provider_areas" | "tasks" | "area_review_queue";
+    legacy_name: string;
+    count: number;
+  };
+  type CleanupCandidate = {
+    region_code: string;
+    region_name: string | null;
+    safe: boolean;
+    legacy_area_count: number;
+    legacy_alias_count: number;
+    references: CleanupReference[];
+    orphan_risk_names: string[];
+    skip_reason: string | null;
+  };
+  type CleanupWarning = {
+    region_code: string;
+    region_name: string | null;
+    orphan_risk_names: string[];
+    reference_counts: { table: string; name: string; count: number }[];
+  };
+  type CleanupSummary = {
+    ok: true;
+    dryRun: boolean;
+    force: boolean;
+    candidates: CleanupCandidate[];
+    warnings: CleanupWarning[];
+    deleted: Array<{
+      region_code: string;
+      region_name: string | null;
+      areas_deleted: number;
+      aliases_deleted: number;
+    }>;
+    skipped: Array<{
+      region_code: string;
+      region_name: string | null;
+      reason: string;
+    }>;
+    counts: {
+      regionsFound: number;
+      regionsDeleted: number;
+      regionsSkipped: number;
+      areasDeleted: number;
+      aliasesDeleted: number;
+    };
+  };
+  type CleanupState =
+    | { phase: "idle" }
+    | { phase: "loading-dryrun" }
+    | { phase: "dryrun-ready"; summary: CleanupSummary }
+    | { phase: "loading-delete" }
+    | { phase: "loading-force-delete" }
+    | { phase: "done"; summary: CleanupSummary }
+    | { phase: "error"; message: string };
+  const [cleanupState, setCleanupState] = useState<CleanupState>({
+    phase: "idle",
+  });
+  const runCleanupDryRun = async () => {
+    setCleanupState({ phase: "loading-dryrun" });
+    try {
+      const res = await fetch(
+        "/api/admin/area-intelligence/cleanup-legacy-regions",
+        { method: "GET", cache: "no-store" }
+      );
+      const json = (await res.json()) as
+        | CleanupSummary
+        | { ok: false; error?: string; detail?: string };
+      if (!res.ok || !("ok" in json) || !json.ok) {
+        const msg =
+          ("detail" in json && json.detail) ||
+          ("error" in json && json.error) ||
+          `Dry-run failed (HTTP ${res.status})`;
+        setCleanupState({ phase: "error", message: String(msg) });
+        return;
+      }
+      setCleanupState({ phase: "dryrun-ready", summary: json });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Network error";
+      setCleanupState({ phase: "error", message: msg });
+    }
+  };
+  const runCleanupDelete = async () => {
+    setCleanupState({ phase: "loading-delete" });
+    try {
+      const res = await fetch(
+        "/api/admin/area-intelligence/cleanup-legacy-regions?dryRun=false",
+        { method: "POST" }
+      );
+      const json = (await res.json()) as
+        | CleanupSummary
+        | { ok: false; error?: string; detail?: string };
+      if (!res.ok || !("ok" in json) || !json.ok) {
+        const msg =
+          ("detail" in json && json.detail) ||
+          ("error" in json && json.error) ||
+          `Delete failed (HTTP ${res.status})`;
+        setCleanupState({ phase: "error", message: String(msg) });
+        return;
+      }
+      setCleanupState({ phase: "done", summary: json });
+      setRefreshKey((p) => p + 1); // reload the region list
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Network error";
+      setCleanupState({ phase: "error", message: msg });
+    }
+  };
+  // Force-delete path — bypasses the orphan-risk guard on the server.
+  // Only callable from the dry-run-ready UI state and gated by a
+  // browser confirm() so the bypass is never one-click. provider_areas,
+  // tasks, and area_review_queue are not touched; the route returns
+  // warnings describing the references that were left in place.
+  const runCleanupForceDelete = async () => {
+    const proceed = window.confirm(
+      "This will remove old inactive R-* regions even if provider area references exist. Continue?"
+    );
+    if (!proceed) return;
+    setCleanupState({ phase: "loading-force-delete" });
+    try {
+      const res = await fetch(
+        "/api/admin/area-intelligence/cleanup-legacy-regions?dryRun=false&force=true",
+        { method: "POST" }
+      );
+      const json = (await res.json()) as
+        | CleanupSummary
+        | { ok: false; error?: string; detail?: string };
+      if (!res.ok || !("ok" in json) || !json.ok) {
+        const msg =
+          ("detail" in json && json.detail) ||
+          ("error" in json && json.error) ||
+          `Force delete failed (HTTP ${res.status})`;
+        setCleanupState({ phase: "error", message: String(msg) });
+        return;
+      }
+      setCleanupState({ phase: "done", summary: json });
+      setRefreshKey((p) => p + 1);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Network error";
+      setCleanupState({ phase: "error", message: msg });
+    }
+  };
+
   useEffect(() => {
     if (!isOpen) return;
     if (activeTab !== "approved") return;
     let cancelled = false;
-    setLoading(true);
+    const force = forceRefreshOnce;
+    if (force) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+    }
     setLoadError(null);
-    fetch("/api/admin/areas", { cache: "no-store" })
+    const url = force
+      ? "/api/admin/areas?refresh=1"
+      : "/api/admin/areas";
+    fetch(url, { cache: "no-store" })
       .then((r) => r.json())
-      .then((res: LoadResponse) => {
-        if (cancelled) return;
-        if (res?.ok && Array.isArray(res.areas) && Array.isArray(res.regions)) {
-          setAreas(res.areas);
-          setRegions(res.regions);
-          setUnmappedProviderAreas(
-            Array.isArray(res.unmapped_provider_areas)
-              ? res.unmapped_provider_areas
-              : []
-          );
-          setPendingAreaRequests(
-            Array.isArray(res.pending_area_requests)
-              ? res.pending_area_requests
-              : []
-          );
-        } else {
-          setLoadError(res?.error || "Failed to load areas");
+      .then(
+        (
+          res: LoadResponse & { cache?: CacheStatusBarMetadata }
+        ) => {
+          if (cancelled) return;
+          if (res?.ok && Array.isArray(res.areas) && Array.isArray(res.regions)) {
+            setAreas(res.areas);
+            setRegions(res.regions);
+            setUnmappedProviderAreas(
+              Array.isArray(res.unmapped_provider_areas)
+                ? res.unmapped_provider_areas
+                : []
+            );
+            setPendingAreaRequests(
+              Array.isArray(res.pending_area_requests)
+                ? res.pending_area_requests
+                : []
+            );
+            setCacheMeta(res.cache ?? null);
+          } else {
+            setLoadError(res?.error || "Failed to load areas");
+            // On a manual refresh failure, keep the old cacheMeta so
+            // the UI still shows what we last had.
+            if (!force) setCacheMeta(null);
+          }
         }
-      })
+      )
       .catch((err: unknown) => {
         if (cancelled) return;
         setLoadError(err instanceof Error ? err.message : "Network error");
+        if (!force) setCacheMeta(null);
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (cancelled) return;
+        if (force) {
+          setRefreshing(false);
+          setForceRefreshOnce(false);
+        } else {
+          setLoading(false);
+        }
       });
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, activeTab, refreshKey]);
+  }, [isOpen, activeTab, refreshKey, forceRefreshOnce]);
 
   const refresh = () => setRefreshKey((p) => p + 1);
+
+  // Manual refresh — bypasses snapshot cache via ?refresh=1.
+  const handleManualRefresh = useCallback(() => {
+    if (refreshing) return;
+    setForceRefreshOnce(true);
+    setRefreshKey((p) => p + 1);
+  }, [refreshing]);
+
+  // Auto refresh scheduled by a single setTimeout — re-armed on each
+  // cacheMeta update, interval change, or tab open. Cleared on
+  // unmount / tab close. No polling loops.
+  useEffect(() => {
+    const cancelTimer = () => {
+      if (autoTimerRef.current !== null) {
+        window.clearTimeout(autoTimerRef.current);
+        autoTimerRef.current = null;
+      }
+    };
+    cancelTimer();
+    if (!isOpen) return;
+    if (activeTab !== "approved") return;
+    if (autoInterval === "manual") return;
+    const remaining = msUntilNextAutoRefresh(
+      cacheMeta,
+      autoInterval,
+      Date.now()
+    );
+    if (remaining === null) return;
+    autoTimerRef.current = window.setTimeout(() => {
+      autoTimerRef.current = null;
+      setForceRefreshOnce(true);
+      setRefreshKey((p) => p + 1);
+    }, remaining);
+    return cancelTimer;
+  }, [isOpen, activeTab, cacheMeta, autoInterval]);
 
   // Group areas by region_code for the tree view. Areas already arrive
   // sorted by (region_code, canonical_area) from the server.
@@ -1490,6 +1724,17 @@ export default function AreaTab() {
 
           {activeTab === "approved" && (
             <div className="mt-4 space-y-4">
+              {/* Snapshot cache status — same component the other
+                  admin tabs use. Auto-refresh interval persists per
+                  admin in localStorage; manual Refresh calls
+                  ?refresh=1 to bypass the 6-hour server cache. */}
+              <CacheStatusBar
+                cache={cacheMeta}
+                refreshing={refreshing || loading}
+                onRefresh={handleManualRefresh}
+                interval={autoInterval}
+                onIntervalChange={setAutoInterval}
+              />
               {/* Create Region — POST /api/admin/area-intelligence
                   target:"region". Sits above the canonical-area add form
                   because regions are the parent layer; until a region
@@ -1612,6 +1857,226 @@ export default function AreaTab() {
                   <DupWarning
                     text={`This area already exists in: ${dupNewArea.region_code} ${dupNewArea.region_name ?? ""}`}
                   />
+                ) : null}
+              </div>
+
+              {/* Legacy R-* cleanup widget — temporary maintenance UI.
+                  First click runs a dry-run; the result lists candidate
+                  regions, skipped ones, and reference counts. The actual
+                  delete is gated behind a second confirm click. The
+                  underlying route refuses to delete any region whose
+                  legacy area names lack an active JOD-* replacement. */}
+              <div className="rounded-lg border border-amber-200 bg-amber-50/60 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-sm font-semibold text-amber-900">
+                    Legacy R-* region cleanup (JOD)
+                  </div>
+                  {cleanupState.phase === "idle" ||
+                  cleanupState.phase === "error" ? (
+                    <button
+                      type="button"
+                      onClick={() => void runCleanupDryRun()}
+                      className="rounded-md border border-amber-400 bg-white px-3 py-1.5 text-xs font-semibold text-amber-900 shadow-sm hover:bg-amber-100"
+                    >
+                      Cleanup old inactive R-* regions
+                    </button>
+                  ) : null}
+                  {cleanupState.phase === "loading-dryrun" ? (
+                    <span className="text-xs text-amber-900">
+                      Running dry-run…
+                    </span>
+                  ) : null}
+                  {cleanupState.phase === "dryrun-ready" ? (
+                    (() => {
+                      const safeCount =
+                        cleanupState.summary.candidates.filter(
+                          (c) => c.safe
+                        ).length;
+                      const skipCount =
+                        cleanupState.summary.candidates.filter(
+                          (c) => !c.safe
+                        ).length;
+                      // The force-delete escape hatch is offered only
+                      // when the guarded path would otherwise be a
+                      // no-op (0 safe candidates) and there's actually
+                      // something to remove (>0 skipped).
+                      const showForce = safeCount === 0 && skipCount > 0;
+                      return (
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setCleanupState({ phase: "idle" })}
+                            className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void runCleanupDelete()}
+                            disabled={safeCount === 0}
+                            className="rounded-md bg-red-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            Confirm DELETE {safeCount} region(s)
+                          </button>
+                          {showForce ? (
+                            <button
+                              type="button"
+                              onClick={() => void runCleanupForceDelete()}
+                              className="rounded-md border-2 border-red-700 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-800 shadow-sm hover:bg-red-100"
+                              title="Bypass orphan-risk guard and delete legacy R-* catalog rows. provider_areas, tasks, and area_review_queue are not touched."
+                            >
+                              Force DELETE old inactive R-* regions ({skipCount})
+                            </button>
+                          ) : null}
+                        </div>
+                      );
+                    })()
+                  ) : null}
+                  {cleanupState.phase === "loading-delete" ? (
+                    <span className="text-xs text-red-700">Deleting…</span>
+                  ) : null}
+                  {cleanupState.phase === "loading-force-delete" ? (
+                    <span className="text-xs font-semibold text-red-800">
+                      Force-deleting…
+                    </span>
+                  ) : null}
+                  {cleanupState.phase === "done" ? (
+                    <button
+                      type="button"
+                      onClick={() => setCleanupState({ phase: "idle" })}
+                      className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
+                    >
+                      Close
+                    </button>
+                  ) : null}
+                </div>
+                {cleanupState.phase === "error" ? (
+                  <p
+                    className="mt-2 rounded bg-red-50 px-2 py-1 text-xs font-medium text-red-700"
+                    role="alert"
+                  >
+                    {cleanupState.message}
+                  </p>
+                ) : null}
+                {cleanupState.phase === "dryrun-ready" ||
+                cleanupState.phase === "done" ? (
+                  <div className="mt-2 space-y-2 text-xs text-amber-950">
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 font-medium">
+                      <span>
+                        Found:{" "}
+                        {cleanupState.summary.counts.regionsFound}
+                      </span>
+                      {cleanupState.phase === "done" ? (
+                        <>
+                          <span className="text-emerald-800">
+                            Deleted:{" "}
+                            {cleanupState.summary.counts.regionsDeleted} (
+                            {cleanupState.summary.counts.areasDeleted} areas,{" "}
+                            {cleanupState.summary.counts.aliasesDeleted}{" "}
+                            aliases)
+                          </span>
+                          <span className="text-amber-900">
+                            Skipped:{" "}
+                            {cleanupState.summary.counts.regionsSkipped}
+                          </span>
+                        </>
+                      ) : (
+                        <span>
+                          Safe to delete:{" "}
+                          {
+                            cleanupState.summary.candidates.filter(
+                              (c) => c.safe
+                            ).length
+                          }{" "}
+                          / Will be skipped:{" "}
+                          {
+                            cleanupState.summary.candidates.filter(
+                              (c) => !c.safe
+                            ).length
+                          }
+                        </span>
+                      )}
+                    </div>
+                    {cleanupState.summary.candidates.length === 0 ? (
+                      <p className="text-amber-900">
+                        No legacy R-* inactive regions found. Nothing to do.
+                      </p>
+                    ) : (
+                      <ul className="max-h-60 space-y-1 overflow-y-auto rounded border border-amber-200 bg-white p-2">
+                        {cleanupState.summary.candidates.map((c) => (
+                          <li
+                            key={c.region_code}
+                            className="flex flex-col gap-0.5 border-b border-amber-100 pb-1 last:border-b-0 last:pb-0"
+                          >
+                            <span className="font-medium">
+                              {c.region_code}{" "}
+                              <span className="text-slate-500">
+                                — {c.region_name ?? "(no name)"}
+                              </span>{" "}
+                              <span
+                                className={
+                                  c.safe
+                                    ? "text-emerald-700"
+                                    : "text-red-700"
+                                }
+                              >
+                                [{c.safe ? "SAFE" : "SKIP"}]
+                              </span>{" "}
+                              <span className="text-slate-500">
+                                {c.legacy_area_count} areas /{" "}
+                                {c.legacy_alias_count} aliases
+                              </span>
+                            </span>
+                            {c.references.length > 0 ? (
+                              <span className="text-[11px] text-slate-600">
+                                refs:{" "}
+                                {c.references
+                                  .map(
+                                    (r) =>
+                                      `${r.table}/${r.legacy_name} × ${r.count}`
+                                  )
+                                  .join(" · ")}
+                              </span>
+                            ) : null}
+                            {c.skip_reason ? (
+                              <span className="text-[11px] text-red-700">
+                                {c.skip_reason}
+                              </span>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {/* Warnings surface ONLY after a completed run.
+                        They list regions that were force-deleted
+                        while leaving downstream references in place. */}
+                    {cleanupState.phase === "done" &&
+                    cleanupState.summary.warnings.length > 0 ? (
+                      <div className="rounded border border-red-300 bg-red-50 p-2">
+                        <p className="text-[11px] font-semibold text-red-800">
+                          Force-deleted with bypass — references left in
+                          place (provider_areas / tasks / area_review_queue
+                          rows untouched):
+                        </p>
+                        <ul className="mt-1 space-y-1 text-[11px] text-red-900">
+                          {cleanupState.summary.warnings.map((w) => (
+                            <li key={w.region_code}>
+                              <span className="font-medium">
+                                {w.region_code}
+                              </span>{" "}
+                              — {w.region_name ?? "(no name)"} ·{" "}
+                              {w.reference_counts
+                                .map(
+                                  (r) =>
+                                    `${r.table}/${r.name} × ${r.count}`
+                                )
+                                .join(" · ") || "no refs"}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+                  </div>
                 ) : null}
               </div>
 
@@ -1857,239 +2322,15 @@ export default function AreaTab() {
                 </div>
               )}
 
-              {/* Diagnostics — provider_areas.area values not mapped to any
-                  active service_region_areas canonical. Read-only for now;
-                  next step is a one-click "add as area / alias" affordance
-                  per row. Section is hidden while a search filter is
-                  active (it's dataset-wide and would just clutter focused
-                  results). */}
-              {!searchView.active && unmappedProviderAreas.length > 0 ? (
-                <section className="mt-6 overflow-hidden rounded-xl border border-slate-200">
-                  <header className="flex flex-wrap items-baseline justify-between gap-2 border-b border-slate-200 bg-slate-50 px-3 py-2">
-                    <div>
-                      <h3 className="text-sm font-semibold text-slate-800">
-                        Unmapped Provider Areas
-                      </h3>
-                      <p className="text-[11px] text-slate-500">
-                        Provider areas that don't resolve to any region's
-                        canonical area. Top {unmappedProviderAreas.length}{" "}
-                        by provider count.
-                      </p>
-                    </div>
-                  </header>
-                  {/* Wrap the table only (not the header) so narrow
-                      viewports get horizontal scroll on the 5-col table
-                      without breaking the section's rounded corners. */}
-                  <div className="overflow-x-auto">
-                  <table className="min-w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-slate-200 bg-white text-left text-[11px] font-bold uppercase tracking-wider text-slate-500">
-                        <th className="px-3 py-2">Provider Area</th>
-                        <th className="px-3 py-2">Providers</th>
-                        <th className="px-3 py-2">Region</th>
-                        <th className="px-3 py-2">Add as Area</th>
-                        <th className="px-3 py-2">Add as Alias of…</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {unmappedProviderAreas.map((row) => {
-                        const selectedRegion =
-                          promoteRegionByArea[row.area] ?? "";
-                        const selectedCanonical =
-                          promoteCanonicalByArea[row.area] ?? "";
-                        const status = promoteStatusByArea[row.area];
-                        const isSaving = status?.state === "saving";
-                        // Cross-region area duplicate (informational; same-
-                        // region duplicate is blocked by the API).
-                        const areaDup = findDuplicateArea(
-                          row.area,
-                          allAreas,
-                          null
-                        );
-                        const areaCrossRegionDup =
-                          areaDup && areaDup.region_code !== selectedRegion;
-                        const areaConfirmRequired =
-                          areaCrossRegionDup &&
-                          !promoteAreaConfirmedFor.has(row.area);
-                        // Cross-region alias duplicate (informational).
-                        const aliasDup = findDuplicateAlias(
-                          row.area,
-                          allAreas,
-                          null
-                        );
-                        const aliasCrossRegionDup =
-                          aliasDup &&
-                          aliasDup.area.region_code !== selectedRegion;
-                        const aliasConfirmRequired =
-                          aliasCrossRegionDup &&
-                          !promoteAliasConfirmedFor.has(row.area);
-                        // Canonicals available for the selected region —
-                        // alias creation requires a (canonical, region)
-                        // pair that already exists in service_region_areas.
-                        const canonicalsInRegion = selectedRegion
-                          ? (areas ?? []).filter(
-                              (a) =>
-                                a.region_code === selectedRegion && a.active
-                            )
-                          : [];
-                        return (
-                          <tr
-                            key={row.area}
-                            className="border-b border-slate-100 align-top last:border-b-0"
-                          >
-                            <td className="px-3 py-2 font-medium text-slate-800">
-                              {row.area}
-                              {areaDup ? (
-                                <DupWarning
-                                  text={`Same canonical exists in: ${areaDup.region_code} ${areaDup.region_name ?? ""}`}
-                                />
-                              ) : null}
-                              {aliasDup ? (
-                                <DupWarning
-                                  text={`Same alias text exists under: ${aliasDup.area.canonical_area} / ${aliasDup.area.region_code}`}
-                                />
-                              ) : null}
-                            </td>
-                            <td className="px-3 py-2 text-slate-700">
-                              <span className="font-semibold">
-                                {row.provider_count}
-                              </span>
-                            </td>
-                            <td className="px-3 py-2">
-                              <select
-                                value={selectedRegion}
-                                onChange={(e) => {
-                                  const v = e.target.value;
-                                  setPromoteRegionByArea((prev) => ({
-                                    ...prev,
-                                    [row.area]: v,
-                                  }));
-                                  // Region change invalidates the canonical
-                                  // selection (canonicals are region-scoped).
-                                  setPromoteCanonicalByArea((prev) => ({
-                                    ...prev,
-                                    [row.area]: "",
-                                  }));
-                                  // Changing region also resets any pending
-                                  // cross-region confirmation flags.
-                                  setPromoteAreaConfirmedFor((prev) => {
-                                    const next = new Set(prev);
-                                    next.delete(row.area);
-                                    return next;
-                                  });
-                                  setPromoteAliasConfirmedFor((prev) => {
-                                    const next = new Set(prev);
-                                    next.delete(row.area);
-                                    return next;
-                                  });
-                                }}
-                                disabled={isSaving}
-                                className="rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900 outline-none focus:border-[#003d20] focus:ring-1 focus:ring-[#003d20]/20"
-                                aria-label={`Pick region for ${row.area}`}
-                              >
-                                <option value="">— region —</option>
-                                {sortedRegions.map((r) => (
-                                  <option
-                                    key={r.region_code}
-                                    value={r.region_code}
-                                  >
-                                    {r.region_code} — {r.region_name}
-                                  </option>
-                                ))}
-                              </select>
-                            </td>
-                            <td className="px-3 py-2">
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handlePromoteUnmapped(row.area);
-                                }}
-                                disabled={!selectedRegion || isSaving}
-                                className="rounded bg-[#003d20] px-3 py-1 text-xs font-semibold text-white shadow-sm transition hover:bg-[#002a15] disabled:cursor-not-allowed disabled:opacity-50"
-                              >
-                                {isSaving
-                                  ? "Adding…"
-                                  : areaConfirmRequired
-                                    ? "Add anyway"
-                                    : "Add as Area"}
-                              </button>
-                            </td>
-                            <td className="px-3 py-2">
-                              <div className="flex flex-col gap-1">
-                                <select
-                                  value={selectedCanonical}
-                                  onChange={(e) =>
-                                    setPromoteCanonicalByArea((prev) => ({
-                                      ...prev,
-                                      [row.area]: e.target.value,
-                                    }))
-                                  }
-                                  disabled={!selectedRegion || isSaving}
-                                  className="rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900 outline-none focus:border-[#003d20] focus:ring-1 focus:ring-[#003d20]/20 disabled:cursor-not-allowed disabled:opacity-50"
-                                  aria-label={`Pick canonical for ${row.area}`}
-                                >
-                                  <option value="">
-                                    {selectedRegion
-                                      ? canonicalsInRegion.length === 0
-                                        ? "(no canonicals in region)"
-                                        : "— canonical —"
-                                      : "(pick region first)"}
-                                  </option>
-                                  {canonicalsInRegion.map((a) => (
-                                    <option
-                                      key={a.area_code}
-                                      value={a.canonical_area}
-                                    >
-                                      {a.canonical_area}
-                                    </option>
-                                  ))}
-                                </select>
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handlePromoteAsAlias(row.area);
-                                  }}
-                                  disabled={
-                                    !selectedRegion ||
-                                    !selectedCanonical ||
-                                    isSaving
-                                  }
-                                  className="rounded border border-[#003d20]/40 bg-white px-3 py-1 text-xs font-semibold text-[#003d20] transition hover:bg-[#003d20]/5 disabled:cursor-not-allowed disabled:opacity-50"
-                                >
-                                  {isSaving
-                                    ? "Adding…"
-                                    : aliasConfirmRequired
-                                      ? "Add anyway"
-                                      : "Add as Alias"}
-                                </button>
-                                {status?.message ? (
-                                  <span
-                                    className={
-                                      status.state === "error"
-                                        ? "rounded bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-700"
-                                        : "rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-800"
-                                    }
-                                    role={
-                                      status.state === "error"
-                                        ? "alert"
-                                        : undefined
-                                    }
-                                  >
-                                    {status.message}
-                                  </span>
-                                ) : null}
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                  </div>
-                </section>
-              ) : null}
+              {/* "Unmapped Provider Areas" diagnostics section was hidden
+                  here as part of the JOD-25 migration cleanup. The
+                  free-text rows it surfaced reflected the pre-rebuild
+                  area space and were confusing to act on while provider
+                  re-allocation is still pending its own phase. State,
+                  fetch (unmapped_provider_areas in /api/admin/areas),
+                  and the handlePromoteUnmapped / handlePromoteAsAlias
+                  handlers are intentionally left in place so the
+                  section can be restored in one diff if needed. */}
             </div>
           )}
 
@@ -2554,6 +2795,7 @@ function RegionCard({
           ) : null}
           {typeof region.verified_provider_count === "number" ? (
             <span
+              title="Verified = OTP valid within 30 days + active approved category + not under review."
               className={
                 region.verified_provider_count > 0
                   ? "inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-emerald-800"

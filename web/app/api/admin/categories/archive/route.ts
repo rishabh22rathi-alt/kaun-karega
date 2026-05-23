@@ -5,6 +5,7 @@ import {
   listCategoryArchives,
 } from "@/lib/admin/adminCategoryMutations";
 import { requireAdminSession } from "@/lib/adminAuth";
+import { invalidateSnapshots } from "@/lib/admin/snapshotCache";
 
 // /api/admin/categories/archive
 //
@@ -86,5 +87,19 @@ export async function POST(request: Request) {
       { status }
     );
   }
+  // Archiving a category changes the Approved list, the archive list,
+  // and every downstream provider/area-stats aggregate that gates on
+  // categories.active. Soft-fail policy in invalidateSnapshots means
+  // a cache DB error here can never roll back the archive itself.
+  await invalidateSnapshots([
+    "categories.list",
+    "provider_stats",
+    "provider_stats.by_category",
+    "provider_stats.by_category.verified",
+    "area_stats.JOD",
+    "pending_category_requests",
+    "aliases.pending",
+    "aliases.active",
+  ]);
   return NextResponse.json({ ok: true, archived: result.archived });
 }

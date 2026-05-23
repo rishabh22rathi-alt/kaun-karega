@@ -2,9 +2,30 @@ import { NextResponse } from "next/server";
 
 import { requireAdminSession } from "@/lib/adminAuth";
 import { adminSupabase } from "@/lib/supabase/admin";
+import {
+  readThroughSnapshotCache,
+  type CacheMetadata,
+} from "@/lib/admin/snapshotCache";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
+
+// Snapshot cache: this list rarely changes minute-to-minute and the
+// computation is heavy (profile scan + chunked tasks fan-out).
+// 6-hour TTL; ?refresh=1 bypasses.
+const CACHE_KEY = "users.admin";
+const CACHE_TTL_SECONDS = 6 * 60 * 60;
+
+type UsersPayload = {
+  totalUsers: number;
+  users: Array<{
+    phone: string;
+    name: string | null;
+    created_at: string | null;
+    totalRequests: number;
+    latestRequestAt: string | null;
+  }>;
+};
 
 // GET /api/admin/users
 //
@@ -59,15 +80,7 @@ function pickCreatedAt(row: ProfileRow): string | null {
   return last || null;
 }
 
-export async function GET(request: Request) {
-  const auth = await requireAdminSession(request);
-  if (!auth.ok) {
-    return NextResponse.json(
-      { success: false, error: "Unauthorized" },
-      { status: 401 }
-    );
-  }
-
+async function computeUsersPayload(): Promise<UsersPayload> {
   // Count: exact, head-only — unaffected by the 1000-row default range.
   const countRes = await adminSupabase
     .from("profiles")
@@ -77,10 +90,7 @@ export async function GET(request: Request) {
 
   if (countRes.error) {
     console.error("[admin/users] profiles count error:", countRes.error);
-    return NextResponse.json(
-      { success: false, error: "Failed to count users" },
-      { status: 500 }
-    );
+    throw new Error("Failed to count users");
   }
   const totalUsers = Number(countRes.count ?? 0);
 
@@ -96,10 +106,7 @@ export async function GET(request: Request) {
 
   if (profilesRes.error) {
     console.error("[admin/users] profiles fetch error:", profilesRes.error);
-    return NextResponse.json(
-      { success: false, error: "Failed to fetch users" },
-      { status: 500 }
-    );
+    throw new Error("Failed to fetch users");
   }
 
   const profileRows = (profilesRes.data ?? []) as ProfileRow[];
@@ -168,10 +175,7 @@ export async function GET(request: Request) {
 
       if (tasksRes.error) {
         console.error("[admin/users] tasks fetch error:", tasksRes.error);
-        return NextResponse.json(
-          { success: false, error: "Failed to fetch tasks" },
-          { status: 500 }
-        );
+        throw new Error("Failed to fetch tasks");
       }
       for (const raw of (tasksRes.data ?? []) as TaskAggregateRow[]) {
         const p10 = normalizePhone10(raw.phone);
@@ -206,9 +210,49 @@ export async function GET(request: Request) {
     return 0;
   });
 
+  return { totalUsers, users };
+}
+
+export async function GET(request: Request) {
+  const auth = await requireAdminSession(request);
+  if (!auth.ok) {
+    return NextResponse.json(
+      { success: false, error: "Unauthorized" },
+      { status: 401 }
+    );
+  }
+
+  const forceRefresh =
+    new URL(request.url).searchParams.get("refresh") === "1";
+
+  let payload: UsersPayload;
+  let cache: CacheMetadata;
+  try {
+    const result = await readThroughSnapshotCache<UsersPayload>({
+      key: CACHE_KEY,
+      ttlSeconds: CACHE_TTL_SECONDS,
+      forceRefresh,
+      adminPhone: auth.admin.phone,
+      compute: computeUsersPayload,
+    });
+    payload = result.payload;
+    cache = result.cache;
+  } catch (err) {
+    return NextResponse.json(
+      {
+        success: false,
+        error: err instanceof Error ? err.message : "compute failed",
+      },
+      { status: 500 }
+    );
+  }
+
+  // Original response shape preserved (success/totalUsers/users top-level);
+  // cache block is additive so existing clients ignore it cleanly.
   return NextResponse.json({
     success: true,
-    totalUsers,
-    users,
+    totalUsers: payload.totalUsers,
+    users: payload.users,
+    cache,
   });
 }

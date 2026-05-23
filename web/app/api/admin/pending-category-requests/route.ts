@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 
 import { requireAdminSession } from "@/lib/adminAuth";
 import { adminSupabase } from "@/lib/supabase/admin";
+import { readThroughSnapshotCache } from "@/lib/admin/snapshotCache";
 
 // Dedicated read for the admin dashboard's "Pending Category Requests"
 // section — isolated from /api/admin/stats so a failure in any sibling
@@ -173,12 +174,21 @@ async function backfillOrphanPendingRequests(): Promise<void> {
   }
 }
 
-export async function GET(request: Request) {
-  const auth = await requireAdminSession(request);
-  if (!auth.ok) {
-    return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-  }
-
+async function computePendingCategoryApplications(): Promise<{
+  categoryApplications: Array<{
+    RequestID: string;
+    ProviderName: string;
+    ProviderID: string;
+    Phone: string;
+    RequestedCategory: string;
+    Area?: string;
+    Status: string;
+    CreatedAt: string;
+    AdminActionBy?: string;
+    AdminActionAt?: string;
+    AdminActionReason?: string;
+  }>;
+}> {
   // Best-effort backfill BEFORE the read so orphan-leaked categories
   // surface in this same response. Soft-fails internally — never blocks
   // the read.
@@ -197,10 +207,7 @@ export async function GET(request: Request) {
 
   if (error) {
     console.error("[admin/pending-category-requests] fetch failed", error);
-    return NextResponse.json(
-      { ok: false, error: error.message || "Failed to fetch" },
-      { status: 500 }
-    );
+    throw new Error(error.message || "Failed to fetch");
   }
 
   const rawRows = data ?? [];
@@ -264,5 +271,44 @@ export async function GET(request: Request) {
     };
   });
 
-  return NextResponse.json({ ok: true, categoryApplications });
+  return { categoryApplications };
+}
+
+export async function GET(request: Request) {
+  const auth = await requireAdminSession(request);
+  if (!auth.ok) {
+    return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+  }
+
+  const forceRefresh =
+    new URL(request.url).searchParams.get("refresh") === "1";
+
+  type Payload = Awaited<ReturnType<typeof computePendingCategoryApplications>>;
+  let payload: Payload;
+  let cache: import("@/lib/admin/snapshotCache").CacheMetadata;
+  try {
+    const result = await readThroughSnapshotCache<Payload>({
+      key: "pending_category_requests",
+      ttlSeconds: 15 * 60,
+      forceRefresh,
+      adminPhone: auth.admin.phone,
+      compute: computePendingCategoryApplications,
+    });
+    payload = result.payload;
+    cache = result.cache;
+  } catch (err) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: err instanceof Error ? err.message : "Failed to fetch",
+      },
+      { status: 500 }
+    );
+  }
+
+  return NextResponse.json({
+    ok: true,
+    categoryApplications: payload.categoryApplications,
+    cache,
+  });
 }

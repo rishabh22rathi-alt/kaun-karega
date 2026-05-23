@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { restoreCategoryFromArchive } from "@/lib/admin/adminCategoryMutations";
 import { requireAdminSession } from "@/lib/adminAuth";
+import { invalidateSnapshots } from "@/lib/admin/snapshotCache";
 
 // /api/admin/categories/restore
 //
@@ -59,5 +60,16 @@ export async function POST(request: Request) {
       { status }
     );
   }
+  // Restoring re-activates a category — same dependents as archive.
+  await invalidateSnapshots([
+    "categories.list",
+    "provider_stats",
+    "provider_stats.by_category",
+    "provider_stats.by_category.verified",
+    "area_stats.JOD",
+    "pending_category_requests",
+    "aliases.pending",
+    "aliases.active",
+  ]);
   return NextResponse.json({ ok: true, restored: result.restored });
 }

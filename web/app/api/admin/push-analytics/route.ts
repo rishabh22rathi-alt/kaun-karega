@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 import { requireAdminSession } from "@/lib/adminAuth";
+import { readThroughSnapshotCache as readThroughSnapshotCacheImport } from "@/lib/admin/snapshotCache";
 import { adminSupabase } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
@@ -154,7 +155,32 @@ export async function GET(request: NextRequest) {
 
   const range = parseRange(request.nextUrl.searchParams.get("range"));
   const sinceIso = rangeSinceIso(range);
+  const forceRefresh = request.nextUrl.searchParams.get("refresh") === "1";
 
+  // Snapshot cache: push log aggregates rarely change minute-to-minute
+  // and notification-send mutations invalidate the per-range key.
+  // 1-hour TTL.
+  const CACHE_KEY = `push_analytics.${range}`;
+  const CACHE_TTL_SECONDS = 60 * 60;
+
+  type Payload = {
+    range: string;
+    since: string;
+    truncated: boolean;
+    summary: ReturnType<typeof emptySummary>;
+    by_event_type: EventTypeBreakdown[];
+    recent_failures: RecentFailure[];
+  };
+
+  let payload: Payload;
+  let cache: import("@/lib/admin/snapshotCache").CacheMetadata;
+  try {
+    const result = await readThroughSnapshotCacheImport({
+      key: CACHE_KEY,
+      ttlSeconds: CACHE_TTL_SECONDS,
+      forceRefresh,
+      adminPhone: auth.admin.phone,
+      compute: async (): Promise<Payload> => {
   // Explicit column list — the ONLY place column-level sensitive-data
   // decisions are made. Do not add columns to this select without
   // re-reading the safety notes at the top of this file.
@@ -173,10 +199,7 @@ export async function GET(request: NextRequest) {
       message: error.message,
       range,
     });
-    return NextResponse.json(
-      { ok: false, error: "DB_ERROR", message: "Could not load analytics." },
-      { status: 500 }
-    );
+    throw new Error("DB_ERROR");
   }
 
   const rows = (data ?? []) as PushLogRow[];
@@ -223,13 +246,38 @@ export async function GET(request: NextRequest) {
     return a.event_type.localeCompare(b.event_type);
   });
 
+        return {
+          range,
+          since: sinceIso,
+          truncated,
+          summary,
+          by_event_type,
+          recent_failures,
+        };
+      },
+    });
+    payload = result.payload;
+    cache = result.cache;
+  } catch (err) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "DB_ERROR",
+        message:
+          err instanceof Error ? err.message : "Could not load analytics.",
+      },
+      { status: 500 }
+    );
+  }
+
   return NextResponse.json({
     ok: true,
-    range,
-    since: sinceIso,
-    truncated,
-    summary,
-    by_event_type,
-    recent_failures,
+    range: payload.range,
+    since: payload.since,
+    truncated: payload.truncated,
+    summary: payload.summary,
+    by_event_type: payload.by_event_type,
+    recent_failures: payload.recent_failures,
+    cache,
   });
 }

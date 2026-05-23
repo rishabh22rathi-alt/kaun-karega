@@ -1,8 +1,18 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, X } from "lucide-react";
 import UnreadBadge, { type UnreadIndicator } from "./UnreadBadge";
+
+import CacheStatusBar, {
+  type CacheStatusBarMetadata,
+} from "@/components/admin/CacheStatusBar";
+import {
+  type AdminCacheInterval,
+  getAdminCacheInterval,
+  msUntilNextAutoRefresh,
+  setAdminCacheInterval,
+} from "@/lib/admin/adminCachePreferences";
 
 type UsersTabProps = {
   unread?: UnreadIndicator | null;
@@ -30,6 +40,7 @@ type LoadResponse = {
   totalUsers?: number;
   users?: UserRow[];
   error?: string;
+  cache?: CacheStatusBarMetadata;
 };
 
 function formatDate(value: string | null): string {
@@ -69,6 +80,22 @@ export default function UsersTab({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchInput, setSearchInput] = useState("");
+  // Snapshot cache state. Manual Refresh sets forceRefreshOnce; the
+  // fetch effect appends ?refresh=1 on the next call and resets the
+  // flag. Auto-refresh is scheduled via a single setTimeout based on
+  // the chosen interval — no polling.
+  const [cacheMeta, setCacheMeta] =
+    useState<CacheStatusBarMetadata | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [forceRefreshOnce, setForceRefreshOnce] = useState(false);
+  const [autoInterval, setAutoIntervalState] = useState<AdminCacheInterval>(
+    () => getAdminCacheInterval("users.admin", "manual")
+  );
+  const setAutoInterval = useCallback((next: AdminCacheInterval) => {
+    setAutoIntervalState(next);
+    setAdminCacheInterval("users.admin", next);
+  }, []);
+  const autoTimerRef = useRef<number | null>(null);
 
   // Normalize search input by stripping non-digits. Matching is then a
   // simple substring check against each user phone's last-10-digit form
@@ -90,13 +117,19 @@ export default function UsersTab({
   useEffect(() => {
     if (!isOpen) return;
     let cancelled = false;
-    // Loading + error reset are intentionally synchronous so the spinner
-    // appears before the fetch starts. Matches the lazy-load pattern used
-    // by CategoryTab / AreaTab on accordion open.
+    const force = forceRefreshOnce;
+    // Synchronous setState on mount-of-effect is intentional — same
+    // lazy-load pattern other admin tabs use so the loading spinner
+    // appears before the fetch starts. React 19 lints this loudly;
+    // suppression here mirrors the existing pattern in ProvidersTab.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setLoading(true);
+    if (force) setRefreshing(true);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    else setLoading(true);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setError(null);
-    fetch("/api/admin/users", {
+    const url = force ? "/api/admin/users?refresh=1" : "/api/admin/users";
+    fetch(url, {
       method: "GET",
       credentials: "same-origin",
       cache: "no-store",
@@ -108,26 +141,66 @@ export default function UsersTab({
           setError(json?.error || `Failed to load users (${res.status})`);
           setUsers([]);
           setTotalUsers(0);
+          if (!force) setCacheMeta(null);
           return;
         }
         setUsers(Array.isArray(json.users) ? json.users : []);
         setTotalUsers(
           typeof json.totalUsers === "number" ? json.totalUsers : 0
         );
+        setCacheMeta(json.cache ?? null);
       })
       .catch((err: unknown) => {
         if (cancelled) return;
         setError(err instanceof Error ? err.message : "Network error");
         setUsers([]);
         setTotalUsers(0);
+        if (!force) setCacheMeta(null);
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (cancelled) return;
+        if (force) {
+          setRefreshing(false);
+          setForceRefreshOnce(false);
+        } else {
+          setLoading(false);
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, [isOpen]);
+  }, [isOpen, forceRefreshOnce]);
+
+  const handleManualRefresh = useCallback(() => {
+    if (refreshing) return;
+    setForceRefreshOnce(true);
+  }, [refreshing]);
+
+  // Auto refresh scheduled by a single setTimeout. Re-armed when the
+  // tab opens, the interval changes, or cacheMeta updates. Cleared on
+  // close / unmount.
+  useEffect(() => {
+    const cancelTimer = () => {
+      if (autoTimerRef.current !== null) {
+        window.clearTimeout(autoTimerRef.current);
+        autoTimerRef.current = null;
+      }
+    };
+    cancelTimer();
+    if (!isOpen) return;
+    if (autoInterval === "manual") return;
+    const remaining = msUntilNextAutoRefresh(
+      cacheMeta,
+      autoInterval,
+      Date.now()
+    );
+    if (remaining === null) return;
+    autoTimerRef.current = window.setTimeout(() => {
+      autoTimerRef.current = null;
+      setForceRefreshOnce(true);
+    }, remaining);
+    return cancelTimer;
+  }, [isOpen, autoInterval, cacheMeta]);
 
   const summary =
     totalUsers !== null
@@ -160,6 +233,17 @@ export default function UsersTab({
 
       {isOpen && (
         <div id="users-tab-body" className="border-t border-slate-200 px-5 py-5">
+          {/* Snapshot cache status — 6-hour TTL server-side; this bar
+              exposes Last updated, interval dropdown (persisted in
+              localStorage), and a manual Refresh that bypasses the
+              cache via ?refresh=1. */}
+          <CacheStatusBar
+            cache={cacheMeta}
+            refreshing={refreshing || loading}
+            onRefresh={handleManualRefresh}
+            interval={autoInterval}
+            onIntervalChange={setAutoInterval}
+          />
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
             <p className="text-sm font-semibold text-slate-900">
               Registered Users:{" "}

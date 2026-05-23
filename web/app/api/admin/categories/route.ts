@@ -3,6 +3,16 @@ import { NextResponse } from "next/server";
 import { requireAdminSession } from "@/lib/adminAuth";
 import { getArchivedCategoryKeys } from "@/lib/admin/adminCategoryMutations";
 import { adminSupabase } from "@/lib/supabase/admin";
+import {
+  readThroughSnapshotCache,
+  type CacheMetadata,
+} from "@/lib/admin/snapshotCache";
+
+// Snapshot cache: approved category list with active aliases. Both
+// rarely change; admin mutations (archive/restore, alias approve)
+// invalidate the key. 6-hour TTL; ?refresh=1 bypasses.
+const CACHE_KEY = "categories.list";
+const CACHE_TTL_SECONDS = 6 * 60 * 60;
 
 // GET /api/admin/categories
 // Returns canonical categories with their currently-active aliases bundled.
@@ -43,12 +53,9 @@ function isActiveValue(value: unknown): boolean {
   return normalized === "yes" || normalized === "true" || normalized === "1";
 }
 
-export async function GET(request: Request) {
-  const auth = await requireAdminSession(request);
-  if (!auth.ok) {
-    return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-  }
-
+async function computeCategoriesPayload(): Promise<{
+  categories: CategoryRow[];
+}> {
   const [categoriesRes, aliasesRes, archivedKeys] = await Promise.all([
     adminSupabase
       .from("categories")
@@ -67,15 +74,13 @@ export async function GET(request: Request) {
   ]);
 
   if (categoriesRes.error) {
-    return NextResponse.json(
-      { ok: false, error: `categories query failed: ${categoriesRes.error.message}` },
-      { status: 500 }
+    throw new Error(
+      `categories query failed: ${categoriesRes.error.message}`
     );
   }
   if (aliasesRes.error) {
-    return NextResponse.json(
-      { ok: false, error: `category_aliases query failed: ${aliasesRes.error.message}` },
-      { status: 500 }
+    throw new Error(
+      `category_aliases query failed: ${aliasesRes.error.message}`
     );
   }
 
@@ -142,5 +147,45 @@ export async function GET(request: Request) {
     a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
   );
 
-  return NextResponse.json({ ok: true, categories });
+  return { categories };
+}
+
+export async function GET(request: Request) {
+  const auth = await requireAdminSession(request);
+  if (!auth.ok) {
+    return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+  }
+
+  const forceRefresh =
+    new URL(request.url).searchParams.get("refresh") === "1";
+
+  let payload: { categories: CategoryRow[] };
+  let cache: CacheMetadata;
+  try {
+    const result = await readThroughSnapshotCache<{
+      categories: CategoryRow[];
+    }>({
+      key: CACHE_KEY,
+      ttlSeconds: CACHE_TTL_SECONDS,
+      forceRefresh,
+      adminPhone: auth.admin.phone,
+      compute: computeCategoriesPayload,
+    });
+    payload = result.payload;
+    cache = result.cache;
+  } catch (err) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: err instanceof Error ? err.message : "categories compute failed",
+      },
+      { status: 500 }
+    );
+  }
+
+  return NextResponse.json({
+    ok: true,
+    categories: payload.categories,
+    cache,
+  });
 }

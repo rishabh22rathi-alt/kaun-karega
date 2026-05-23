@@ -11,6 +11,18 @@ import {
 // not after the (now 60 s) TTL. Cross-route import is fine — both
 // endpoints share one Node process and the Map is a single instance.
 import { invalidateAreasCacheByCity } from "@/app/api/areas/route";
+// Admin dashboard snapshot cache — invalidate the per-city area_stats
+// snapshot after every successful catalog mutation so the AreaTab
+// recomputes on next read. Soft-fail (the helper logs and continues
+// on any DB error), so mutation success is never blocked.
+import { invalidateSnapshots } from "@/lib/admin/snapshotCache";
+
+// All catalog mutations in this file currently target JOD (the only
+// active city). Wrap the city-keyed snapshot key behind a helper so a
+// future multi-city deployment only touches this one line.
+function areaSnapshotKeys(city: string | null | undefined): string[] {
+  return [`area_stats.${(city ?? "JOD").trim() || "JOD"}`];
+}
 
 // Sandbox admin editor for the Area Intelligence tables.
 // Does NOT touch live matching, provider registration, homepage search,
@@ -296,6 +308,7 @@ async function moveArea(body: Json) {
   // and dest region's city may differ). Cache is small (≤ 10 entries)
   // so dropping all is cheaper than reasoning about both sides.
   invalidateAreasCacheByCity();
+  await invalidateSnapshots(areaSnapshotKeys(null));
   return NextResponse.json({
     ok: true,
     moved_area: movedArea,
@@ -431,6 +444,7 @@ async function patchRegion(body: Json) {
   }
 
   invalidateAreasCacheByCity(existing.city_code ?? undefined);
+  await invalidateSnapshots(areaSnapshotKeys(existing.city_code));
   return NextResponse.json({ ok: true, region: updated, changed: true });
 }
 
@@ -564,6 +578,7 @@ async function patchArea(body: Json) {
   }
 
   invalidateAreasCacheByCity(existing.city_code ?? undefined);
+  await invalidateSnapshots(areaSnapshotKeys(existing.city_code));
   return NextResponse.json({ ok: true, area: updated, changed: true });
 }
 
@@ -715,6 +730,7 @@ async function patchAlias(body: Json) {
   }
 
   invalidateAreasCacheByCity(existing.city_code ?? undefined);
+  await invalidateSnapshots(areaSnapshotKeys(existing.city_code));
   return NextResponse.json({ ok: true, alias: updated, changed: true });
 }
 
@@ -861,6 +877,7 @@ export async function POST(request: Request) {
   }
 
   invalidateAreasCacheByCity(cityCode);
+  await invalidateSnapshots(areaSnapshotKeys(cityCode));
   return NextResponse.json({ ok: true, alias: inserted });
 }
 
@@ -922,6 +939,7 @@ async function postRegion(body: Json) {
   }
 
   invalidateAreasCacheByCity(defaultCityCode);
+  await invalidateSnapshots(areaSnapshotKeys(defaultCityCode));
   return NextResponse.json({ ok: true, region: inserted });
 }
 
@@ -1038,6 +1056,7 @@ async function postArea(body: Json) {
   }
 
   invalidateAreasCacheByCity(cityCode);
+  await invalidateSnapshots(areaSnapshotKeys(cityCode));
   return NextResponse.json({ ok: true, area: inserted });
 }
 

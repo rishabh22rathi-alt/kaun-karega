@@ -8,6 +8,26 @@
  */
 
 import { adminSupabase } from "../supabase/admin";
+import { invalidateSnapshots } from "./snapshotCache";
+
+// Snapshot keys this module is responsible for invalidating after any
+// mutation that affects the dashboard's verified / under-review /
+// total counts. Kept as a module constant so every callsite below
+// invalidates the same set — no chance of drift between approve and
+// reject. Soft-fail policy lives in invalidateSnapshots itself: a
+// cache DB error never propagates back into the mutation result.
+//
+// Stage A expanded the set: a provider mutation now also affects the
+// AreaTab per-region verified counts and the UsersTab profile list
+// (when status flips remove a provider from the active set). JOD is
+// the only active city today.
+const PROVIDER_STATS_SNAPSHOT_KEYS = [
+  "provider_stats",
+  "provider_stats.by_category",
+  "provider_stats.by_category.verified",
+  "area_stats.JOD",
+  "users.admin",
+];
 
 export type ProviderMutationResult =
   | { ok: true }
@@ -57,6 +77,7 @@ export async function setProviderVerified(
       ]);
       if (verifyError) return { ok: false, error: verifyError.message };
     }
+    await invalidateSnapshots(PROVIDER_STATS_SNAPSHOT_KEYS);
     return { ok: true };
   } catch (err) {
     return {
@@ -88,6 +109,7 @@ export async function setProviderBlockStatus(
       .update({ status: newStatus })
       .eq("provider_id", providerId);
     if (error) return null;
+    await invalidateSnapshots(PROVIDER_STATS_SNAPSHOT_KEYS);
     return { status: newStatus };
   } catch {
     return null;
@@ -124,6 +146,7 @@ export async function approveDuplicateNameReview(
       })
       .eq("provider_id", providerId);
     if (error) return { ok: false, error: error.message };
+    await invalidateSnapshots(PROVIDER_STATS_SNAPSHOT_KEYS);
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : "Unknown error" };
@@ -151,6 +174,7 @@ export async function markDuplicateNameLegitSeparate(
       })
       .eq("provider_id", providerId);
     if (error) return { ok: false, error: error.message };
+    await invalidateSnapshots(PROVIDER_STATS_SNAPSHOT_KEYS);
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : "Unknown error" };
@@ -179,6 +203,7 @@ export async function rejectDuplicateNameProvider(
       })
       .eq("provider_id", providerId);
     if (error) return { ok: false, error: error.message };
+    await invalidateSnapshots(PROVIDER_STATS_SNAPSHOT_KEYS);
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : "Unknown error" };
@@ -419,6 +444,12 @@ export async function removeProviderFromCategory(
       }
     }
 
+    // Only invalidate if we actually moved any rows; a no-op call
+    // (category wasn't mapped to begin with) doesn't change any
+    // counts, so the snapshot is still correct.
+    if (removedServiceRows > 0 || providerStatusUpdated) {
+      await invalidateSnapshots(PROVIDER_STATS_SNAPSHOT_KEYS);
+    }
     return {
       ok: true,
       removed: {

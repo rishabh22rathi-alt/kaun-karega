@@ -2,6 +2,16 @@ import { NextResponse } from "next/server";
 import { adminSupabase } from "@/lib/supabase/admin";
 import { requireAdminSession } from "@/lib/adminAuth";
 import { reconcileProviderApprovalStatusSoft } from "@/lib/admin/adminProviderApprovalReconcile";
+import {
+  readThroughSnapshotCache,
+  invalidateSnapshots,
+  type CacheMetadata,
+} from "@/lib/admin/snapshotCache";
+
+// Short snapshot cache: aliases queue is actionable, so 15 minutes.
+// Key is status-scoped because pending/active are different lists.
+// alias mutations below invalidate both keys.
+const CACHE_TTL_SECONDS = 15 * 60;
 
 // GET  /api/admin/aliases?status=pending|active
 // POST /api/admin/aliases  body: { action: "approve"|"reject", alias, reason? }
@@ -23,67 +33,104 @@ export async function GET(request: Request) {
     );
   }
 
-  const status = (
-    new URL(request.url).searchParams.get("status") || PENDING
-  ).toLowerCase();
+  const url = new URL(request.url);
+  const status = (url.searchParams.get("status") || PENDING).toLowerCase();
   const wantPending = status !== ACTIVE;
+  const cacheStatusKey = wantPending ? "pending" : "active";
+  const forceRefresh = url.searchParams.get("refresh") === "1";
 
-  const { data, error } = await adminSupabase
-    .from("category_aliases")
-    .select(
-      "alias, canonical_category, active, alias_type, created_at, submitted_by_provider_id"
-    )
-    .eq("active", !wantPending)
-    .order("created_at", { ascending: false })
-    .limit(200);
+  type AliasRow = {
+    alias: string;
+    canonicalCategory: string;
+    active: boolean;
+    aliasType: string | null;
+    createdAt: string | null;
+    submittedByProviderId: string | null;
+    submittedByName: string | null;
+    submittedByPhone: string | null;
+  };
 
-  if (error) {
-    console.error("[admin/aliases GET] failed", error.message);
-    return NextResponse.json({ ok: false, error: "DB_ERROR" }, { status: 500 });
+  let payload: { aliases: AliasRow[] };
+  let cache: CacheMetadata;
+  try {
+    const result = await readThroughSnapshotCache<{ aliases: AliasRow[] }>({
+      key: `aliases.${cacheStatusKey}`,
+      ttlSeconds: CACHE_TTL_SECONDS,
+      forceRefresh,
+      adminPhone: auth.admin.phone,
+      compute: async () => {
+        const { data, error } = await adminSupabase
+          .from("category_aliases")
+          .select(
+            "alias, canonical_category, active, alias_type, created_at, submitted_by_provider_id"
+          )
+          .eq("active", !wantPending)
+          .order("created_at", { ascending: false })
+          .limit(200);
+        if (error) {
+          console.error("[admin/aliases GET] failed", error.message);
+          throw new Error("DB_ERROR");
+        }
+        const submitterIds = Array.from(
+          new Set(
+            (data || [])
+              .map((r) => String(r.submitted_by_provider_id || "").trim())
+              .filter(Boolean)
+          )
+        );
+        const providersById: Record<
+          string,
+          { name: string; phone: string }
+        > = {};
+        if (submitterIds.length > 0) {
+          const { data: providers } = await adminSupabase
+            .from("providers")
+            .select("provider_id, full_name, phone")
+            .in("provider_id", submitterIds);
+          for (const p of providers || []) {
+            providersById[String(p.provider_id || "")] = {
+              name: String(p.full_name || ""),
+              phone: String(p.phone || ""),
+            };
+          }
+        }
+        const rows: AliasRow[] = (data || []).map((r) => {
+          const providerKey = String(r.submitted_by_provider_id || "");
+          const submitter = providerKey
+            ? providersById[providerKey]
+            : undefined;
+          return {
+            alias: r.alias,
+            canonicalCategory: r.canonical_category,
+            active: r.active,
+            aliasType: r.alias_type,
+            createdAt: r.created_at,
+            submittedByProviderId: r.submitted_by_provider_id || null,
+            submittedByName: submitter?.name || null,
+            submittedByPhone: submitter?.phone || null,
+          };
+        });
+        return { aliases: rows };
+      },
+    });
+    payload = result.payload;
+    cache = result.cache;
+  } catch (err) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error:
+          err instanceof Error ? err.message : "aliases compute failed",
+      },
+      { status: 500 }
+    );
   }
 
-  // Hydrate provider name + phone for each row that has a submitter, so the
-  // admin UI can show "submitted by Ramesh / 98XXXXXX01" without an extra
-  // round-trip per row.
-  const submitterIds = Array.from(
-    new Set(
-      (data || [])
-        .map((r) => String(r.submitted_by_provider_id || "").trim())
-        .filter(Boolean)
-    )
-  );
-  let providersById: Record<string, { name: string; phone: string }> = {};
-  if (submitterIds.length > 0) {
-    // providers schema uses `full_name`, not `name`. Earlier code referenced
-    // a non-existent `name` column and 500'd on load.
-    const { data: providers } = await adminSupabase
-      .from("providers")
-      .select("provider_id, full_name, phone")
-      .in("provider_id", submitterIds);
-    for (const p of providers || []) {
-      providersById[String(p.provider_id || "")] = {
-        name: String(p.full_name || ""),
-        phone: String(p.phone || ""),
-      };
-    }
-  }
-
-  const rows = (data || []).map((r) => {
-    const providerKey = String(r.submitted_by_provider_id || "");
-    const submitter = providerKey ? providersById[providerKey] : undefined;
-    return {
-      alias: r.alias,
-      canonicalCategory: r.canonical_category,
-      active: r.active,
-      aliasType: r.alias_type,
-      createdAt: r.created_at,
-      submittedByProviderId: r.submitted_by_provider_id || null,
-      submittedByName: submitter?.name || null,
-      submittedByPhone: submitter?.phone || null,
-    };
+  return NextResponse.json({
+    ok: true,
+    aliases: payload.aliases,
+    cache,
   });
-
-  return NextResponse.json({ ok: true, aliases: rows });
 }
 
 export async function POST(request: Request) {
