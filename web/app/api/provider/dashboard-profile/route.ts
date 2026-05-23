@@ -656,7 +656,15 @@ async function getProviderAreaCoverageFromSupabase(
   // service_regions / service_region_areas rows for THIS city — prevents
   // attribution to regions in a different city once multi-city seed
   // exists. Empty string skips the filter (today's legacy behavior).
-  providerCityCode: string
+  providerCityCode: string,
+  // Phase 2 — Provider Region Allocation. When non-empty, these
+  // pre-computed region_codes (read directly from provider_areas.region_code)
+  // take precedence over the legacy reverse-derive-from-area-name path.
+  // Filtered against the active-region set below so an outdated stored
+  // region_code (e.g. a region that has since been deactivated) doesn't
+  // leak into the dashboard. Empty array preserves today's behavior for
+  // pre-Phase-2 providers whose rows still have region_code=NULL.
+  storedRegionCodes: string[] = []
 ): Promise<ProviderAreaCoverage> {
   // Track region inference output so the caller can expose
   // SelectedRegionCodes alongside the derived areas. Empty for legacy
@@ -755,10 +763,23 @@ async function getProviderAreaCoverageFromSupabase(
         areaKeyToRegions.get(key)!.add(rc);
       }
 
+      // Phase 2: prefer stored region_codes on provider_areas rows over
+      // the join-derived fallback. Filter against activeRegionCodes so a
+      // stored row pointing at a now-inactive region is ignored. When no
+      // stored values are present (legacy provider, all rows region_code=
+      // NULL), fall back to the original derive-from-area-name path so
+      // we don't regress pre-Phase-2 dashboards.
       const selectedRegions = new Set<string>();
-      for (const key of providerKeys) {
-        for (const rc of areaKeyToRegions.get(key) || []) {
-          selectedRegions.add(rc);
+      const usableStoredRegions = storedRegionCodes.filter((rc) =>
+        activeRegionCodes.has(rc)
+      );
+      if (usableStoredRegions.length > 0) {
+        for (const rc of usableStoredRegions) selectedRegions.add(rc);
+      } else {
+        for (const key of providerKeys) {
+          for (const rc of areaKeyToRegions.get(key) || []) {
+            selectedRegions.add(rc);
+          }
         }
       }
 
@@ -1202,7 +1223,10 @@ export async function GET(request: NextRequest) {
         .eq("provider_id", provider.provider_id),
       supabase
         .from("provider_areas")
-        .select("area, city_code")
+        // Phase 2: region_code is included so dashboard derivation can
+        // prefer the stored value over the legacy join-derived fallback.
+        // Nullable today (Phase 1 schema); the consumer below tolerates NULL.
+        .select("area, city_code, region_code")
         .eq("provider_id", provider.provider_id),
       supabase
         .from("provider_task_matches")
@@ -1273,6 +1297,22 @@ export async function GET(request: NextRequest) {
           .map((item) => String(item.area || "").trim())
           .filter((area) => area.length > 0)
       : [];
+
+    // Phase 2 — Provider Region Allocation. Collect any region_code values
+    // already stored on the provider's rows. When non-empty, the area-
+    // coverage helper prefers these over the legacy reverse-derive path
+    // (join provider_areas.area ↔ service_region_areas.canonical_area).
+    // Empty when every row is region_code=NULL (legacy providers) — falls
+    // back to the existing derivation. Sorted + deduped for a stable
+    // payload contract.
+    const storedRegionCodesSet = new Set<string>();
+    if (Array.isArray(providerAreas)) {
+      for (const row of providerAreas as Array<{ region_code?: string | null }>) {
+        const rc = String(row?.region_code ?? "").trim();
+        if (rc) storedRegionCodesSet.add(rc);
+      }
+    }
+    const storedRegionCodes = Array.from(storedRegionCodesSet).sort();
 
     // Cascade-aware provider city derivation. Use the first non-NULL
     // city_code found across the provider's own provider_areas rows;
@@ -1416,7 +1456,8 @@ export async function GET(request: NextRequest) {
           supabase,
           providerIdString,
           providerAreaList,
-          providerCityCode
+          providerCityCode,
+          storedRegionCodes
         );
         // Hydrate the cascade-aware city fields from the surrounding scope.
         // The function itself doesn't query the cities table.

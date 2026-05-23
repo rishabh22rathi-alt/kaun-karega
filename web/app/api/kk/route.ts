@@ -42,6 +42,10 @@ import {
   queueUnmappedAreaForReview,
 } from "@/lib/admin/adminUnmappedAreas";
 import { getDefaultCityCode } from "@/lib/cities/cityContext";
+import {
+  resolveAreasToRegions,
+  type AreaRegionResolution,
+} from "@/lib/geo/areaRegionResolver";
 import { remindProvidersForTask } from "@/lib/admin/adminReminderMutations";
 import { getAdminRequestsFromSupabase } from "@/lib/admin/adminTaskReads";
 import { assignProviderToTask, closeTask } from "@/lib/admin/adminTaskMutations";
@@ -1964,11 +1968,32 @@ export async function POST(request: NextRequest) {
       // Old clients without the cascade still produce correctly-stamped
       // rows via the default fallback (Phase 1.2 behavior preserved).
       const registerCityCode = providedCityCode ?? (await getDefaultCityCode());
-      const areaRows = areas.map((area) => ({
-        provider_id: providerId,
-        area: String(area),
-        city_code: registerCityCode,
-      }));
+
+      // Phase 2 — Provider Region Allocation. Resolve each submitted area
+      // string to a JOD region in one batched catalog read. Resolver
+      // failures or unresolved/ambiguous areas write region_code=NULL —
+      // the existing area_review_queue flow surfaces them for admin
+      // review afterwards. Matching is untouched in this phase.
+      const areaStrings = areas.map((a) => String(a));
+      let regionResolutions: Map<string, AreaRegionResolution> = new Map();
+      try {
+        regionResolutions = await resolveAreasToRegions(adminSupabase, {
+          areas: areaStrings,
+          cityCode: registerCityCode,
+        });
+      } catch {
+        // Best-effort. Continue with NULL region_codes on every row.
+      }
+
+      const areaRows = areaStrings.map((area) => {
+        const r = regionResolutions.get(area);
+        return {
+          provider_id: providerId,
+          area,
+          city_code: registerCityCode,
+          region_code: r && r.resolved ? r.region_code : null,
+        };
+      });
 
       const { error: areasError } = await supabase
         .from("provider_areas")

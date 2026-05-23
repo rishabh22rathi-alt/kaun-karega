@@ -13,6 +13,10 @@
 
 import { adminSupabase } from "../supabase/admin";
 import { getDefaultCityCode } from "../cities/cityContext";
+import {
+  resolveAreasToRegions,
+  type AreaRegionResolution,
+} from "../geo/areaRegionResolver";
 
 export type ProviderRow = {
   id: string;
@@ -398,10 +402,39 @@ export async function updateProviderInSupabase(
     // city default. Either way every provider_areas row is stamped, so
     // the column is never NULL on a row we wrote.
     const resolvedCityCode = cityCode ?? (await getDefaultCityCode());
+
+    // Phase 2 — Provider Region Allocation. Resolve each area string to
+    // a JOD region in one batched catalog read. The result Map is keyed
+    // by the raw area string AS PASSED, so we can look up per-row below.
+    // Unresolved / ambiguous areas write region_code = NULL; the existing
+    // queueUnmappedAreaForReview path in /api/provider/update still
+    // surfaces them for admin review. Matching is untouched in this
+    // phase — region_code is captured but not consulted at match time.
+    // Resolver failure is treated as "all unresolved" rather than
+    // bubbling up: a transient catalog read error should not block the
+    // provider update.
+    let regionResolutions: Map<string, AreaRegionResolution> = new Map();
+    try {
+      regionResolutions = await resolveAreasToRegions(adminSupabase, {
+        areas,
+        cityCode: resolvedCityCode,
+      });
+    } catch {
+      // Best-effort. Continue with NULL region_codes on every row.
+    }
+
     const { error: insertAreasError } = await adminSupabase
       .from("provider_areas")
       .insert(
-        areas.map((area) => ({ provider_id: id, area, city_code: resolvedCityCode }))
+        areas.map((area) => {
+          const r = regionResolutions.get(area);
+          return {
+            provider_id: id,
+            area,
+            city_code: resolvedCityCode,
+            region_code: r && r.resolved ? r.region_code : null,
+          };
+        })
       );
     if (insertAreasError) return { success: false };
   }

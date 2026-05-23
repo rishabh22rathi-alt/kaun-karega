@@ -1,5 +1,9 @@
 import { adminSupabase } from "../supabase/admin";
 import { preserveOrDefaultCityCode } from "../cities/cityContext";
+import {
+  resolveAreasToRegions,
+  type AreaRegionResolution,
+} from "../geo/areaRegionResolver";
 
 // ---------------------------------------------------------------------------
 // Normalization — mirrors GAS normalizeAreaName_() and getNormalizedAreaKey_()
@@ -252,12 +256,32 @@ async function runProviderAreaCanonicalization(): Promise<ProviderAreaCanonicali
       const cityCode = await preserveOrDefaultCityCode(
         cityByProvider.get(providerId)
       );
+
+      // Phase 2: resolve each rewritten area to a region_code via the
+      // service_region_* catalog. Most ticks rewrite zero providers, so
+      // the per-provider catalog read overhead is negligible. Resolver
+      // failures degrade to NULL region_code on every row — same as the
+      // pre-Phase-2 behaviour from a matching perspective.
+      let regionResolutions: Map<string, AreaRegionResolution> = new Map();
+      try {
+        regionResolutions = await resolveAreasToRegions(adminSupabase, {
+          areas: nextAreas,
+          cityCode,
+        });
+      } catch {
+        // Best-effort. Leave region_code NULL on every row.
+      }
+
       const { error: insertError } = await adminSupabase.from("provider_areas").insert(
-        nextAreas.map((area) => ({
-          provider_id: providerId,
-          area,
-          city_code: cityCode,
-        }))
+        nextAreas.map((area) => {
+          const r = regionResolutions.get(area);
+          return {
+            provider_id: providerId,
+            area,
+            city_code: cityCode,
+            region_code: r && r.resolved ? r.region_code : null,
+          };
+        })
       );
       if (insertError) {
         return { ok: false, status: "error", error: insertError.message };
@@ -344,12 +368,32 @@ async function rewriteProviderAreasForRenamedCanonicalArea(
       const cityCode = await preserveOrDefaultCityCode(
         cityByProvider.get(providerId)
       );
+
+      // Phase 2: re-resolve the renamed canonical to its region_code.
+      // The rename can move an area into / out of a region's coverage, so
+      // we cannot trust any previously-stored region_code from before the
+      // delete. Resolver failures fall back to NULL — region_code stays
+      // optional during this rollout.
+      let regionResolutions: Map<string, AreaRegionResolution> = new Map();
+      try {
+        regionResolutions = await resolveAreasToRegions(adminSupabase, {
+          areas: nextAreas,
+          cityCode,
+        });
+      } catch {
+        // Best-effort. Leave region_code NULL on every row.
+      }
+
       const { error: insertError } = await adminSupabase.from("provider_areas").insert(
-        nextAreas.map((area) => ({
-          provider_id: providerId,
-          area,
-          city_code: cityCode,
-        }))
+        nextAreas.map((area) => {
+          const r = regionResolutions.get(area);
+          return {
+            provider_id: providerId,
+            area,
+            city_code: cityCode,
+            region_code: r && r.resolved ? r.region_code : null,
+          };
+        })
       );
       if (insertError) return { ok: false, error: insertError.message };
     }
