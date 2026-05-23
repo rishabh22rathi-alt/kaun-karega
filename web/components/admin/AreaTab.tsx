@@ -112,6 +112,35 @@ function nextCode(existingCodes: string[], prefix: string): string {
   return `${prefix}${suffix}`;
 }
 
+// Compute the next region-prefixed manual area code, e.g. JOD-19-M001.
+// Scans existing area codes within the same region for any `<region>-M###`
+// pattern and returns the next available counter.
+//
+// The "M" suffix marks the row's provenance as Manually imported /
+// admin-created, distinguishing it from "A" (original JOD-25 seed) and
+// "E" (AI enrichment). See supabase/migrations/20260531120000_normalize_jod_area_codes.sql.
+//
+// Caller must pass only codes from the same region (or the full list —
+// scoping is enforced by the regex anchor on regionCode).
+function nextRegionManualAreaCode(
+  regionCode: string,
+  existingAreaCodes: string[]
+): string {
+  const escaped = regionCode.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`^${escaped}-M(\\d+)$`);
+  let max = 0;
+  for (const code of existingAreaCodes) {
+    const m = code.match(re);
+    if (m) {
+      const n = parseInt(m[1], 10);
+      if (Number.isFinite(n) && n > max) max = n;
+    }
+  }
+  const next = max + 1;
+  const suffix = next > 999 ? String(next) : String(next).padStart(3, "0");
+  return `${regionCode}-M${suffix}`;
+}
+
 // Case-insensitive exact match. Returns the first area whose
 // canonical_area matches `text` (excluding `excludeAreaCode`), or null.
 // Inactive rows are skipped so soft-deactivated legacy entries (e.g.
@@ -962,7 +991,16 @@ export default function AreaTab() {
       else setActionError(msg);
       return;
     }
-    const area_code = nextCode(allAreas.map((a) => a.area_code), "A-");
+    // Mint the next region-prefixed M code (JOD-19-M001, JOD-19-M002, …)
+    // instead of the legacy global A-#### counter. The migration
+    // 20260531120000_normalize_jod_area_codes.sql renames any historical
+    // A-#### rows to this scheme; this mint site keeps the catalog
+    // consistent going forward. Aliases still use the AL- prefix
+    // (alias_code is independent of area_code).
+    const area_code = nextRegionManualAreaCode(
+      region_code,
+      allAreas.map((a) => a.area_code)
+    );
     void callAi(
       "POST",
       actionKey,
