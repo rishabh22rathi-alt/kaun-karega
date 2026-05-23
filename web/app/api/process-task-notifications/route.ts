@@ -94,9 +94,17 @@ export async function POST(request: Request) {
     // for canonical / unknown / pre-migration rows — broad matching path
     // handles those exactly like today. `phone` and `status` are needed for
     // the A7 authorization + idempotency checks below.
+    //
+    // PR-C: also select city_code + region_code for strict region-based
+    // matching. region_code is populated by PR-B at submit time. Legacy
+    // tasks (pre-PR-B) may have region_code = NULL — strict matching
+    // returns zero providers for those, exactly as the new business rule
+    // requires.
     const { data: task, error: taskError } = await supabase
       .from("tasks")
-      .select("task_id, display_id, category, area, selected_timeframe, work_tag, phone, status")
+      .select(
+        "task_id, display_id, category, area, selected_timeframe, work_tag, phone, status, city_code, region_code"
+      )
       .eq("task_id", taskId)
       .single();
 
@@ -215,11 +223,54 @@ export async function POST(request: Request) {
       .ilike("category", canonicalCategory)
       .limit(5000);
 
-    // 3. Find providers matching by area
+    // 3. STRICT REGION MATCHING (PR-C).
+    //
+    // Old behaviour: ilike on provider_areas.area — broke as soon as a
+    // legacy provider had the area text spelled differently.
+    // New behaviour: exact match on (city_code, region_code) sourced
+    // from the task row. PR-B's submit-request populates task.region_code
+    // at submission time via resolveAreaToRegion. Providers whose
+    // provider_areas.region_code is still NULL are deliberately excluded
+    // until the Provider Area Resolution Center allocates them.
+    //
+    // No area-text fallback — if task.region_code is NULL (legacy task,
+    // or PR-B's resolver returned unresolved/ambiguous), the task flips
+    // to status='no_providers_matched' below and never sends WhatsApp
+    // to anyone. task.area remains the human-readable string passed to
+    // the WhatsApp template body further down.
+    const taskRegionCode = String(task.region_code || "").trim();
+    if (!taskRegionCode) {
+      await supabase
+        .from("tasks")
+        .update({ status: "no_providers_matched" })
+        .eq("task_id", taskId);
+
+      console.log("process-task-notifications: zero matches (task.region_code missing)", {
+        taskId,
+        area: task.area,
+      });
+
+      return NextResponse.json({
+        ok: true,
+        matchedProviders: 0,
+        attemptedSends: 0,
+        failedSends: 0,
+        matchTier: "category",
+        usedFallback: false,
+        reason: "task_region_code_missing",
+      });
+    }
+    // city_code defaults to JOD for any legacy task that didn't carry
+    // one — the configured default matches reality (single active city
+    // today) and avoids a hard failure on a stale row.
+    const taskCityCodeForMatch =
+      String(task.city_code || "").trim() || "JOD";
+
     const { data: areaRows } = await supabase
       .from("provider_areas")
       .select("provider_id")
-      .ilike("area", String(task.area || ""))
+      .eq("city_code", taskCityCodeForMatch)
+      .eq("region_code", taskRegionCode)
       .limit(5000);
 
     const serviceIds = new Set(

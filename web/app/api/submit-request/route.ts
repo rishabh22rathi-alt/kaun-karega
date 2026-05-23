@@ -10,6 +10,8 @@ import { adminSupabase } from "@/lib/supabase/admin";
 import { resolveCategoryAliasDetailed } from "@/lib/categoryAliases";
 import { isDisclaimerFresh } from "@/lib/disclaimer";
 import { getDefaultCityCode } from "@/lib/cities/cityContext";
+import { resolveAreaToRegion } from "@/lib/geo/areaRegionResolver";
+import { queueUnmappedAreaForReview } from "@/lib/admin/adminUnmappedAreas";
 
 function normalizePhone10(value: unknown): string {
   return String(value || "").replace(/\D/g, "").slice(-10);
@@ -210,6 +212,42 @@ export async function POST(request: Request) {
     // city. Homepage has no CitySelector yet (later phase); this default
     // is what every old client would have implicitly meant.
     const taskCityCode = await getDefaultCityCode();
+
+    // PR-B (strict region matching prep): resolve the submitted area
+    // to a JOD service region and persist the region_code on the task.
+    // The resolver reads active service_region_areas + aliases scoped
+    // to taskCityCode. Three outcomes:
+    //   • resolved → store the region_code; PR-C's strict matcher
+    //     will only consider providers covering this region.
+    //   • unresolved / ambiguous → region_code stays NULL. The task
+    //     is still created (we don't block submission); a post-insert
+    //     best-effort enqueue surfaces the raw area in the Provider
+    //     Area Resolution Center so an admin can map it.
+    //   • resolver throws (catalog read blip) → fail soft: log and
+    //     proceed with region_code = NULL so a transient outage never
+    //     blocks user submissions.
+    //
+    // Matching is UNCHANGED in this PR — /api/find-provider and
+    // /api/process-task-notifications continue to match by area text.
+    // PR-C will be the cutover to strict region-based matching.
+    let taskRegionCode: string | null = null;
+    try {
+      const resolution = await resolveAreaToRegion(adminSupabase, {
+        area,
+        cityCode: taskCityCode,
+      });
+      if (resolution.resolved) {
+        taskRegionCode = resolution.region_code;
+      }
+    } catch (resolverError) {
+      console.warn(
+        "[submit-request] resolveAreaToRegion threw; saving region_code=NULL",
+        resolverError instanceof Error
+          ? resolverError.message
+          : resolverError
+      );
+    }
+
     const { data, error } = await supabase
       .from("tasks")
       .insert({
@@ -228,6 +266,10 @@ export async function POST(request: Request) {
         work_tag: matchedAlias,
         status: "submitted",
         city_code: taskCityCode,
+        // PR-B: nullable when the area didn't resolve to an active
+        // canonical or alias. PR-C will gate matching on this being
+        // non-NULL; until then it's a captured-but-unused column.
+        region_code: taskRegionCode,
       })
       .select("display_id")
       .single();
@@ -244,6 +286,29 @@ export async function POST(request: Request) {
         ? String(data.display_id).trim()
         : "";
 
+    // PR-B: best-effort enqueue for admin review when the submitted
+    // area didn't resolve to a JOD region. Mirrors the same helper
+    // /api/provider/update uses, so the Provider Area Resolution
+    // Center sees registration-time AND submit-time unmapped areas
+    // through the same queue. Internally dedupes by normalized_key —
+    // repeated unresolved submissions just tick `occurrences`.
+    // Wrapped in try/catch so a queue blip never affects the response
+    // — the task was already inserted successfully above.
+    if (taskRegionCode === null) {
+      try {
+        await queueUnmappedAreaForReview({
+          rawArea: area,
+          sourceType: "submit_request",
+          sourceRef: taskId,
+        });
+      } catch (queueError) {
+        console.warn(
+          "[submit-request] queueUnmappedAreaForReview threw; non-fatal",
+          queueError instanceof Error ? queueError.message : queueError
+        );
+      }
+    }
+
     console.log("submit-request route timing", {
       taskId,
       category,
@@ -259,15 +324,14 @@ export async function POST(request: Request) {
       displayId,
     });
 
-  } catch (error: any) {
+  } catch (error: unknown) {
     const routeErrorMs = Date.now();
+    const message =
+      error instanceof Error ? error.message : "Internal Server Error";
     console.error("API Route Error:", error);
     console.error("submit-request route timing failed", {
       totalElapsedMs: routeErrorMs - routeStartMs,
     });
-    return NextResponse.json(
-      { error: error?.message || "Internal Server Error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

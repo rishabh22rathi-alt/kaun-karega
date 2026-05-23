@@ -8,6 +8,14 @@ import { canonicalizeProviderAreasToCanonicalNames } from "@/lib/admin/adminArea
 // "dentist" -> doctor) and use it as the work_tag filter against
 // provider_work_terms when no explicit workTag was passed.
 import { resolveCategoryAliasDetailed } from "@/lib/categoryAliases";
+// PR-C: strict region-based matching. Area-text matching is gone; we
+// resolve the request area to a JOD region_code (either via task.region_code
+// already saved by PR-B's submit-request, or — for anonymous lookups
+// without a taskId — via the Phase 2 resolver inline). Providers are
+// then filtered by exact (city_code, region_code) match on
+// provider_areas, NOT by area text.
+import { resolveAreaToRegion } from "@/lib/geo/areaRegionResolver";
+import { getDefaultCityCode } from "@/lib/cities/cityContext";
 
 export const runtime = "nodejs";
 
@@ -168,6 +176,89 @@ async function handle(req: Request) {
     // (transient DB error → fail-open path above).
     const canonicalCategory = String(categoryRow?.name || category);
 
+    // ── PR-C: STRICT REGION MATCHING ──────────────────────────────────
+    // Determine the task's city_code + region_code BEFORE the matching
+    // queries. Two modes:
+    //
+    //   Mode A — taskId provided (privileged owner / admin reprocess
+    //   /api/process-task-notifications-style caller): read both
+    //   columns directly from the tasks row. PR-B's submit-request
+    //   populated region_code at submission time.
+    //
+    //   Mode B — anonymous lookup with area + category (no taskId):
+    //   resolve the supplied area text via the Phase 2 resolver,
+    //   scoped to the configured default city. No fallback to area-
+    //   text matching — if the area doesn't resolve, the response is
+    //   zero providers, matching the strict-region business rule.
+    //
+    // taskAreaForDisplay is what /provider_task_matches.area writes
+    // and what the WhatsApp template body sees downstream. It stays
+    // human-readable — we never expose region_code to providers.
+    let taskCityCode = "";
+    let taskRegionCode: string | null = null;
+    let taskAreaForDisplay = area;
+
+    if (taskId) {
+      const { data: taskRow, error: taskFetchErr } = await adminSupabase
+        .from("tasks")
+        .select("area, city_code, region_code")
+        .eq("task_id", taskId)
+        .maybeSingle();
+      if (taskFetchErr || !taskRow) {
+        // Unknown taskId → zero matches. Mirrors the existing
+        // category-missing branch's shape so consumers get a stable
+        // response.
+        return Response.json(
+          {
+            ok: true,
+            count: 0,
+            providers: [],
+            matchTier: "category",
+            usedFallback: false,
+          },
+          { status: 200 }
+        );
+      }
+      taskCityCode =
+        String(taskRow.city_code || "").trim() ||
+        (await getDefaultCityCode());
+      taskRegionCode = String(taskRow.region_code || "").trim() || null;
+      taskAreaForDisplay = String(taskRow.area || "").trim() || area;
+    } else {
+      taskCityCode = await getDefaultCityCode();
+      try {
+        const resolution = await resolveAreaToRegion(adminSupabase, {
+          area,
+          cityCode: taskCityCode,
+        });
+        if (resolution.resolved) {
+          taskRegionCode = resolution.region_code;
+        }
+      } catch (resolverErr) {
+        // Fail soft: a transient catalog read blip returns zero
+        // matches rather than crashing public lookups. The early
+        // return below handles the unresolved case identically.
+        console.warn(
+          "[find-provider] resolveAreaToRegion threw; returning zero matches",
+          resolverErr instanceof Error ? resolverErr.message : resolverErr
+        );
+      }
+    }
+
+    // Strict gate: no region → no matches. No area-text fallback.
+    if (!taskRegionCode) {
+      return Response.json(
+        {
+          ok: true,
+          count: 0,
+          providers: [],
+          matchTier: "category",
+          usedFallback: false,
+        },
+        { status: 200 }
+      );
+    }
+
     const { data: serviceRows, error: servicesError } = await supabase
       .from("provider_services")
       .select("provider_id, category")
@@ -178,10 +269,15 @@ async function handle(req: Request) {
       throw new Error(servicesError.message || "Unable to load provider services.");
     }
 
+    // Strict region filter. Provider_areas.area text is NEVER consulted
+    // for candidate selection — only the (city_code, region_code) pair.
+    // A provider whose row still has region_code=NULL is correctly
+    // excluded; they need Phase 3 allocation before they receive leads.
     const { data: areaRows, error: areasError } = await supabase
       .from("provider_areas")
-      .select("provider_id, area")
-      .ilike("area", area)
+      .select("provider_id")
+      .eq("city_code", taskCityCode)
+      .eq("region_code", taskRegionCode)
       .limit(5000);
 
     if (areasError) {
@@ -323,7 +419,11 @@ async function handle(req: Request) {
               name: String(provider.full_name || "").trim(),
               phoneMasked: maskPhone10(String(provider.phone || "")),
               category,
-              area,
+              // Human-readable area, never region_code. In Mode A this
+              // is task.area from the tasks row; in Mode B it's the
+              // raw text the caller supplied. The WhatsApp template
+              // body uses this same string downstream.
+              area: taskAreaForDisplay,
               verified: String(provider.verified || "").trim(),
             };
             // Privileged disclosure: only the signed-in task owner can see
@@ -342,7 +442,9 @@ async function handle(req: Request) {
         task_id: taskId,
         provider_id: provider.ProviderID,
         category,
-        area,
+        // Keep area as human-readable text — provider_task_matches.area
+        // feeds WhatsApp template bodies and provider notifications.
+        area: taskAreaForDisplay,
         match_status: "matched",
       }));
 
