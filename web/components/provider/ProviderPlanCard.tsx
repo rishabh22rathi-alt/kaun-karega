@@ -756,6 +756,12 @@ export default function ProviderPlanCard({
         >
           {PLAN_COMPARISON.map((entry) => {
             const isCurrent = effectiveCode === entry.code;
+            const isCurrentAllJodhpur =
+              isCurrent && entry.code === "all_jodhpur";
+            const showPopularBadge =
+              entry.popular === true &&
+              effectiveCode !== "all_jodhpur" &&
+              !isCurrent;
             const isFree = entry.code === "free";
             const busyOnThis = busyPlan === entry.code;
             const ctaLabel = isCurrent
@@ -770,13 +776,16 @@ export default function ProviderPlanCard({
                 key={entry.code}
                 data-testid={`provider-plan-compare-${entry.code}`}
                 data-current={isCurrent ? "true" : "false"}
+                data-visual-emphasis={isCurrentAllJodhpur ? "strong" : "normal"}
                 className={`relative flex flex-col rounded-2xl border p-4 ${
-                  isCurrent
-                    ? "border-[#003d20] bg-[#003d20]/5"
+                  isCurrentAllJodhpur
+                    ? "border-emerald-700 bg-emerald-50/80 shadow-sm ring-1 ring-emerald-100"
+                    : isCurrent
+                      ? "border-[#003d20] bg-[#003d20]/5"
                     : "border-slate-200 bg-white"
                 }`}
               >
-                {entry.popular ? (
+                {showPopularBadge ? (
                   <span
                     data-testid="provider-plan-compare-popular-badge"
                     className="absolute -top-2 right-3 inline-flex items-center rounded-full bg-amber-500 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white shadow-sm"
@@ -792,11 +801,24 @@ export default function ProviderPlanCard({
                     Your plan
                   </span>
                 ) : null}
-                <p className="text-sm font-semibold text-[#003d20]">
+                <p
+                  data-testid={`provider-plan-compare-title-${entry.code}`}
+                  className={
+                    isCurrentAllJodhpur
+                      ? "text-base font-bold text-slate-950"
+                      : "text-sm font-semibold text-[#003d20]"
+                  }
+                >
                   {entry.title}
                 </p>
                 <p className="mt-1 text-xs text-slate-500">{entry.subLabel}</p>
-                <p className="mt-2 text-xs italic text-slate-600">
+                <p
+                  className={`mt-2 text-xs italic ${
+                    isCurrentAllJodhpur
+                      ? "font-semibold text-emerald-800"
+                      : "text-slate-600"
+                  }`}
+                >
                   {entry.positioning}
                 </p>
                 <ul className="mt-3 flex-1 space-y-1 text-xs text-slate-600">

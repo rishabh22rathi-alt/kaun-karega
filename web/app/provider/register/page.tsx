@@ -91,6 +91,15 @@ type ProviderByPhoneResponse = {
     // Cascade hydration source for edit mode. Empty when the provider
     // has no city_code on any of their provider_areas rows yet.
     CityCode?: string;
+    // Source-of-truth selected region set, populated from distinct
+    // non-NULL provider_areas.region_code. When present and non-empty,
+    // edit-mode hydration uses this directly and skips the legacy
+    // area-name inference (which raced /api/provider/plan and could
+    // truncate multi-region paid providers to a single visible
+    // region). Empty / absent means legacy path: fall back to
+    // area-name inference, gated on planLoaded so the cap doesn't
+    // truncate.
+    RegionCodes?: string[];
   };
   error?: string;
 };
@@ -265,6 +274,15 @@ function ProviderRegisterPageInner() {
   const [isLoadingRegions, setIsLoadingRegions] = useState<boolean>(false);
   const [regionsError, setRegionsError] = useState<string>("");
   const [selectedRegions, setSelectedRegions] = useState<string[]>([]);
+  // Direct-hydration source captured from
+  // /api/kk?action=get_provider_by_phone in edit mode. `null` means
+  // the provider profile hasn't loaded yet; `[]` means the response
+  // arrived but the server returned no region_codes (legacy provider
+  // — fall back to area-name inference); a non-empty array drives
+  // direct hydration and bypasses the inference race.
+  const [savedRegionCodes, setSavedRegionCodes] = useState<string[] | null>(
+    null
+  );
   // Per-region "expanded" state for the area preview inside each region
   // card. Independent of selection — expanding a card does not select
   // the region, and selecting a region does not collapse the expanded
@@ -307,9 +325,12 @@ function ProviderRegisterPageInner() {
   const [planCode, setPlanCode] = useState<string>("free");
   const [planMaxRegions, setPlanMaxRegions] = useState<number>(1);
   const [planRuleKind, setPlanRuleKind] = useState<"fixed" | "cityWide">("fixed");
-  const [remainingRegionChanges, setRemainingRegionChanges] = useState<number>(3);
-  const [remainingCategoryChanges, setRemainingCategoryChanges] = useState<number>(3);
-  const [monthlyChangeLimit, setMonthlyChangeLimit] = useState<number>(3);
+  // MVP: per-period region/category change throttle removed. The
+  // matching state declarations + setters that previously rendered
+  // "Region changes left this month" were deleted with the UI hint.
+  // /api/provider/plan still returns `remaining` + `monthlyLimit` on
+  // the wire (always set to the limit constant) so existing clients
+  // remain compatible.
   const [planLoaded, setPlanLoaded] = useState<boolean>(false);
   // Effective per-render cap. Lower of (plan's max) and (hard ceiling).
   // cityWide is treated as MAX_REGIONS — every region in the city is
@@ -632,19 +653,6 @@ function ProviderRegisterPageInner() {
           setPlanRuleKind(
             data.plan?.ruleKind === "cityWide" ? "cityWide" : "fixed"
           );
-          setRemainingRegionChanges(
-            Number.isFinite(data.remaining?.region_change)
-              ? Number(data.remaining?.region_change)
-              : 3
-          );
-          setRemainingCategoryChanges(
-            Number.isFinite(data.remaining?.category_change)
-              ? Number(data.remaining?.category_change)
-              : 3
-          );
-          if (Number.isFinite(data.monthlyLimit)) {
-            setMonthlyChangeLimit(Number(data.monthlyLimit));
-          }
           setPlanLoaded(true);
         }
       )
@@ -789,6 +797,26 @@ function ProviderRegisterPageInner() {
         setSelectedAreas(serviceAreas);
         setCustomCategoryKeys([]);
         setCustomAreaKeys([]);
+
+        // Capture the server's saved region_codes. The hydration effect
+        // below uses this as the source of truth when present, which
+        // both (a) avoids the area-name inference race against
+        // /api/provider/plan that previously truncated multi-region
+        // paid providers to a single visible card, and (b) preserves
+        // ALL saved regions including any that exceed the current plan
+        // cap (over-plan rows are surfaced with a warning rather than
+        // silently hidden). Defaults to an empty array so the legacy
+        // inference path kicks in for older providers whose rows still
+        // carry region_code = NULL.
+        const responseRegionCodes = (
+          data.provider as { RegionCodes?: unknown }
+        ).RegionCodes;
+        const cleanRegionCodes = Array.isArray(responseRegionCodes)
+          ? (responseRegionCodes as unknown[])
+              .map((v) => String(v ?? "").trim())
+              .filter((v) => v.length > 0)
+          : [];
+        setSavedRegionCodes(cleanRegionCodes);
         // Cascade hydration (Phase R-sync): preselect the provider's
         // stored city. The cascade-reset clears that the setCity wrapper
         // normally runs (selectedRegions / customLocalities empty) are
@@ -871,21 +899,68 @@ function ProviderRegisterPageInner() {
     hasInferredRegions,
   ]);
 
-  // Edit-mode inference — once both the region catalog and the
-  // provider's saved `selectedAreas` are loaded, derive:
-  //   selectedRegions  = regions whose every active canonical_area is in
-  //                       the provider's saved set (case-insensitive).
-  //                       Conservative: only "fully covered" regions are
-  //                       inferred to avoid silently shrinking coverage.
-  //   customLocalities = saved areas not covered by any inferred region.
-  // Runs only once per edit session (gated by hasInferredRegions, which
-  // is declared above with the other Step 3 state).
+  // Edit-mode region hydration.
+  //
+  // Preferred path (post region_code rollout):
+  //   Server returns provider_areas.region_code aggregated into
+  //   `RegionCodes`. We hydrate `selectedRegions` directly from that
+  //   array. NULL rows are filtered out server-side and become
+  //   customLocalities here. This path does NOT depend on
+  //   effectiveMaxRegions — over-plan providers see every saved
+  //   region plus a visible warning rather than a silently-truncated
+  //   picker.
+  //
+  // Legacy fallback (RegionCodes empty/absent):
+  //   Older providers whose rows still carry region_code = NULL fall
+  //   back to area-name inference: regions whose every active
+  //   canonical_area appears in the saved set are inferred. Capped at
+  //   effectiveMaxRegions to avoid runaway selection on a wrong-plan
+  //   row. THE FALLBACK NOW WAITS FOR planLoaded — without that
+  //   guard, /api/provider/plan losing a race against the inference
+  //   trigger pinned the cap at 1 and produced the "5 saved, 1
+  //   visible" bug.
+  //
+  // Runs only once per edit session (gated by hasInferredRegions).
   useEffect(() => {
     if (!isEditMode) return;
     if (hasInferredRegions) return;
     if (!hasLoadedEditProfile) return;
     if (regionOptions.length === 0) return;
+    if (savedRegionCodes === null) return; // provider profile still loading
+
     const norm = (v: string) => v.trim().toLowerCase();
+
+    // ── Direct-hydration path ────────────────────────────────────────
+    if (savedRegionCodes.length > 0) {
+      const validRegionSet = new Set(
+        regionOptions.map((r) => r.region_code)
+      );
+      const hydrated = savedRegionCodes.filter((rc) => validRegionSet.has(rc));
+      // Compute leftover area names — anything in selectedAreas that
+      // doesn't fall under one of the hydrated regions becomes a
+      // custom locality. Captures NULL-region rows from
+      // provider_areas (which the server-side filter dropped from
+      // RegionCodes by design — they don't map back to a region).
+      const coveredKeys = new Set<string>();
+      for (const region of regionOptions) {
+        if (!hydrated.includes(region.region_code)) continue;
+        for (const a of region.areas) coveredKeys.add(norm(a));
+      }
+      const leftovers = selectedAreas.filter(
+        (a) => !coveredKeys.has(norm(a))
+      );
+
+      setSelectedRegions(hydrated);
+      setCustomLocalities(leftovers);
+      setHasInferredRegions(true);
+      return;
+    }
+
+    // ── Legacy fallback: area-name inference ─────────────────────────
+    // Wait for the plan response so effectiveMaxRegions reflects the
+    // provider's actual cap rather than the default of 1.
+    if (!planLoaded) return;
+
     const savedSet = new Set(selectedAreas.map(norm).filter(Boolean));
     if (savedSet.size === 0) {
       setHasInferredRegions(true);
@@ -915,6 +990,8 @@ function ProviderRegisterPageInner() {
     regionOptions,
     selectedAreas,
     effectiveMaxRegions,
+    planLoaded,
+    savedRegionCodes,
   ]);
 
   // Region / locality edits should clear the most recent submit error so
@@ -1294,10 +1371,25 @@ function ProviderRegisterPageInner() {
       return;
     }
     if (planRuleKind === "fixed" && selectedRegions.length > effectiveMaxRegions) {
-      setSubmitError(
-        `Your plan covers ${effectiveMaxRegions} region${effectiveMaxRegions === 1 ? "" : "s"}. Reduce your selection or upgrade to save.`
-      );
-      return;
+      // Mirror the server's strict-reduction relaxation: an over-cap
+      // save is allowed when this submission adds nothing new AND is
+      // strictly smaller than the saved set. Lets an over-plan
+      // provider (e.g. after a downgrade) trim toward compliance in
+      // steps without each intermediate save bouncing off this gate.
+      const savedCount = Array.isArray(savedRegionCodes)
+        ? savedRegionCodes.length
+        : 0;
+      const savedSet = new Set(savedRegionCodes ?? []);
+      const isStrictReduction =
+        savedCount > 0 &&
+        selectedRegions.length < savedCount &&
+        selectedRegions.every((rc) => savedSet.has(rc));
+      if (!isStrictReduction) {
+        setSubmitError(
+          `Your plan covers ${effectiveMaxRegions} region${effectiveMaxRegions === 1 ? "" : "s"}. Reduce your selection or upgrade to save.`
+        );
+        return;
+      }
     }
 
     // Pledge gate — NEW-registration path only. Edit mode (provider_update
@@ -1364,16 +1456,11 @@ function ProviderRegisterPageInner() {
               `Your current plan supports only ${allowed} ${regionLabel}. Upgrade to add more regions.`
             );
           }
-          if (updateData?.error === "MONTHLY_CHANGE_LIMIT_EXCEEDED") {
-            const kindLabel =
-              updateData.changeType === "category_change"
-                ? "service category"
-                : "service regions";
-            const limit = Number(updateData.monthlyLimit ?? 3);
-            throw new Error(
-              `You've already changed your ${kindLabel} ${limit} times this month. Try again next month.`
-            );
-          }
+          // MONTHLY_CHANGE_LIMIT_EXCEEDED is no longer returned by
+          // the server (the per-period throttle was removed for MVP),
+          // so the dedicated client branch was deleted. The generic
+          // fallback below catches it defensively if the route ever
+          // returns it during a rollout window.
           throw new Error(
             updateData?.error || updateData?.message || "Failed to save changes"
           );
@@ -1579,15 +1666,6 @@ function ProviderRegisterPageInner() {
                   </span>
                 </div>
                 <p className="mb-2 text-xs text-slate-500">(Choose the services you actually provide)</p>
-                {planLoaded && remainingCategoryChanges < monthlyChangeLimit ? (
-                  <p className="mb-2 text-[11px] text-slate-500">
-                    Service category changes left this month:{" "}
-                    <span className="font-semibold text-slate-700">
-                      {remainingCategoryChanges}
-                    </span>{" "}
-                    of {monthlyChangeLimit}.
-                  </p>
-                ) : null}
                 <input
                   type="text"
                   value={catQuery}
@@ -1916,16 +1994,6 @@ function ProviderRegisterPageInner() {
                           ? "1 free region included — upgrade to reach more areas."
                           : "Get business from major areas — up to 5 regions."}
                     </p>
-                    {remainingRegionChanges < monthlyChangeLimit ? (
-                      <p className="mt-2 text-[11px] text-emerald-900/70">
-                        Region changes left this month:{" "}
-                        <span className="font-semibold text-emerald-900">
-                          {remainingRegionChanges}
-                        </span>{" "}
-                        of {monthlyChangeLimit}.
-                      </p>
-                    ) : null}
-
                     {/* Phase 1 of the payment stabilization: the live
                         upgrade flow lives on the provider dashboard
                         (ProviderPlanCard), not here. Keeping two
@@ -1970,6 +2038,37 @@ function ProviderRegisterPageInner() {
                         ) : null}
                       </div>
                     )}
+                  </div>
+                ) : null}
+                {/* Over-plan warning. Renders when the provider has more
+                    regions saved than their current plan allows — a
+                    state that can occur after a plan downgrade (manual
+                    or expiry collapsing a paid plan to free) or any
+                    historical write that pre-dates region-cap
+                    enforcement. We never auto-trim provider_areas; the
+                    server-side cap on submit will block the save until
+                    the provider reduces their selection. The banner is
+                    gated on planLoaded so it doesn't flash during the
+                    default-1 initial render. cityWide plans have no
+                    fixed cap and skip this warning by design. */}
+                {planLoaded &&
+                planRuleKind === "fixed" &&
+                selectedRegions.length > effectiveMaxRegions ? (
+                  <div
+                    data-testid="provider-register-over-plan-warning"
+                    role="alert"
+                    className="mb-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800"
+                  >
+                    <p className="font-semibold">
+                      You currently have {selectedRegions.length} regions saved,
+                      but your plan allows {effectiveMaxRegions}. Please reduce
+                      to {effectiveMaxRegions} before saving changes.
+                    </p>
+                    <p className="mt-1 text-rose-700/90">
+                      Existing leads in extra regions still work — but you
+                      won&rsquo;t be able to save further edits until the
+                      selection matches your plan.
+                    </p>
                   </div>
                 ) : null}
                 {isLoadingRegions ? (

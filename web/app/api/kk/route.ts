@@ -15,6 +15,7 @@ import {
 } from "@/lib/admin/adminProviderReads";
 import { findDuplicateNameProviders } from "@/lib/providerNameNormalize";
 import { PROVIDER_PLEDGE_VERSION, isPledgeAccepted } from "@/lib/disclaimer";
+import { invalidateSnapshots } from "@/lib/admin/snapshotCache";
 import {
   getAdminNotificationLogsFromSupabase,
   getAdminNotificationSummaryFromSupabase,
@@ -2172,6 +2173,32 @@ export async function POST(request: NextRequest) {
 
       const effectiveVerified = isDuplicateName ? "no" : "yes";
       const effectivePendingApproval = pendingApproval;
+
+      // Admin snapshot invalidation — a fresh provider's region/
+      // category rows just landed in provider_areas / provider_services,
+      // so the AreaTab's per-region density and the dashboard's
+      // verified / under-review tiles need to recompute on the next
+      // admin read instead of waiting up to the 6h snapshot TTL.
+      // Soft-fail by design: a cache-invalidation error must never
+      // bubble up and undo a successful registration.
+      //
+      // TODO(multi-city): derive the city_code from the provider's
+      // resolved provider_areas city once service_regions ships
+      // beyond JOD. Hard-coding "JOD" today is intentional under the
+      // single-active-city deployment.
+      try {
+        await invalidateSnapshots([
+          "area_stats.JOD",
+          "provider_stats",
+          "provider_stats.by_category",
+          "provider_stats.by_category.verified",
+        ]);
+      } catch (err) {
+        console.warn(
+          "[api/kk provider_register] snapshot invalidation failed (non-fatal)",
+          err instanceof Error ? err.message : err
+        );
+      }
 
       return withNoCache(
         NextResponse.json({

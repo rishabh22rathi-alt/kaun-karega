@@ -152,6 +152,19 @@ export type ProviderByPhonePayload =
         // Empty string when the provider has no provider_areas rows yet —
         // edit-mode UI then falls back to the default city.
         CityCode: string;
+        // Distinct non-NULL provider_areas.region_code values, sorted
+        // ascending. Source of truth for "which regions did this
+        // provider save". The provider register/edit page hydrates
+        // selectedRegions from this array directly when it is non-
+        // empty, bypassing the area-name re-inference path (which
+        // raced /api/provider/plan and truncated multi-region paid
+        // providers to a single visible region). Empty array means the
+        // provider's rows pre-date the region_code column being
+        // populated; the page falls back to the legacy inference in
+        // that case. NULL region_code rows are filtered out by design
+        // — they cannot map back to a region and must not become
+        // fake "selected" entries.
+        RegionCodes: string[];
       };
     }
   | { ok: false; error: string };
@@ -192,14 +205,30 @@ export async function getProviderByPhoneFromSupabase(
         .eq("provider_id", providerId),
       adminSupabase
         .from("provider_areas")
-        .select("area, city_code")
+        .select("area, city_code, region_code")
         .eq("provider_id", providerId),
     ]);
 
     const typedAreaRows = (areaRows ?? []) as Array<{
       area: string | null;
       city_code: string | null;
+      region_code: string | null;
     }>;
+
+    // Distinct non-NULL region_codes from provider_areas, sorted
+    // ascending. This is the truthful "which regions are saved" set —
+    // the same data the dashboard-profile route uses to compute
+    // AreaCoverage.SelectedRegionCodes. NULL rows are filtered (they
+    // cannot map back to a region and would create fake selections in
+    // the edit UI). Empty array = no usable region_code yet; the
+    // register page treats this as a signal to use the legacy
+    // area-name inference fallback.
+    const regionCodesSet = new Set<string>();
+    for (const r of typedAreaRows) {
+      const rc = String(r.region_code ?? "").trim();
+      if (rc) regionCodesSet.add(rc);
+    }
+    const regionCodes = Array.from(regionCodesSet).sort();
 
     // Derive the provider's city from the first non-NULL, well-formed
     // city_code in their provider_areas. Empty when no rows or all NULL —
@@ -234,6 +263,7 @@ export async function getProviderByPhoneFromSupabase(
           .map((a) => ({ Area: String(a.area || "").trim() }))
           .filter((a) => a.Area),
         CityCode: derivedCityCode,
+        RegionCodes: regionCodes,
       },
     };
   } catch (err) {
@@ -293,7 +323,7 @@ function setsDiffer(a: string[], b: string[]): boolean {
 
 export async function updateProviderInSupabase(
   input: UpdateProviderInput
-): Promise<{ success: boolean }> {
+): Promise<{ success: boolean; error?: string }> {
   const {
     id,
     name,
@@ -393,9 +423,106 @@ export async function updateProviderInSupabase(
     .from("provider_areas")
     .delete()
     .eq("provider_id", id);
-  if (deleteAreasError) return { success: false };
+  if (deleteAreasError) {
+    return { success: false, error: deleteAreasError.message || "provider_areas delete failed" };
+  }
 
-  if (areas.length > 0) {
+  if (Array.isArray(selectedRegionCodes) && selectedRegionCodes.length > 0) {
+    const resolvedCityCode = cityCode ?? (await getDefaultCityCode());
+    const requestedRegionCodes = Array.from(
+      new Set(
+        selectedRegionCodes
+          .map((code) => String(code ?? "").trim())
+          .filter(Boolean)
+      )
+    );
+    const selectedRegionSet = new Set(requestedRegionCodes);
+
+    const { data: catalogRows, error: catalogError } = await adminSupabase
+      .from("service_region_areas")
+      .select("canonical_area, region_code, city_code")
+      .eq("active", true)
+      .eq("city_code", resolvedCityCode)
+      .in("region_code", requestedRegionCodes)
+      .limit(10000);
+
+    if (catalogError) {
+      return {
+        success: false,
+        error: catalogError.message || "service_region_areas expansion failed",
+      };
+    }
+
+    const foundRegions = new Set<string>();
+    const rowsByKey = new Map<
+      string,
+      { provider_id: string; area: string; city_code: string; region_code: string | null }
+    >();
+
+    for (const row of (catalogRows ?? []) as Array<{
+      canonical_area: string | null;
+      region_code: string | null;
+      city_code: string | null;
+    }>) {
+      const area = String(row.canonical_area ?? "").trim();
+      const regionCode = String(row.region_code ?? "").trim();
+      if (!area || !regionCode || !selectedRegionSet.has(regionCode)) continue;
+      foundRegions.add(regionCode);
+      rowsByKey.set(`${regionCode.toLowerCase()}:${area.toLowerCase()}`, {
+        provider_id: id,
+        area,
+        city_code: String(row.city_code ?? resolvedCityCode).trim().toUpperCase() || resolvedCityCode,
+        region_code: regionCode,
+      });
+    }
+
+    const missingRegions = requestedRegionCodes.filter((code) => !foundRegions.has(code));
+    if (missingRegions.length > 0) {
+      return {
+        success: false,
+        error: `No active service_region_areas found for selected regions: ${missingRegions.join(", ")}`,
+      };
+    }
+
+    // Preserve custom/review localities, but drop stale frontend-expanded
+    // catalog areas from regions no longer selected.
+    if (areas.length > 0) {
+      let regionResolutions: Map<string, AreaRegionResolution> = new Map();
+      try {
+        regionResolutions = await resolveAreasToRegions(adminSupabase, {
+          areas,
+          cityCode: resolvedCityCode,
+        });
+      } catch {
+        regionResolutions = new Map();
+      }
+
+      for (const area of areas) {
+        const trimmed = String(area ?? "").trim();
+        if (!trimmed) continue;
+        const resolution = regionResolutions.get(area);
+        if (resolution?.resolved) continue;
+        rowsByKey.set(`custom:${trimmed.toLowerCase()}`, {
+          provider_id: id,
+          area: trimmed,
+          city_code: resolvedCityCode,
+          region_code: null,
+        });
+      }
+    }
+
+    const areaRows = Array.from(rowsByKey.values());
+    if (areaRows.length > 0) {
+      const { error: insertAreasError } = await adminSupabase
+        .from("provider_areas")
+        .insert(areaRows);
+      if (insertAreasError) {
+        return { success: false, error: insertAreasError.message || "provider_areas insert failed" };
+      }
+    }
+  }
+
+  if (!Array.isArray(selectedRegionCodes) && areas.length > 0) {
     // Phase 1.2 + cascade: caller (UI cascade) supplies cityCode when the
     // provider explicitly picked a city. Old clients that don't send it
     // fall back to getDefaultCityCode — preserves the Phase 1.2 single-

@@ -5,11 +5,8 @@ import { updateProviderInSupabase } from "@/lib/admin/adminProviderReads";
 import { findDuplicateNameProviders } from "@/lib/providerNameNormalize";
 import { queueUnmappedAreaForReview } from "@/lib/admin/adminUnmappedAreas";
 import { effectivePlan } from "@/lib/payments/effectivePlan";
-import {
-  getPlanRule,
-  MONTHLY_CHANGE_LIMIT,
-  type ChangeType,
-} from "@/lib/payments/planRules";
+import { getPlanRule } from "@/lib/payments/planRules";
+import { invalidateSnapshots } from "@/lib/admin/snapshotCache";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -71,6 +68,11 @@ export async function POST(request: Request) {
   // provider with >1 canonical area).
   const selectedRegionCodes = sanitizeStringArray(body.selectedRegionCodes);
   const hasRegionCodes = Array.isArray(body.selectedRegionCodes);
+  console.log("[provider/update] received region payload", {
+    selectedRegionCodes,
+    areasCount: areas.length,
+    hasRegionCodes,
+  });
 
   if (!name) {
     return NextResponse.json(
@@ -128,30 +130,30 @@ export async function POST(request: Request) {
     );
   }
 
-  // ── Plan-aware enforcement (replaces the prior Stage 3A area-count
-  //    check; always runs now, not gated by PAYMENT_ENFORCEMENT_ENABLED) ─
+  // ── Plan-aware enforcement + addition-only monthly limit ─────────────
   //
-  // Compares the provider's REGION count (from selectedRegionCodes in
-  // the body) against their effective plan's maxRegions. Old clients
-  // that don't send selectedRegionCodes skip this check — they hit the
-  // legacy area-count path was incorrect (every region expands to N
-  // areas), so silently skipping is safer than wrongly rejecting.
-  //
-  // The cityWide rule kind has no region cap (the plan == "every
-  // active region in the city"); we still verify against the city's
-  // actual region count to catch tampering.
-  //
-  // Failure mode for the plan lookup:
-  //   - hasRegionCodes (provider is editing their region set)
-  //       → fail-CLOSED: returning 500 PLAN_LOOKUP_FAILED is safer than
-  //         silently allowing an unbounded region save during a
-  //         transient DB blip. The provider can retry; the client UI
-  //         renders this as a generic "couldn't save right now" toast.
-  //   - !hasRegionCodes (old client / non-region edit)
-  //       → fail-OPEN with a warn: there is no region count to enforce
-  //         against, so the request is harmless and rejecting it would
-  //         block legitimate name/category-only edits during the same
-  //         transient blip.
+  // What this block does, in order:
+  //   1. Look up the provider's current plan row. Fail-CLOSED on a DB
+  //      error during region edits; fail-OPEN on non-region edits.
+  //   2. Snapshot previous categories + areas (and reverse-derive the
+  //      previous region set). Used by BOTH the plan-cap check (so we
+  //      can let strict reductions through even when the new count is
+  //      still over the cap) AND the addition-only monthly limit.
+  //   3. Compute add/remove diffs for regions and categories.
+  //   4. Plan-cap check with a strict-reduction exception: an
+  //      over-the-cap save is allowed if it strictly reduces the
+  //      region count and adds nothing new. Lets a provider trim from
+  //      7→6→5 in steps instead of being stuck at "7 saved but plan
+  //      allows 5, every save bounces."
+  //   5. Monthly addition-only limit. Counts only history rows where
+  //      `new_value` contains at least one entry not in `old_value`
+  //      (i.e. a previous save that added coverage). Pure-removal
+  //      saves are skipped entirely and do not consume the budget.
+  //   6. Reset boundary uses MAX(monthStart, current_period_start).
+  //      The Razorpay webhook already updates current_period_start on
+  //      every payment.captured, so successful plan activation
+  //      naturally resets the addition counter for that provider
+  //      without any code change here.
   const { data: planRow, error: planLookupError } = await adminSupabase
     .from("provider_plans")
     .select("plan_code, max_regions, current_period_start, current_period_end")
@@ -168,94 +170,56 @@ export async function POST(request: Request) {
       { status: 500 }
     );
   }
-
-  const plan = effectivePlan(planLookupError ? null : (planRow ?? null));
   if (planLookupError) {
     console.warn(
       "[provider/update] provider_plans lookup failed on non-region edit; failing OPEN",
       planLookupError.message || planLookupError
     );
-  } else if (hasRegionCodes) {
-    const rule = getPlanRule(plan.code);
-    if (rule.kind === "fixed" && selectedRegionCodes.length > rule.maxRegions) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: "PLAN_LIMIT_EXCEEDED",
-          planCode: plan.code,
-          maxRegions: rule.maxRegions,
-          attempted: selectedRegionCodes.length,
-        },
-        { status: 400 }
-      );
-    }
-    // cityWide: no per-count check; the data shape IS the limit. A
-    // tampered payload that under-covers is allowed for now (provider
-    // can always opt to a subset of their plan's coverage).
   }
 
-  // ── Monthly change-limit enforcement (3 per kind per calendar month) ─
-  // Count provider_change_log rows since the start of the current UTC
-  // month. We only count the kinds we're about to LOG (i.e. only the
-  // kinds whose set actually mutates this save). To know that, we need
-  // to snapshot the current state and diff against what's being saved
-  // — same logic updateProviderInSupabase will run again. Doing the
-  // diff here too is the price we pay for enforcing BEFORE the write.
-  // Failure mode: fail-OPEN (transient blip can't lock provider out).
+  const plan = effectivePlan(planLookupError ? null : (planRow ?? null));
+
+  // ── Snapshot previous state ──────────────────────────────────────────
+  // Loaded BEFORE both the plan-cap check (needs prevRegions to decide
+  // "is this a strict reduction?") and the monthly precheck (needs
+  // addedRegions / addedCategories to decide whether to enforce). If
+  // the snapshot read errors out, fall back to safe-but-strict
+  // behavior: no relaxation on the cap, monthly precheck skipped.
+  const normalize = (vs: string[]) => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const v of vs) {
+      const k = String(v ?? "").trim().toLowerCase();
+      if (!k || seen.has(k)) continue;
+      seen.add(k);
+      out.push(k);
+    }
+    return out.sort();
+  };
+
+  let prevSnapshotFailed = false;
+  let prevRegions: string[] = [];
+  type PrevAreaRow = { area: string | null; city_code: string | null };
+  let prevAreaRows: PrevAreaRow[] = [];
   try {
-    const monthStart = (() => {
-      const now = new Date();
-      return new Date(
-        Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)
-      ).toISOString();
-    })();
-
-    // Snapshot previous state for diffing.
-    const [{ data: prevServices }, { data: prevAreas }] = await Promise.all([
-      adminSupabase
-        .from("provider_services")
-        .select("category")
-        .eq("provider_id", providerRow.provider_id),
-      adminSupabase
-        .from("provider_areas")
-        .select("area, city_code")
-        .eq("provider_id", providerRow.provider_id),
-    ]);
-    const normalize = (vs: string[]) => {
-      const seen = new Set<string>();
-      const out: string[] = [];
-      for (const v of vs) {
-        const k = String(v ?? "").trim().toLowerCase();
-        if (!k || seen.has(k)) continue;
-        seen.add(k);
-        out.push(k);
-      }
-      return out.sort();
-    };
-    const prevCats = normalize(
-      ((prevServices ?? []) as Array<{ category: string | null }>)
-        .map((s) => String(s.category ?? ""))
-    );
-    const nextCats = normalize(categories);
-    const categoryChanging =
-      prevCats.length !== nextCats.length ||
-      prevCats.some((v, i) => v !== nextCats[i]);
-
-    // Region diff via reverse-derivation through service_region_areas.
-    // Only meaningful when the new submit included selectedRegionCodes;
-    // without it we cannot compute "is the region set changing".
-    let regionChanging = false;
-    if (hasRegionCodes) {
-      const nextRegions = normalize(selectedRegionCodes);
-      const prevAreaList = ((prevAreas ?? []) as Array<{
-        area: string | null;
-        city_code: string | null;
-      }>).map((a) => String(a.area ?? "")).filter(Boolean);
-      let prevRegions: string[] = [];
+    const { data: prevAreas, error: prevAreasErr } = await adminSupabase
+      .from("provider_areas")
+      .select("area, city_code")
+      .eq("provider_id", providerRow.provider_id);
+    if (prevAreasErr) throw prevAreasErr;
+    prevAreaRows = (prevAreas ?? []) as PrevAreaRow[];
+    // Reverse-derive prev region codes from prev areas via
+    // service_region_areas. Only meaningful when we have areas to
+    // map; otherwise prevRegions stays empty (legacy provider with no
+    // rows or a brand-new edit).
+    if (hasRegionCodes && prevAreaRows.length > 0) {
+      const prevAreaList = prevAreaRows
+        .map((a) => String(a.area ?? "").trim())
+        .filter(Boolean);
       if (prevAreaList.length > 0) {
         const prevCity =
-          ((prevAreas ?? []) as Array<{ city_code: string | null }>).find(
-            (r) => /^[A-Z]{3}$/.test(String(r.city_code ?? "").trim().toUpperCase())
+          prevAreaRows.find((r) =>
+            /^[A-Z]{3}$/.test(String(r.city_code ?? "").trim().toUpperCase())
           )?.city_code ?? cityCode ?? "";
         const sraQ = adminSupabase
           .from("service_region_areas")
@@ -280,49 +244,70 @@ export async function POST(request: Request) {
         }
         prevRegions = Array.from(derived).sort();
       }
-      regionChanging =
-        prevRegions.length !== nextRegions.length ||
-        prevRegions.some((v, i) => v !== nextRegions[i]);
     }
+  } catch (err) {
+    prevSnapshotFailed = true;
+    console.warn(
+      "[provider/update] previous-state snapshot failed; cap relaxation disabled and monthly precheck will be skipped",
+      err instanceof Error ? err.message : err
+    );
+  }
 
-    // Count monthly logs for the kinds that are about to be incremented.
-    const kindsToCheck: ChangeType[] = [];
-    if (categoryChanging) kindsToCheck.push("category_change");
-    if (regionChanging) kindsToCheck.push("region_change");
+  // ── Region add-diff (cap-relaxation input) ───────────────────────────
+  // Only `addedRegions` is materialized — used by the plan-cap
+  // strict-reduction check below to decide whether an over-cap save is
+  // a legitimate trim or a sneaky addition. The monthly addition limit
+  // and the category-add diff were removed for MVP: providers can now
+  // change regions/categories any number of times within their plan
+  // cap. The audit log written by updateProviderInSupabase still
+  // records every actual mutation, so we can re-introduce per-period
+  // throttles later without losing data.
+  const nextRegions = hasRegionCodes ? normalize(selectedRegionCodes) : [];
+  const prevRegionsSet = new Set(prevRegions);
+  const addedRegions = hasRegionCodes
+    ? nextRegions.filter((r) => !prevRegionsSet.has(r))
+    : [];
 
-    for (const kind of kindsToCheck) {
-      const { count, error: countErr } = await adminSupabase
-        .from("provider_change_log")
-        .select("id", { count: "exact", head: true })
-        .eq("provider_id", providerRow.provider_id)
-        .eq("change_type", kind)
-        .gte("changed_at", monthStart);
-      if (countErr) {
-        console.warn(
-          "[provider/update] provider_change_log count failed; failing OPEN",
-          countErr.message || countErr
-        );
-        break;
-      }
-      if (Number(count ?? 0) >= MONTHLY_CHANGE_LIMIT) {
+  // ── Plan-cap check (with strict-reduction relaxation) ────────────────
+  if (!planLookupError && hasRegionCodes) {
+    const rule = getPlanRule(plan.code);
+    if (rule.kind === "fixed" && nextRegions.length > rule.maxRegions) {
+      // Allow only when this save STRICTLY REDUCES coverage:
+      //   - no new region added (addedRegions empty), AND
+      //   - new count strictly less than previous count
+      // Same-size-but-different swaps are NOT a reduction (they touch
+      // additions). Growing past the cap is never allowed.
+      const isStrictReduction =
+        !prevSnapshotFailed &&
+        addedRegions.length === 0 &&
+        nextRegions.length < prevRegions.length;
+      if (!isStrictReduction) {
         return NextResponse.json(
           {
             ok: false,
-            error: "MONTHLY_CHANGE_LIMIT_EXCEEDED",
-            changeType: kind,
-            monthlyLimit: MONTHLY_CHANGE_LIMIT,
-            usedThisMonth: Number(count ?? 0),
+            error: "PLAN_LIMIT_EXCEEDED",
+            planCode: plan.code,
+            maxRegions: rule.maxRegions,
+            attempted: nextRegions.length,
           },
-          { status: 429 }
+          { status: 400 }
         );
       }
+      // Strict reduction allowed even though new count is still > cap.
+      // Provider must keep reducing on future saves until cap is met.
     }
-  } catch (err) {
-    console.warn(
-      "[provider/update] monthly-limit precheck threw; failing OPEN",
-      err
-    );
+    // cityWide: no per-count check; the data shape IS the limit. A
+    // tampered payload that under-covers is allowed for now (provider
+    // can always opt to a subset of their plan's coverage).
   }
+
+  // NOTE: The per-period monthly addition limit (MONTHLY_CHANGE_LIMIT)
+  // was removed for the MVP. Providers can now change regions and
+  // categories any number of times — only the per-save plan cap and
+  // strict-reduction rules above gate the write. The audit log in
+  // provider_change_log is still produced by updateProviderInSupabase
+  // for every actual mutation, so re-introducing a throttle later is a
+  // pure read-side change with the historical data intact.
 
   // Detect categories the provider added that are NOT in the active master
   // list. Comparison is case-insensitive on trimmed names. We do this BEFORE
@@ -369,8 +354,14 @@ export async function POST(request: Request) {
   });
 
   if (!result.success) {
+    console.error("[provider/update] updateProviderInSupabase failed", {
+      providerId: String(providerRow.provider_id),
+      selectedRegionCodes: hasRegionCodes ? selectedRegionCodes : undefined,
+      areasCount: areas.length,
+      error: result.error,
+    });
     return NextResponse.json(
-      { ok: false, error: "UPDATE_FAILED" },
+      { ok: false, error: "UPDATE_FAILED", message: result.error || "Provider update failed" },
       { status: 500 }
     );
   }
@@ -485,6 +476,33 @@ export async function POST(request: Request) {
         duplicate_name_reason: null,
       })
       .eq("provider_id", String(providerRow.provider_id));
+  }
+
+  // Admin snapshot invalidation — keeps the AreaTab's verified /
+  // provider-density-by-region counts in sync with the row we just
+  // wrote, so an admin reading /api/admin/areas after this save sees
+  // the change on the very next request instead of waiting up to the
+  // 6h snapshot TTL or clicking Refresh. Soft-fail by design: a
+  // cache-invalidation error must never bubble up and undo a
+  // successful provider save.
+  //
+  // TODO(multi-city): when service_regions ships beyond JOD, derive
+  // the city_code from this provider's saved provider_areas rows
+  // (or from the request body's cityCode) and invalidate the
+  // matching `area_stats.<CITY>` key. Today's hard-coded "JOD" is
+  // intentional under the single-active-city deployment.
+  try {
+    await invalidateSnapshots([
+      "area_stats.JOD",
+      "provider_stats",
+      "provider_stats.by_category",
+      "provider_stats.by_category.verified",
+    ]);
+  } catch (err) {
+    console.warn(
+      "[provider/update] snapshot invalidation failed (non-fatal)",
+      err instanceof Error ? err.message : err
+    );
   }
 
   return NextResponse.json({

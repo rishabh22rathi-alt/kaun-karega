@@ -135,6 +135,131 @@ test.describe("ProviderPlanCard — Razorpay-first upgrade flow", () => {
     await installRazorpayStub(page);
   });
 
+  test("all_jodhpur current plan: Full Jodhpur is emphasized and 5-region popular badge is hidden", async ({
+    page,
+  }) => {
+    await mockJson(
+      page,
+      "**/api/provider/dashboard-profile**",
+      jsonOk(
+        profileWithPlan({
+          code: "all_jodhpur",
+          maxRegions: 9999,
+          currentPeriodEnd: "2026-06-30T00:00:00.000Z",
+          active: true,
+          paymentsEnabled: true,
+        })
+      )
+    );
+
+    await gotoPath(page, "/provider/dashboard");
+
+    await expect(page.getByTestId("provider-plan-card")).toBeVisible({
+      timeout: 5_000,
+    });
+    await expect(page.getByTestId("provider-plan-pill")).toHaveText(/101 Plan/);
+    await expect(page.getByTestId("provider-plan-active-badge")).toHaveText("Active");
+    await expect(page.getByTestId("provider-plan-max-regions")).toHaveText(
+      "Get business from whole city"
+    );
+    await expect(page.getByTestId("provider-plan-usage-unlimited")).toHaveText(
+      "All Jodhpur regions covered"
+    );
+
+    const fullJodhpur = page.getByTestId("provider-plan-compare-all_jodhpur");
+    const fiveRegions = page.getByTestId("provider-plan-compare-regions_5");
+    await expect(fullJodhpur).toHaveAttribute("data-current", "true");
+    await expect(fullJodhpur).toHaveAttribute("data-visual-emphasis", "strong");
+    await expect(
+      page.getByTestId("provider-plan-compare-current-badge-all_jodhpur")
+    ).toHaveText(/Your plan/i);
+    await expect(
+      page.getByTestId("provider-plan-compare-title-all_jodhpur")
+    ).toHaveClass(/text-base/);
+    await expect(fullJodhpur.getByText("Maximum city-wide reach")).toHaveClass(
+      /font-semibold/
+    );
+    await expect(
+      fiveRegions.getByTestId("provider-plan-compare-popular-badge")
+    ).toHaveCount(0);
+    await expect(page.getByTestId("provider-plan-compare-cta-regions_5")).toHaveText(
+      /Upgrade/i
+    );
+    await expect(page.getByTestId("provider-plan-compare-cta-regions_5")).not.toHaveText(
+      /downgrade/i
+    );
+    await expect(page.getByTestId("provider-plan-compare-cta-all_jodhpur")).toHaveText(
+      "Your plan"
+    );
+    await expect(page.getByTestId("provider-plan-compare-cta-all_jodhpur")).toBeDisabled();
+  });
+
+  test("free current plan: 5-region plan keeps popular badge and upgrade CTAs", async ({
+    page,
+  }) => {
+    await mockJson(
+      page,
+      "**/api/provider/dashboard-profile**",
+      jsonOk(
+        profileWithPlan({
+          code: "free",
+          maxRegions: 1,
+          currentPeriodEnd: null,
+          active: true,
+          paymentsEnabled: true,
+        })
+      )
+    );
+
+    await gotoPath(page, "/provider/dashboard");
+
+    const fiveRegions = page.getByTestId("provider-plan-compare-regions_5");
+    await expect(
+      fiveRegions.getByTestId("provider-plan-compare-popular-badge")
+    ).toHaveText(/Most Popular/i);
+    await expect(page.getByTestId("provider-plan-compare-cta-regions_5")).toHaveText(
+      /Upgrade.*31/i
+    );
+    await expect(page.getByTestId("provider-plan-compare-cta-all_jodhpur")).toHaveText(
+      /Upgrade.*101/i
+    );
+  });
+
+  test("regions_5 current plan: 5-region card shows Your plan without duplicate popular badge", async ({
+    page,
+  }) => {
+    await mockJson(
+      page,
+      "**/api/provider/dashboard-profile**",
+      jsonOk(
+        profileWithPlan({
+          code: "regions_5",
+          maxRegions: 5,
+          currentPeriodEnd: "2026-06-30T00:00:00.000Z",
+          active: true,
+          paymentsEnabled: true,
+        })
+      )
+    );
+
+    await gotoPath(page, "/provider/dashboard");
+
+    const fiveRegions = page.getByTestId("provider-plan-compare-regions_5");
+    await expect(fiveRegions).toHaveAttribute("data-current", "true");
+    await expect(
+      page.getByTestId("provider-plan-compare-current-badge-regions_5")
+    ).toHaveText(/Your plan/i);
+    await expect(
+      fiveRegions.getByTestId("provider-plan-compare-popular-badge")
+    ).toHaveCount(0);
+    await expect(page.getByTestId("provider-plan-compare-cta-regions_5")).toHaveText(
+      "Your plan"
+    );
+    await expect(page.getByTestId("provider-plan-compare-cta-all_jodhpur")).toHaveText(
+      /Upgrade.*101/i
+    );
+  });
+
   test("free + paymentsEnabled=false: upgrade buttons hidden behind a clear banner", async ({
     page,
   }) => {
