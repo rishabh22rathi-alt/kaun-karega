@@ -458,6 +458,7 @@ export default function ProviderPlanCard({
         amount: validatedOrder.amount,
         currency: validatedOrder.currency || "INR",
         order_id: validatedOrder.order_id,
+        webview_intent: true,
         name: "Kaun Karega",
         description:
           targetPlan === "regions_5"

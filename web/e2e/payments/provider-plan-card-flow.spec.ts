@@ -68,6 +68,7 @@ async function installRazorpayStub(page: Page): Promise<void> {
       handler?: (response: Record<string, unknown>) => void;
       modal?: { ondismiss?: () => void };
       order_id?: string;
+      webview_intent?: boolean;
     };
     const w = window as unknown as {
       __razorpayLastOptions?: StubOptions;
@@ -115,6 +116,17 @@ async function fireRazorpayDismiss(page: Page): Promise<void> {
       __razorpayLastOptions?: { modal?: { ondismiss?: () => void } };
     };
     w.__razorpayLastOptions?.modal?.ondismiss?.();
+  });
+}
+
+async function getRazorpayCheckoutOptions(
+  page: Page
+): Promise<Record<string, unknown> | undefined> {
+  return page.evaluate(() => {
+    const w = window as unknown as {
+      __razorpayLastOptions?: Record<string, unknown>;
+    };
+    return w.__razorpayLastOptions;
   });
 }
 
@@ -334,6 +346,12 @@ test.describe("ProviderPlanCard — Razorpay-first upgrade flow", () => {
     await upgrade.click();
 
     // Once Razorpay modal "opens", both buttons stay disabled.
+    await expect
+      .poll(async () => {
+        const options = await getRazorpayCheckoutOptions(page);
+        return options?.webview_intent;
+      })
+      .toBe(true);
     await expect(upgrade).toBeDisabled();
     await expect(
       page.getByTestId("provider-plan-upgrade-all-jodhpur")
