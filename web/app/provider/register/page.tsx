@@ -1906,71 +1906,48 @@ function ProviderRegisterPageInner() {
                       </p>
                     ) : null}
 
-                    {/* Upgrade CTAs. For free → both ₹31 and ₹101 cards
-                        with action CTAs. For regions_5 → only the ₹101
-                        upgrade. For all_jodhpur → status badge only
-                        (highest tier). Buttons are disabled today —
-                        /api/payments/create-order exists but is gated by
-                        PAYMENT_ENABLED env and needs the Razorpay JS
-                        SDK + post-success handler on the client. Wiring
-                        the CTA without those produces a broken checkout
-                        — keeping disabled per the "Do not build new
-                        payment gateway flow from scratch" rule. */}
+                    {/* Phase 1 of the payment stabilization: the live
+                        upgrade flow lives on the provider dashboard
+                        (ProviderPlanCard), not here. Keeping two
+                        checkout entry points (here + dashboard) created
+                        an inconsistency where the register page said
+                        "Payment coming soon" while the dashboard's
+                        Razorpay button was live. This card now informs
+                        the provider where to manage the plan and links
+                        there in edit mode; first-time registration
+                        defers the link to post-save.
+                        cityWide (all_jodhpur) still shows a status pill
+                        because it has no upgrade above it. */}
                     {planRuleKind === "cityWide" ? (
                       <div className="mt-3 inline-flex items-center gap-2 rounded-full border border-emerald-300 bg-emerald-100 px-3 py-1.5 text-xs font-bold text-emerald-900">
                         <span aria-hidden="true">✓</span>
                         <span>Whole city coverage active</span>
                       </div>
                     ) : (
-                      <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-                        {planCode === "free" ? (
-                          <div className="flex-1 rounded-xl border border-emerald-300 bg-white p-3 shadow-sm">
-                            <p className="text-sm font-bold text-[#1B5E20]">
-                              ₹31 — Get business from major areas
-                            </p>
-                            <p className="mt-0.5 text-[11px] text-slate-600">
-                              Up to 5 regions in your city.
-                            </p>
-                            <button
-                              type="button"
-                              disabled
-                              title="Payment coming soon"
-                              aria-label="Expand to 5 regions — payment coming soon"
-                              className="mt-2 inline-flex w-full cursor-not-allowed items-center justify-center rounded-lg bg-[#ea580c] px-3 py-2 text-xs font-bold text-white opacity-70 transition disabled:bg-[#ea580c] sm:w-auto"
-                            >
-                              Expand to 5 regions
-                            </button>
-                            <p className="mt-1 text-[10px] uppercase tracking-wide text-slate-500">
-                              Payment coming soon
-                            </p>
-                          </div>
-                        ) : null}
-                        <div className="flex-1 rounded-xl border border-emerald-300 bg-white p-3 shadow-sm">
-                          <p className="text-sm font-bold text-[#1B5E20]">
-                            ₹101 — Get business from whole city
-                          </p>
-                          <p className="mt-0.5 text-[11px] text-slate-600">
-                            All active regions in your city.
-                          </p>
+                      <div
+                        data-testid="provider-register-plan-manage-hint"
+                        className="mt-3 rounded-xl border border-emerald-300 bg-white p-3"
+                      >
+                        <p className="text-sm font-semibold text-[#1B5E20]">
+                          {planCode === "free"
+                            ? "Want to reach more regions?"
+                            : "Want to expand to the whole city?"}
+                        </p>
+                        <p className="mt-1 text-xs leading-relaxed text-slate-600">
+                          You can manage or upgrade your plan from your
+                          Provider Dashboard
+                          {isEditMode ? "." : " after registration."}
+                        </p>
+                        {isEditMode ? (
                           <button
                             type="button"
-                            disabled
-                            title="Payment coming soon"
-                            aria-label={
-                              planCode === "regions_5"
-                                ? "Upgrade to whole city — payment coming soon"
-                                : "Get whole city coverage — payment coming soon"
-                            }
-                            className="mt-2 inline-flex w-full cursor-not-allowed items-center justify-center rounded-lg bg-[#ea580c] px-3 py-2 text-xs font-bold text-white opacity-70 transition disabled:bg-[#ea580c] sm:w-auto"
+                            onClick={() => router.push("/provider/dashboard")}
+                            data-testid="provider-register-plan-manage-link"
+                            className="mt-2 inline-flex items-center justify-center rounded-lg border border-[#003d20] px-3 py-1.5 text-xs font-semibold text-[#003d20] transition hover:bg-[#003d20] hover:text-white"
                           >
-                            {planCode === "regions_5"
-                              ? "Upgrade to whole city"
-                              : "Get whole city coverage"}
+                            Go to Provider Dashboard →
                           </button>
-                          <p className="mt-1 text-[10px] uppercase tracking-wide text-slate-500">
-                            Payment coming soon
-                          </p>
-                        </div>
+                        ) : null}
                       </div>
                     )}
                   </div>

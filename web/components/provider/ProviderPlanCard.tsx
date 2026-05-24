@@ -336,21 +336,27 @@ export default function ProviderPlanCard({
             >
               {pillLabel}
             </span>
-            {isActive ? (
+            {isActive && code !== "free" ? (
+              // "Active" pill is reserved for PAID active plans only.
+              // Rendering it on Free (where effectivePlan() returns
+              // active:true by design) reads as "you paid for the free
+              // plan" to a non-technical provider. The Free pill above
+              // already communicates the state.
               <span
                 data-testid="provider-plan-active-badge"
                 className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-emerald-700"
               >
                 Active
               </span>
-            ) : (
+            ) : null}
+            {isExpired ? (
               <span
                 data-testid="provider-plan-expired-badge"
                 className="inline-flex items-center rounded-full border border-rose-200 bg-rose-50 px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-rose-700"
               >
                 Expired
               </span>
-            )}
+            ) : null}
           </div>
         </div>
       </header>
