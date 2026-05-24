@@ -418,36 +418,33 @@ function PageContent() {
   }, []);
 
   // ── Disclaimer bootstrap ───────────────────────────────────────────────
-  // Runs once after hydration when the user is logged in. localStorage is
-  // a UI HINT only — never a freshness oracle. The previous implementation
-  // skipped the server GET when the local record looked fresh, which
-  // masked any server-side rollback (e.g. profiles.disclaimer_accepted_at
-  // manually reset to an old date) and left the soft modal stuck closed.
+  // Runs once after hydration. Gated on /api/auth/whoami so guests with an
+  // orphan kk_session_user UI-hint cookie can no longer mislead the client
+  // into thinking they are logged in (the browser overload of
+  // getAuthSession() reads only that unsigned hint). Without this gate the
+  // bootstrap would call GET /api/user/disclaimer, the server would 401,
+  // and the old `r.ok ? r.json() : null` path would treat null as "not
+  // fresh" and open the soft modal — then POST /api/user/disclaimer would
+  // also 401 and render "Could not save right now."
   //
-  // New flow:
-  //   1. Set initial state optimistically from the localStorage hint so the
-  //      page paints without a flicker.
-  //   2. ALWAYS fire GET /api/user/disclaimer.
-  //   3. Reconcile against the server response:
-  //        isFresh:true  → sync localStorage from the server record, keep
-  //                        state at true. No prompt.
-  //        isFresh:false → flip state to false, REMOVE the stale local
-  //                        record (otherwise the next mount would trust
-  //                        the optimistic hint again), and schedule the
-  //                        soft prompt with the existing 800–1200ms jitter.
+  // Flow:
+  //   1. Ask the server who we are (whoami). Only on 200 {phone} do we
+  //      proceed; on 401 / network failure we exit silently (no modal,
+  //      no /api/user/disclaimer call, no toast).
+  //   2. Optimistically seed disclaimerFresh from the localStorage hint
+  //      so the page paints without a flicker.
+  //   3. Fire GET /api/user/disclaimer and reconcile:
+  //        isFresh:true  → sync localStorage, keep state true. No prompt.
+  //        isFresh:false → flip to false, drop the stale local record,
+  //                        schedule the soft prompt with 800–1200ms jitter.
   //                        dismissedSoftRef still gates auto-reopens.
-  //   4. Network failure → keep best-effort behaviour: leave state as the
-  //      hint suggested, do not show a scary error, do not auto-prompt.
-  //      Genuine drift is still caught by the existing 403
-  //      DISCLAIMER_REQUIRED interception in submitResolvedRequest.
+  //        401           → cookie went stale between whoami and now;
+  //                        treat as guest, exit without opening the modal.
+  //   4. Network failure on disclaimer GET → best-effort offline: leave
+  //      the optimistic state alone. Server-side DISCLAIMER_REQUIRED on
+  //      submit still catches genuine drift for authenticated users.
   useEffect(() => {
     if (!isHydrated) return;
-    const session = getAuthSession();
-    if (!session?.phone) return;
-
-    const localRecord = readLocalDisclaimer();
-    const localFresh = isDisclaimerFresh(localRecord);
-    setDisclaimerFresh(localFresh);
 
     let cancelled = false;
     let promptTimer: ReturnType<typeof setTimeout> | null = null;
@@ -462,55 +459,104 @@ function PageContent() {
       }, delay);
     };
 
-    fetch("/api/user/disclaimer", { credentials: "same-origin" })
-      .then((r) => (r.ok ? r.json() : null))
-      .then(
-        (
-          data:
-            | {
-                ok?: boolean;
-                version?: string | null;
-                acceptedAt?: string | null;
-                isFresh?: boolean;
-              }
-            | null
-        ) => {
-          if (cancelled) return;
-          if (data?.isFresh) {
-            if (
-              typeof data.version === "string" &&
-              typeof data.acceptedAt === "string"
-            ) {
-              writeLocalDisclaimer(data.version, data.acceptedAt);
-            }
-            setDisclaimerFresh(true);
-            return;
+    const run = async () => {
+      // Step 1: confirm the signed session with the server. The browser
+      // overload of getAuthSession() reads only the unsigned UI-hint
+      // cookie (kk_session_user); a stale hint without a valid signed
+      // kk_auth_session would otherwise pop the modal for a guest.
+      let phone: string | null = null;
+      try {
+        const whoamiRes = await fetch("/api/auth/whoami", {
+          method: "GET",
+          credentials: "same-origin",
+          cache: "no-store",
+          headers: { Accept: "application/json" },
+        });
+        if (whoamiRes.ok) {
+          const whoamiData = (await whoamiRes
+            .json()
+            .catch(() => null)) as
+            | { ok?: boolean; phone?: string }
+            | null;
+          if (
+            whoamiData?.ok &&
+            typeof whoamiData.phone === "string" &&
+            whoamiData.phone.length > 0
+          ) {
+            phone = whoamiData.phone;
           }
-          // Server-authoritative not-fresh. Drop the stale local hint so
-          // a future mount cannot trust it again; without this clear, a
-          // DB rollback (admin reset, manual edit) would never surface
-          // because the bootstrap would keep painting with the cached
-          // fresh hint.
-          if (typeof window !== "undefined") {
-            try {
-              window.localStorage.removeItem(DISCLAIMER_LOCALSTORAGE_KEY);
-            } catch {
-              // Storage unavailable / quota — non-fatal. Server remains
-              // the source of truth; the next /api/submit-request call
-              // will still 403 if needed.
-            }
-          }
-          setDisclaimerFresh(false);
-          scheduleSoftPrompt();
         }
-      )
-      .catch(() => {
+      } catch {
+        // Network failure: fail closed for the UI. Do not open the modal
+        // and do not call /api/user/disclaimer. The server-side
+        // DISCLAIMER_REQUIRED gate on /api/submit-request remains the
+        // final safety net for authenticated submissions.
+        return;
+      }
+      if (cancelled) return;
+      if (!phone) return;
+
+      // Step 2: optimistic paint from the localStorage hint.
+      const localRecord = readLocalDisclaimer();
+      const localFresh = isDisclaimerFresh(localRecord);
+      setDisclaimerFresh(localFresh);
+
+      // Step 3: reconcile against the server.
+      try {
+        const res = await fetch("/api/user/disclaimer", {
+          credentials: "same-origin",
+        });
         if (cancelled) return;
-        // Best-effort offline: leave state at whatever the localStorage
-        // hint already set above. No auto-prompt, no toast. If the user
-        // is genuinely stale, the existing 403 DISCLAIMER_REQUIRED path
-        // on submit will silently open the blocking modal.
-      });
+        // Defensive: if the signed cookie was rotated/revoked between
+        // whoami and now, the server will 401. Treat as guest — never
+        // interpret 401 as "not fresh" (that's the original bug).
+        if (res.status === 401) return;
+        const data = res.ok
+          ? ((await res.json().catch(() => null)) as
+              | {
+                  ok?: boolean;
+                  version?: string | null;
+                  acceptedAt?: string | null;
+                  isFresh?: boolean;
+                }
+              | null)
+          : null;
+        if (cancelled) return;
+        if (data?.isFresh) {
+          if (
+            typeof data.version === "string" &&
+            typeof data.acceptedAt === "string"
+          ) {
+            writeLocalDisclaimer(data.version, data.acceptedAt);
+          }
+          setDisclaimerFresh(true);
+          return;
+        }
+        // Server-authoritative not-fresh. Drop the stale local hint so
+        // a future mount cannot trust it again; without this clear, a
+        // DB rollback (admin reset, manual edit) would never surface
+        // because the bootstrap would keep painting with the cached
+        // fresh hint.
+        if (typeof window !== "undefined") {
+          try {
+            window.localStorage.removeItem(DISCLAIMER_LOCALSTORAGE_KEY);
+          } catch {
+            // Storage unavailable / quota — non-fatal. Server remains
+            // the source of truth; the next /api/submit-request call
+            // will still 403 if needed.
+          }
+        }
+        setDisclaimerFresh(false);
+        scheduleSoftPrompt();
+      } catch {
+        if (cancelled) return;
+        // Best-effort offline: leave state at the localStorage hint set
+        // above. No auto-prompt, no toast. Genuine staleness is still
+        // caught by the 403 DISCLAIMER_REQUIRED path on submit.
+      }
+    };
+
+    void run();
 
     return () => {
       cancelled = true;

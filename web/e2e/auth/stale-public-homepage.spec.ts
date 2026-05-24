@@ -1,7 +1,29 @@
+import type { Page, Request } from "@playwright/test";
+
 import { test, expect } from "../_support/test";
 import { gotoPath } from "../_support/home";
 import { mockCommonCatalogRoutes, mockJson } from "../_support/routes";
 import { appUrl } from "../_support/runtime";
+
+// Tracks every disclaimer API call observed on the page. The guest /
+// orphan-hint scenarios in this spec must NEVER hit /api/user/disclaimer
+// — that was the symptom of the "modal opens for guests then accept
+// fails with 401" bug (see disclaimer bootstrap in web/app/page.tsx).
+function trackDisclaimerCalls(page: Page): string[] {
+  const calls: string[] = [];
+  const onRequest = (request: Request) => {
+    if (request.url().includes("/api/user/disclaimer")) {
+      calls.push(`${request.method()} ${request.url()}`);
+    }
+  };
+  page.on("request", onRequest);
+  return calls;
+}
+
+// Long enough to cover the soft-prompt jitter window (800–1200ms) plus
+// whoami round-trip, so a "modal absent" assertion is meaningful rather
+// than just racing the timer.
+const DISCLAIMER_SETTLE_MS = 1500;
 
 function allowExpectedWhoami401(diag: {
   allowHttpError: (p: RegExp) => void;
@@ -59,9 +81,14 @@ test.describe("Auth: stale public homepage state", () => {
     });
     await mockCommonCatalogRoutes(page);
     await mockWhoamiNoSession(page);
+    const disclaimerCalls = trackDisclaimerCalls(page);
 
     await gotoPath(page, "/");
     await expectHomepageRendered(page);
+    await page.waitForTimeout(DISCLAIMER_SETTLE_MS);
+
+    await expect(page.getByTestId("kk-disclaimer-modal")).toHaveCount(0);
+    expect(disclaimerCalls).toEqual([]);
 
     diag.assertClean();
   });
@@ -81,9 +108,14 @@ test.describe("Auth: stale public homepage state", () => {
     });
     await mockCommonCatalogRoutes(page);
     await mockWhoamiNoSession(page);
+    const disclaimerCalls = trackDisclaimerCalls(page);
 
     await gotoPath(page, "/");
     await expectHomepageRendered(page);
+    await page.waitForTimeout(DISCLAIMER_SETTLE_MS);
+
+    await expect(page.getByTestId("kk-disclaimer-modal")).toHaveCount(0);
+    expect(disclaimerCalls).toEqual([]);
 
     diag.assertClean();
   });
@@ -125,10 +157,14 @@ test.describe("Auth: stale public homepage state", () => {
         JSON.stringify({ Phone: "9999999999", Name: "Stale Provider" })
       );
     });
+    const disclaimerCalls = trackDisclaimerCalls(page);
 
     await gotoPath(page, "/");
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(DISCLAIMER_SETTLE_MS);
     await expectHomepageRendered(page);
+
+    await expect(page.getByTestId("kk-disclaimer-modal")).toHaveCount(0);
+    expect(disclaimerCalls).toEqual([]);
 
     const remainingState = await page.evaluate(() => ({
       adminSession: window.localStorage.getItem("kk_admin_session"),

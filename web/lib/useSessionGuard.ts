@@ -129,6 +129,18 @@ export function useSessionGuard(options: Options = {}): {
           if (redirectOnStale) {
             router.replace(redirectTo);
           }
+        } else if (body?.reason === "no-session" && hasOrphanClientHints()) {
+          // Orphan UI-hint cleanup: a stale kk_session_user / kk_admin
+          // cookie (or kk_admin_session / kk_provider_profile localStorage
+          // entry) that survived its signed counterpart misleads client
+          // components — most notably the homepage disclaimer effect,
+          // which reads getAuthSession() and would otherwise open the
+          // modal for a logged-out visitor and then fail accept with
+          // 401. Wipe the hints once we have an authoritative
+          // no-session signal from the server. Never redirect:
+          // no-session is the default state on public pages.
+          clearStaleClientHints();
+          dispatchAuthStateChanged();
         }
       }
     } catch {
@@ -162,6 +174,22 @@ export function useSessionGuard(options: Options = {}): {
   }, [enabled, redirectOnStale, redirectTo, probeOnMount, probeOnFocus]);
 
   return { recheck };
+}
+
+function hasOrphanClientHints(): boolean {
+  if (typeof window === "undefined" || typeof document === "undefined") {
+    return false;
+  }
+  const cookies = document.cookie || "";
+  if (/(?:^|; )kk_session_user=/.test(cookies)) return true;
+  if (/(?:^|; )kk_admin=/.test(cookies)) return true;
+  try {
+    if (window.localStorage.getItem("kk_admin_session")) return true;
+    if (window.localStorage.getItem("kk_provider_profile")) return true;
+  } catch {
+    // localStorage may be unavailable in private-mode WebViews.
+  }
+  return false;
 }
 
 function clearStaleClientHints(): void {
