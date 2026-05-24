@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { LocateFixed } from "lucide-react";
 
 import { usePublicGeo } from "@/lib/cities/publicGeoContext";
 
@@ -70,6 +71,23 @@ type RegionOption = {
   city_code?: string;
 };
 
+type DetectStatus =
+  | "idle"
+  | "pending"
+  | "success"
+  | "permission_denied"
+  | "unsupported"
+  | "no_match"
+  | "city_mismatch"
+  | "error";
+
+type DetectSuggestion = {
+  detectedArea: string;
+  regionCode: string;
+  regionName: string;
+  message: string;
+};
+
 export default function AreaSelection({
   selectedArea,
   onSelect,
@@ -115,6 +133,10 @@ export default function AreaSelection({
   const [aiCanonicalByLabel, setAiCanonicalByLabel] = useState<
     Map<string, string>
   >(new Map());
+  const [detectStatus, setDetectStatus] = useState<DetectStatus>("idle");
+  const [detectSuggestion, setDetectSuggestion] =
+    useState<DetectSuggestion | null>(null);
+  const [detectMessage, setDetectMessage] = useState("");
   // Original user input that differs (case/spelling) from the canonical
   // area finally selected. Shown beneath the "Selected area" chip.
   const [aliasInput, setAliasInput] = useState("");
@@ -363,6 +385,9 @@ export default function AreaSelection({
       setShowSuggestions(false);
       setAiLabels([]);
       setAiCanonicalByLabel(new Map());
+      setDetectStatus("idle");
+      setDetectSuggestion(null);
+      setDetectMessage("");
       setRegionsExpanded(false);
       if (selectedArea) onSelect("");
       /* eslint-enable react-hooks/set-state-in-effect */
@@ -520,9 +545,148 @@ export default function AreaSelection({
     onSelect(normalized);
   };
 
+  const handleDetectArea = () => {
+    if (!selectedCityCode) return;
+    if (
+      typeof window === "undefined" ||
+      !("geolocation" in navigator) ||
+      !navigator.geolocation
+    ) {
+      setDetectStatus("unsupported");
+      setDetectSuggestion(null);
+      setDetectMessage("Location detection is not available on this device.");
+      return;
+    }
+
+    setDetectStatus("pending");
+    setDetectSuggestion(null);
+    setDetectMessage("");
+
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        try {
+          const res = await fetch("/api/area-intelligence/detect", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            cache: "no-store",
+            body: JSON.stringify({
+              cityCode: selectedCityCode,
+              latitude: position.coords.latitude,
+              longitude: position.coords.longitude,
+            }),
+          });
+          const data = (await res.json().catch(() => null)) as
+            | {
+                ok?: boolean;
+                detectedArea?: unknown;
+                regionCode?: unknown;
+                regionName?: unknown;
+                cityCode?: unknown;
+                message?: unknown;
+              }
+            | null;
+
+          if (!res.ok || !data?.ok) {
+            setDetectStatus("no_match");
+            setDetectSuggestion(null);
+            setDetectMessage(
+              typeof data?.message === "string"
+                ? data.message
+                : "We could not confidently detect your area. Please type manually."
+            );
+            return;
+          }
+
+          const responseCity = String(data.cityCode ?? selectedCityCode)
+            .trim()
+            .toUpperCase();
+          if (responseCity && responseCity !== selectedCityCode) {
+            setDetectStatus("city_mismatch");
+            setDetectSuggestion(null);
+            setDetectMessage(
+              "Detected location seems outside the selected city. Please type your area manually."
+            );
+            return;
+          }
+
+          const detectedArea = normalizeAreaValue(String(data.detectedArea ?? ""));
+          const regionName = normalizeAreaValue(String(data.regionName ?? ""));
+          const regionCode = String(data.regionCode ?? "").trim();
+          const selectable =
+            detectedArea ||
+            (regions.some(
+              (region) =>
+                region.region_name.toLowerCase() === regionName.toLowerCase()
+            )
+              ? regionName
+              : "");
+
+          if (!selectable || !regionCode) {
+            setDetectStatus("no_match");
+            setDetectSuggestion(null);
+            setDetectMessage(
+              "We could not confidently detect your area. Please type manually."
+            );
+            return;
+          }
+
+          setDetectStatus("success");
+          setDetectSuggestion({
+            detectedArea: selectable,
+            regionCode,
+            regionName,
+            message:
+              typeof data.message === "string" && data.message.trim()
+                ? data.message.trim()
+                : `You seem near ${selectable}`,
+          });
+          setDetectMessage("");
+        } catch {
+          setDetectStatus("no_match");
+          setDetectSuggestion(null);
+          setDetectMessage(
+            "We could not confidently detect your area. Please type manually."
+          );
+        }
+      },
+      (error) => {
+        if (error.code === error.PERMISSION_DENIED) {
+          setDetectStatus("permission_denied");
+          setDetectMessage(
+            "Location permission was denied. Please type your area manually."
+          );
+        } else {
+          setDetectStatus("no_match");
+          setDetectMessage(
+            "We could not confidently detect your area. Please type manually."
+          );
+        }
+        setDetectSuggestion(null);
+      },
+      { enableHighAccuracy: false, maximumAge: 60_000, timeout: 10_000 }
+    );
+  };
+
+  const handleUseDetectedArea = () => {
+    if (!detectSuggestion) return;
+    const detectedArea = normalizeAreaValue(detectSuggestion.detectedArea);
+    if (!detectedArea) return;
+    setTypedArea("");
+    setShowSuggestions(false);
+    setInputError("");
+    setAliasInput("");
+    inputRef.current?.blur();
+    persistLastUsed(detectedArea);
+    onSelect(detectedArea);
+  };
+
   // ── Render ─────────────────────────────────────────────────────────────
   const selectClass =
     "rounded-lg border border-emerald-200 bg-white px-3 py-2 text-sm font-medium text-slate-800 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 disabled:opacity-60";
+  const detectMessageClass =
+    detectStatus === "permission_denied" || detectStatus === "city_mismatch"
+      ? "mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800"
+      : "mt-2 rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-xs font-medium text-red-700";
 
   return (
     <div className="w-full">
@@ -575,11 +739,65 @@ export default function AreaSelection({
             ))
           )}
         </select>
+
+        <button
+          type="button"
+          onClick={handleDetectArea}
+          disabled={
+            geoLoading || !selectedCityCode || detectStatus === "pending"
+          }
+          className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-[#1B5E20] bg-white px-3 py-2 text-sm font-semibold text-[#1B5E20] transition hover:bg-[#1B5E20]/10 focus:border-[#1B5E20] focus:outline-none focus:ring-2 focus:ring-[#1B5E20]/25 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
+          data-testid="detect-my-area"
+        >
+          <LocateFixed className="h-4 w-4" aria-hidden="true" />
+          {detectStatus === "pending" ? "Detecting..." : "Detect my area"}
+        </button>
       </div>
 
       {!geoLoading && cities.length === 0 ? (
         <p className="mt-2 text-xs text-red-600">
           Could not load locations. Please retry.
+        </p>
+      ) : null}
+
+      {detectStatus === "success" && detectSuggestion ? (
+        <div
+          className="mt-3 rounded-lg border border-[#1B5E20]/25 bg-[#1B5E20]/10 p-3"
+          data-testid="detect-area-suggestion"
+          aria-live="polite"
+        >
+          <p className="text-sm font-semibold text-[#1B5E20]">
+            {detectSuggestion.message} / {detectSuggestion.regionCode}
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={handleUseDetectedArea}
+              className="rounded-lg border border-[#1B5E20] bg-[#1B5E20] px-3 py-2 text-sm font-semibold text-white transition hover:bg-[#174f1b] focus:outline-none focus:ring-2 focus:ring-[#1B5E20]/25"
+            >
+              Use this area
+            </button>
+            <button
+              type="button"
+              onClick={handleDetectArea}
+              className="rounded-lg border border-[#F59E0B]/40 bg-white px-3 py-2 text-sm font-semibold text-[#92400E] transition hover:bg-[#F59E0B]/10 focus:outline-none focus:ring-2 focus:ring-[#F59E0B]/25"
+            >
+              Try again
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {detectStatus !== "idle" &&
+      detectStatus !== "pending" &&
+      detectStatus !== "success" &&
+      detectMessage ? (
+        <p
+          className={detectMessageClass}
+          data-testid="detect-area-message"
+          aria-live="polite"
+        >
+          {detectMessage}
         </p>
       ) : null}
 

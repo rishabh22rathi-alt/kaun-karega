@@ -3,14 +3,14 @@
  * `service_region_areas` (Admin → Regions) in addition to the legacy
  * `areas` table. Regression coverage for the bug where region-only areas
  * such as "Guro Ka Talab", "Gopi Krishna Vihar", "Dau Ki Dhani" never
- * appeared in suggestions or in "Show all areas" because /api/areas
- * gated them on provider coverage.
+ * appeared in suggestions because /api/areas gated them on provider
+ * coverage.
  *
  * Strategy: fully mocked /api/areas and /api/area-intelligence/suggest so
  * the test is deterministic and exercises ONLY the homepage UI contract
- * (typed suggestions, Show-all list, no duplicates). The patch under
- * test changes /api/areas to merge legacy + service_region_areas without
- * a provider-coverage precondition — we simulate that merged payload here.
+ * (typed suggestions and no-match fallback). The patch under test changes
+ * /api/areas to merge legacy + service_region_areas without a provider-
+ * coverage precondition — we simulate that merged payload here.
  */
 
 import type { Locator, Page } from "@playwright/test";
@@ -50,11 +50,13 @@ async function reachAreaInput(page: Page) {
 
   const rightNow = page.getByRole("button", { name: /^Right now$/ }).first();
   await expect(rightNow).toBeVisible({ timeout: 5_000 });
-  await rightNow.click();
+  if (!(await page.locator('input[placeholder="Type your area..."]').first().isVisible())) {
+    await rightNow.click();
+  }
 
-  const typeArea = page.getByRole("button", { name: /^Type your area$/ }).first();
-  await expect(typeArea).toBeVisible({ timeout: 5_000 });
-  await typeArea.click();
+  await expect(page.locator('input[placeholder="Type your area..."]').first()).toBeVisible({
+    timeout: 5_000,
+  });
 }
 
 test.describe("Homepage AreaSelection — service_region_areas surfacing", () => {
@@ -93,7 +95,7 @@ test.describe("Homepage AreaSelection — service_region_areas surfacing", () =>
     await reachAreaInput(page);
 
     const areaInput = page
-      .locator('input[placeholder="Type your area"]')
+      .locator('input[placeholder="Type your area..."]')
       .first();
     await areaInput.fill("gur");
 
@@ -102,40 +104,24 @@ test.describe("Homepage AreaSelection — service_region_areas surfacing", () =>
     });
   });
 
-  test("Show all areas lists merged legacy + service_region_areas", async ({
+  test("unknown typed area shows nearest-region fallback", async ({
     page,
   }) => {
     await gotoPath(page, "/");
     await reachAreaInput(page);
 
     const areaInput = page
-      .locator('input[placeholder="Type your area"]')
+      .locator('input[placeholder="Type your area..."]')
       .first();
-    // Force the no-match error path so the "Show all areas" link renders.
+    // Force the no-match error path so the nearest-region fallback renders.
     await areaInput.fill("zzqaunknownareaname");
     const useThisArea = page.getByRole("button", { name: /Use this area/ });
     await useThisArea.click();
-    const showAll = page
-      .getByRole("button", { name: /Show all areas/ })
-      .first();
-    await expect(showAll).toBeVisible({ timeout: 5_000 });
-    await showAll.click();
-
-    const panel = suggestionPanel(page);
-    await expect(panel).toBeVisible({ timeout: 5_000 });
-
-    // Every merged area must render as a row INSIDE the dropdown panel.
-    // Scoping to `panel` ignores the popular-area chips above the input.
-    for (const area of MERGED_AREAS) {
-      await expect(suggestionRow(page, area)).toBeVisible();
-    }
-
-    // No duplicates: each name should appear exactly once inside the
-    // dropdown panel (the chip row is intentionally excluded).
-    for (const area of MERGED_AREAS) {
-      const count = await suggestionRow(page, area).count();
-      expect(count, `duplicate dropdown row for ${area}`).toBe(1);
-    }
+    await expect(page.getByText(/We don't serve this exact area/i)).toBeVisible({
+      timeout: 5_000,
+    });
+    await expect(page.getByText(/Choose your nearest region/i)).toBeVisible();
+    await expect(page.getByRole("button", { name: /^Sardarpura$/ }).first()).toBeVisible();
   });
 
   test("legacy areas still surface from substring search", async ({ page }) => {
@@ -143,7 +129,7 @@ test.describe("Homepage AreaSelection — service_region_areas surfacing", () =>
     await reachAreaInput(page);
 
     const areaInput = page
-      .locator('input[placeholder="Type your area"]')
+      .locator('input[placeholder="Type your area..."]')
       .first();
 
     await areaInput.fill("sar");
