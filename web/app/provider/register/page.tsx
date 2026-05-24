@@ -265,6 +265,26 @@ function ProviderRegisterPageInner() {
   const [isLoadingRegions, setIsLoadingRegions] = useState<boolean>(false);
   const [regionsError, setRegionsError] = useState<string>("");
   const [selectedRegions, setSelectedRegions] = useState<string[]>([]);
+  // Per-region "expanded" state for the area preview inside each region
+  // card. Independent of selection — expanding a card does not select
+  // the region, and selecting a region does not collapse the expanded
+  // panel. Keyed by region_code; a Set keeps membership checks O(1)
+  // and the immutable copy in toggleExpandedRegion keeps React's
+  // change detection happy.
+  const [expandedRegions, setExpandedRegions] = useState<Set<string>>(
+    () => new Set()
+  );
+  const toggleExpandedRegion = (regionCode: string) => {
+    setExpandedRegions((prev) => {
+      const next = new Set(prev);
+      if (next.has(regionCode)) {
+        next.delete(regionCode);
+      } else {
+        next.add(regionCode);
+      }
+      return next;
+    });
+  };
   const [customLocalities, setCustomLocalities] = useState<string[]>([]);
   const [customLocalityInput, setCustomLocalityInput] = useState<string>("");
   // ── Geo cascade state (Phase R-sync) ───────────────────────────────────
@@ -1974,6 +1994,8 @@ function ProviderRegisterPageInner() {
                     const isReadOnly = planRuleKind === "cityWide";
                     const areaPreview = region.areas.slice(0, 6).join(" · ");
                     const moreCount = Math.max(0, region.areas.length - 6);
+                    const isExpanded = expandedRegions.has(region.region_code);
+                    const fullAreasId = `provider-region-areas-full-${region.region_code}`;
                     return (
                       <div
                         key={region.region_code}
@@ -1995,15 +2017,63 @@ function ProviderRegisterPageInner() {
                           {region.areas.length} area
                           {region.areas.length === 1 ? "" : "s"}
                         </p>
-                        <p className="mt-2 text-xs leading-relaxed text-slate-700">
-                          {areaPreview}
-                          {moreCount > 0 ? (
-                            <span className="text-slate-400">
-                              {" "}
-                              · +{moreCount} more
-                            </span>
-                          ) : null}
-                        </p>
+                        {moreCount === 0 ? (
+                          // Short region — render the static inline list
+                          // unchanged. No toggle needed.
+                          <p className="mt-2 text-xs leading-relaxed text-slate-700">
+                            {areaPreview}
+                          </p>
+                        ) : isExpanded ? (
+                          // Expanded — render the FULL area list and a
+                          // "Show less" toggle. Wrapped in a div that
+                          // carries the id targeted by aria-controls so
+                          // assistive tech can find the disclosed
+                          // content. Selection state is untouched.
+                          <>
+                            <div
+                              id={fullAreasId}
+                              data-testid={fullAreasId}
+                              className="mt-2 text-xs leading-relaxed text-slate-700"
+                            >
+                              {region.areas.join(" · ")}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                toggleExpandedRegion(region.region_code);
+                              }}
+                              aria-expanded={true}
+                              aria-controls={fullAreasId}
+                              data-testid={`provider-region-areas-toggle-${region.region_code}`}
+                              className="mt-1 inline-flex items-center text-xs font-semibold text-slate-500 underline-offset-2 hover:text-[#003d20] hover:underline focus:outline-none focus:text-[#003d20] focus:underline"
+                            >
+                              Show less
+                            </button>
+                          </>
+                        ) : (
+                          // Collapsed — first 6 areas inline + a
+                          // clickable toggle revealing the +N more
+                          // count. Behaves like a muted link so the
+                          // card's visual weight stays on Pick Region.
+                          <p className="mt-2 text-xs leading-relaxed text-slate-700">
+                            {areaPreview}
+                            {" · "}
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                toggleExpandedRegion(region.region_code);
+                              }}
+                              aria-expanded={false}
+                              aria-controls={fullAreasId}
+                              data-testid={`provider-region-areas-toggle-${region.region_code}`}
+                              className="inline-flex items-center text-xs font-semibold text-slate-400 underline-offset-2 hover:text-[#003d20] hover:underline focus:outline-none focus:text-[#003d20] focus:underline"
+                            >
+                              +{moreCount} more
+                            </button>
+                          </p>
+                        )}
                         <button
                           type="button"
                           onClick={() => {
