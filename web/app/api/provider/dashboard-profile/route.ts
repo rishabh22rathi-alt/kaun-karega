@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import { adminSupabase } from "@/lib/supabase/admin";
 import { getProviderByPhoneFromSupabase } from "@/lib/admin/adminProviderReads";
 import { effectivePlan } from "@/lib/payments/effectivePlan";
+import { isPaymentEnabled } from "@/lib/payments/server";
 import { getDefaultCityCode } from "@/lib/cities/cityContext";
 
 export const dynamic = "force-dynamic";
@@ -1834,11 +1835,19 @@ export async function GET(request: NextRequest) {
         // this field; new UI reads it for the plan card. Absence of a
         // provider_plans row resolves to { code: "free", maxRegions: 1,
         // currentPeriodEnd: null, active: true } via effectivePlan().
+        //
+        // paymentsEnabled mirrors isPaymentEnabled() so the dashboard's
+        // ProviderPlanCard can hide upgrade controls upfront when the
+        // PAYMENT_ENABLED kill switch is off, instead of relying on a
+        // 503 round-trip from /api/payments/create-order. Read on every
+        // request so a Vercel env flip takes effect on the very next
+        // dashboard load.
         Plan: {
           code: planForResponse.code,
           maxRegions: planForResponse.maxRegions,
           currentPeriodEnd: planForResponse.currentPeriodEnd,
           active: planForResponse.active,
+          paymentsEnabled: isPaymentEnabled(),
         },
         Analytics: {
           Summary: {

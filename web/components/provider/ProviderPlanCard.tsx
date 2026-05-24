@@ -26,6 +26,11 @@ export type ProviderPlanShape = {
   maxRegions: number;
   currentPeriodEnd: string | null;
   active: boolean;
+  // Additive — emitted by /api/provider/dashboard-profile in the same
+  // commit that introduced this field. Absence (older payloads, tests
+  // that pre-date the field) is treated as "payments disabled" so the
+  // upgrade UI fails closed rather than offering a checkout that 503s.
+  paymentsEnabled?: boolean;
 };
 
 export type ProviderPlanCardProps = {
@@ -154,22 +159,82 @@ function loadRazorpayScript(): Promise<boolean> {
   });
 }
 
+// Razorpay-first upgrade flow state machine. The card progresses through
+// these phases on a single upgrade click. Buttons are disabled whenever
+// phase !== "idle" so a second click cannot start a parallel order or
+// re-open the checkout while one is in flight.
+//   idle              → no in-flight upgrade
+//   creating-order    → POST /api/payments/create-order in flight
+//   checkout-open     → Razorpay modal is open (no inline banner)
+//   verifying         → modal closed with success; POST /api/payments/verify in flight
+//   verified-waiting  → signature verified; waiting for the webhook to
+//                       flip provider_plans. Source of truth for plan
+//                       activation is the webhook, NOT this state.
+type UpgradePhase =
+  | "idle"
+  | "creating-order"
+  | "checkout-open"
+  | "verifying"
+  | "verified-waiting";
+
+type StatusKind = "info" | "success" | "error";
+type StatusMessage = { kind: StatusKind; text: string } | null;
+
 export default function ProviderPlanCard({
   plan,
   currentRegionsCount,
   providerName,
 }: ProviderPlanCardProps) {
+  const [phase, setPhase] = useState<UpgradePhase>("idle");
   const [busyPlan, setBusyPlan] = useState<PlanCode | null>(null);
-  const [errorMessage, setErrorMessage] = useState<string>("");
-  const refreshTimeoutRef = useRef<number | null>(null);
+  const [statusMessage, setStatusMessage] = useState<StatusMessage>(null);
+  const statusClearTimeoutRef = useRef<number | null>(null);
+
+  // PAYMENT_ENABLED kill switch surfaced through dashboard-profile.
+  // Treat absence (older payloads, tests that didn't add the field) as
+  // "disabled" so the card refuses to open a checkout that would 503
+  // anyway. A future env flip is picked up on the next dashboard load.
+  const paymentsEnabled = plan?.paymentsEnabled === true;
+
+  const isUpgradeBusy = phase !== "idle";
+
+  // Auto-clear info/success status messages after a few seconds so the
+  // card returns to a calm rest state. Errors persist until the user
+  // takes another action.
+  const flashStatus = useCallback(
+    (kind: StatusKind, text: string, autoClearMs: number | null = null) => {
+      setStatusMessage({ kind, text });
+      if (statusClearTimeoutRef.current !== null) {
+        window.clearTimeout(statusClearTimeoutRef.current);
+        statusClearTimeoutRef.current = null;
+      }
+      if (autoClearMs !== null) {
+        statusClearTimeoutRef.current = window.setTimeout(() => {
+          setStatusMessage(null);
+          statusClearTimeoutRef.current = null;
+        }, autoClearMs);
+      }
+    },
+    []
+  );
 
   useEffect(() => {
     return () => {
-      if (refreshTimeoutRef.current !== null) {
-        window.clearTimeout(refreshTimeoutRef.current);
+      if (statusClearTimeoutRef.current !== null) {
+        window.clearTimeout(statusClearTimeoutRef.current);
       }
     };
   }, []);
+
+  // Auto-detection of "plan activated" lived here previously but the
+  // dashboard does not auto-poll, so the prop transition that would
+  // trigger it only happens via a page reload — which remounts this
+  // component into a fresh idle state anyway. The "Refresh now" button
+  // surfaced in verified-waiting is the explicit user path; closure
+  // (banner change) happens naturally on the next mount when the
+  // dashboard-profile fetch returns the new plan. If we later add
+  // dashboard auto-polling, the transition can be reintroduced via a
+  // parent-driven callback rather than a prop-watching effect.
 
   // effectivePlan() in lib/payments/effectivePlan.ts already collapses
   // expired-paid into { active:false, code:"free", maxRegions:1 } and
@@ -202,26 +267,51 @@ export default function ProviderPlanCard({
         ? "Upgrade to ₹101 to cover all of Jodhpur."
         : "You're on the top plan — full city coverage is active.";
 
-  const scheduleDashboardRefresh = useCallback(() => {
+  // Dispatch the existing PROVIDER_PROFILE_UPDATED_EVENT so the Sidebar
+  // re-hydrates its chip from localStorage. The provider dashboard
+  // *page* does not listen to this event today — the user manually
+  // refreshes per the inline message in verified-waiting state.
+  const notifyProfileUpdated = useCallback(() => {
     if (typeof window === "undefined") return;
-    const dispatch = () =>
+    try {
       window.dispatchEvent(new Event(PROVIDER_PROFILE_UPDATED_EVENT));
-    // Fire once immediately, once at ~5s to catch the webhook arrival.
-    dispatch();
-    if (refreshTimeoutRef.current !== null) {
-      window.clearTimeout(refreshTimeoutRef.current);
+    } catch {
+      // Non-critical — the next page navigation will re-read state.
     }
-    refreshTimeoutRef.current = window.setTimeout(() => {
-      dispatch();
-      refreshTimeoutRef.current = null;
-    }, 5_000);
+  }, []);
+
+  const resetToIdle = useCallback(() => {
+    setPhase("idle");
+    setBusyPlan(null);
   }, []);
 
   const handleUpgrade = useCallback(
     async (targetPlan: Exclude<PlanCode, "free">) => {
-      if (busyPlan) return;
+      // Single-flight guard: any non-idle phase blocks a second click,
+      // even before busyPlan is set. Prevents a double-click between
+      // setState calls from creating two payment_orders rows.
+      if (phase !== "idle") return;
+      if (!paymentsEnabled) {
+        flashStatus(
+          "error",
+          "Online payment is not enabled yet. Please try again later."
+        );
+        return;
+      }
       setBusyPlan(targetPlan);
-      setErrorMessage("");
+      setPhase("creating-order");
+      flashStatus("info", "Creating order…");
+
+      type CreateOrderPayload = {
+        ok?: boolean;
+        order_id?: string;
+        key_id?: string;
+        amount?: number;
+        currency?: string;
+        error?: string;
+      };
+      let orderData: CreateOrderPayload | null = null;
+
       try {
         const orderRes = await fetch("/api/payments/create-order", {
           method: "POST",
@@ -231,79 +321,194 @@ export default function ProviderPlanCard({
         });
 
         if (orderRes.status === 503) {
-          setErrorMessage("Payments are not enabled yet. Please try again soon.");
+          flashStatus(
+            "error",
+            "Online payment is not enabled yet. Please try again later."
+          );
+          resetToIdle();
           return;
         }
         if (orderRes.status === 401) {
-          setErrorMessage("Please log in again to continue.");
+          flashStatus("error", "Please log in again to continue.");
+          resetToIdle();
           return;
         }
         if (orderRes.status === 403) {
-          setErrorMessage("Only registered providers can upgrade a plan.");
+          flashStatus(
+            "error",
+            "Only registered providers can upgrade a plan."
+          );
+          resetToIdle();
           return;
         }
 
-        const orderData = (await orderRes.json().catch(() => null)) as
-          | {
-              ok?: boolean;
-              order_id?: string;
-              key_id?: string;
-              amount?: number;
-              currency?: string;
-              error?: string;
-            }
-          | null;
+        orderData = (await orderRes.json().catch(
+          () => null
+        )) as CreateOrderPayload | null;
 
-        if (!orderRes.ok || !orderData?.ok || !orderData.order_id || !orderData.key_id) {
-          setErrorMessage(
+        if (
+          !orderRes.ok ||
+          !orderData?.ok ||
+          !orderData.order_id ||
+          !orderData.key_id
+        ) {
+          flashStatus(
+            "error",
             orderData?.error
               ? `Unable to start checkout (${orderData.error}).`
               : "Unable to start checkout. Please try again."
           );
+          resetToIdle();
           return;
         }
-
-        const scriptLoaded = await loadRazorpayScript();
-        if (!scriptLoaded || !window.Razorpay) {
-          setErrorMessage("Could not load Razorpay. Check your connection and try again.");
-          return;
-        }
-
-        const rzp = new window.Razorpay({
-          key: orderData.key_id,
-          amount: orderData.amount,
-          currency: orderData.currency || "INR",
-          order_id: orderData.order_id,
-          name: "Kaun Karega",
-          description:
-            targetPlan === "regions_5"
-              ? "5 Regions plan — 30 days"
-              : "Full Jodhpur plan — 30 days",
-          prefill: providerName ? { name: providerName } : undefined,
-          theme: { color: "#003d20" },
-          handler: () => {
-            // Webhook is the source of truth. Fire dashboard refresh
-            // shortly so the new Plan state hydrates once the
-            // webhook lands.
-            scheduleDashboardRefresh();
-          },
-          modal: {
-            ondismiss: () => {
-              // No state change on dismiss — user can retry.
-            },
-          },
-        });
-        rzp.open();
       } catch (err) {
-        setErrorMessage(
-          err instanceof Error ? err.message : "Something went wrong. Please try again."
+        flashStatus(
+          "error",
+          err instanceof Error
+            ? err.message
+            : "Network error while starting checkout."
         );
-      } finally {
-        setBusyPlan(null);
+        resetToIdle();
+        return;
       }
+
+      // Defensive narrowing for TS: the validation block above returns
+      // on every shape that would leave orderData partial, so reaching
+      // here implies all required fields are present. The explicit
+      // assertion satisfies the type checker without losing safety.
+      if (!orderData?.order_id || !orderData.key_id) {
+        resetToIdle();
+        return;
+      }
+      const validatedOrder = orderData as {
+        order_id: string;
+        key_id: string;
+        amount?: number;
+        currency?: string;
+      };
+
+      // Order created — load the checkout script and open the modal.
+      const scriptLoaded = await loadRazorpayScript();
+      if (!scriptLoaded || !window.Razorpay) {
+        flashStatus(
+          "error",
+          "Could not load Razorpay. Check your connection and try again."
+        );
+        resetToIdle();
+        return;
+      }
+
+      setPhase("checkout-open");
+      flashStatus("info", "Payment window opened.");
+
+      const verifyPayment = async (success: {
+        razorpay_payment_id: string;
+        razorpay_order_id: string;
+        razorpay_signature: string;
+      }) => {
+        setPhase("verifying");
+        flashStatus("info", "Verifying payment…");
+        try {
+          const verifyRes = await fetch("/api/payments/verify", {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              razorpay_payment_id: success.razorpay_payment_id,
+              razorpay_order_id: success.razorpay_order_id,
+              razorpay_signature: success.razorpay_signature,
+            }),
+          });
+          const verifyData = (await verifyRes.json().catch(() => null)) as
+            | { ok?: boolean; error?: string; status?: string }
+            | null;
+
+          if (!verifyRes.ok || !verifyData?.ok) {
+            flashStatus(
+              "error",
+              verifyData?.error
+                ? `Verification failed (${verifyData.error}). Contact support if your payment was deducted.`
+                : "Verification failed. Contact support if your payment was deducted."
+            );
+            resetToIdle();
+            return;
+          }
+
+          // Signature verified. Webhook is the source of truth for the
+          // actual plan activation; we surface a clear waiting state.
+          setPhase("verified-waiting");
+          flashStatus(
+            "info",
+            "Payment received. Plan activation may take a few seconds. Please refresh if it does not update."
+          );
+          notifyProfileUpdated();
+        } catch (err) {
+          flashStatus(
+            "error",
+            err instanceof Error
+              ? err.message
+              : "Network error during verification."
+          );
+          resetToIdle();
+        }
+      };
+
+      const rzp = new window.Razorpay({
+        key: validatedOrder.key_id,
+        amount: validatedOrder.amount,
+        currency: validatedOrder.currency || "INR",
+        order_id: validatedOrder.order_id,
+        name: "Kaun Karega",
+        description:
+          targetPlan === "regions_5"
+            ? "5 Regions plan — 30 days"
+            : "Full Jodhpur plan — 30 days",
+        prefill: providerName ? { name: providerName } : undefined,
+        theme: { color: "#003d20" },
+        handler: (response: {
+          razorpay_payment_id: string;
+          razorpay_order_id: string;
+          razorpay_signature: string;
+        }) => {
+          void verifyPayment(response);
+        },
+        modal: {
+          ondismiss: () => {
+            // Modal closed without a successful payment. Reset to idle
+            // ONLY if we're still in the pre-verify window — if handler
+            // already fired and verifyPayment is mid-flight (phase has
+            // advanced to verifying / verified-waiting), do not regress
+            // the state machine. The phaseRef gives us the latest phase
+            // value here (closure-captured `phase` would be stale).
+            setPhase((current) => {
+              if (current !== "checkout-open") return current;
+              setBusyPlan(null);
+              flashStatus(
+                "info",
+                "Payment cancelled. You can try again any time.",
+                5_000
+              );
+              return "idle";
+            });
+          },
+        },
+      });
+      rzp.open();
     },
-    [busyPlan, providerName, scheduleDashboardRefresh]
+    [
+      phase,
+      paymentsEnabled,
+      providerName,
+      flashStatus,
+      resetToIdle,
+      notifyProfileUpdated,
+    ]
   );
+
+  const handleManualRefresh = useCallback(() => {
+    if (typeof window === "undefined") return;
+    window.location.reload();
+  }, []);
 
   const showUpgrade5 = code === "free";
   const showUpgradeAll = code !== "all_jodhpur";
@@ -443,39 +648,92 @@ export default function ProviderPlanCard({
       </div>
 
       {showUpgrade5 || showUpgradeAll ? (
-        <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-          {showUpgrade5 ? (
+        !paymentsEnabled ? (
+          <div
+            data-testid="provider-plan-payments-disabled"
+            className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600"
+          >
+            <p className="font-semibold text-slate-700">
+              Online payment is not enabled yet.
+            </p>
+            <p className="mt-1 text-xs leading-relaxed text-slate-500">
+              We&rsquo;re finalising the payment gateway. Your free plan
+              continues to work. We&rsquo;ll let you know when paid plans
+              go live.
+            </p>
+          </div>
+        ) : (
+          <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+            {showUpgrade5 ? (
+              <button
+                type="button"
+                data-testid="provider-plan-upgrade-regions-5"
+                disabled={isUpgradeBusy}
+                onClick={() => {
+                  void handleUpgrade("regions_5");
+                }}
+                className="inline-flex items-center justify-center rounded-xl bg-[#003d20] px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#002a16] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 sm:flex-1"
+              >
+                {busyPlan === "regions_5" && phase === "creating-order"
+                  ? "Creating order…"
+                  : busyPlan === "regions_5" && phase !== "idle"
+                    ? "Processing…"
+                    : isExpired
+                      ? "Renew ₹31 / 5 Regions"
+                      : "Upgrade to 5 Regions — ₹31"}
+              </button>
+            ) : null}
+            {showUpgradeAll ? (
+              <button
+                type="button"
+                data-testid="provider-plan-upgrade-all-jodhpur"
+                disabled={isUpgradeBusy}
+                onClick={() => {
+                  void handleUpgrade("all_jodhpur");
+                }}
+                className="inline-flex items-center justify-center rounded-xl border border-[#003d20] bg-white px-4 py-2.5 text-sm font-semibold text-[#003d20] shadow-sm transition hover:bg-[#003d20] hover:text-white active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 sm:flex-1"
+              >
+                {busyPlan === "all_jodhpur" && phase === "creating-order"
+                  ? "Creating order…"
+                  : busyPlan === "all_jodhpur" && phase !== "idle"
+                    ? "Processing…"
+                    : isExpired
+                      ? "Renew Full Jodhpur — ₹101"
+                      : "Upgrade to Full Jodhpur — ₹101"}
+              </button>
+            ) : null}
+          </div>
+        )
+      ) : null}
+
+      {/* Multi-stage status banner. The phase-driven copy gives the user
+          a clear narration of where they are in the Razorpay-first flow.
+          Verified-waiting also exposes a manual "Refresh now" button
+          because the webhook is the source of truth — the dashboard
+          page does not auto-poll, so the user decides when to pull
+          fresh state. */}
+      {statusMessage ? (
+        <div
+          role={statusMessage.kind === "error" ? "alert" : "status"}
+          data-testid="provider-plan-status"
+          data-status-kind={statusMessage.kind}
+          className={`mt-3 rounded-lg border px-3 py-2 text-xs ${
+            statusMessage.kind === "error"
+              ? "border-rose-200 bg-rose-50 text-rose-700"
+              : statusMessage.kind === "success"
+                ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                : "border-sky-200 bg-sky-50 text-sky-800"
+          }`}
+        >
+          <p>{statusMessage.text}</p>
+          {phase === "verified-waiting" ? (
             <button
               type="button"
-              data-testid="provider-plan-upgrade-regions-5"
-              disabled={busyPlan !== null}
-              onClick={() => {
-                void handleUpgrade("regions_5");
-              }}
-              className="inline-flex items-center justify-center rounded-xl bg-[#003d20] px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#002a16] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 sm:flex-1"
+              data-testid="provider-plan-refresh-now"
+              onClick={handleManualRefresh}
+              className="mt-2 inline-flex items-center justify-center rounded-md border border-[#003d20] bg-white px-3 py-1.5 text-xs font-semibold text-[#003d20] transition hover:bg-[#003d20] hover:text-white"
             >
-              {busyPlan === "regions_5"
-                ? "Opening checkout…"
-                : isExpired
-                  ? "Renew ₹31 / 5 Regions"
-                  : "Upgrade to 5 Regions — ₹31"}
-            </button>
-          ) : null}
-          {showUpgradeAll ? (
-            <button
-              type="button"
-              data-testid="provider-plan-upgrade-all-jodhpur"
-              disabled={busyPlan !== null}
-              onClick={() => {
-                void handleUpgrade("all_jodhpur");
-              }}
-              className="inline-flex items-center justify-center rounded-xl border border-[#003d20] bg-white px-4 py-2.5 text-sm font-semibold text-[#003d20] shadow-sm transition hover:bg-[#003d20] hover:text-white active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 sm:flex-1"
-            >
-              {busyPlan === "all_jodhpur"
-                ? "Opening checkout…"
-                : isExpired
-                  ? "Renew Full Jodhpur — ₹101"
-                  : "Upgrade to Full Jodhpur — ₹101"}
+              Refresh now
             </button>
           ) : null}
         </div>
@@ -565,18 +823,31 @@ export default function ProviderPlanCard({
                     <button
                       type="button"
                       data-testid={`provider-plan-compare-cta-${entry.code}`}
-                      disabled={isCurrent || busyPlan !== null}
+                      disabled={
+                        isCurrent || isUpgradeBusy || !paymentsEnabled
+                      }
                       onClick={() => {
                         if (entry.code === "free") return;
                         void handleUpgrade(entry.code);
                       }}
+                      title={
+                        !paymentsEnabled
+                          ? "Online payment is not enabled yet."
+                          : undefined
+                      }
                       className={`inline-flex w-full items-center justify-center rounded-xl px-3 py-2 text-xs font-semibold transition active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 ${
                         isCurrent
                           ? "border border-[#003d20] bg-white text-[#003d20]"
                           : "bg-[#003d20] text-white hover:bg-[#002a16]"
                       }`}
                     >
-                      {busyOnThis ? "Opening checkout…" : ctaLabel}
+                      {busyOnThis && phase === "creating-order"
+                        ? "Creating order…"
+                        : busyOnThis && phase !== "idle"
+                          ? "Processing…"
+                          : !paymentsEnabled
+                            ? "Coming soon"
+                            : ctaLabel}
                     </button>
                   )}
                 </div>
@@ -586,15 +857,6 @@ export default function ProviderPlanCard({
         </div>
       </div>
 
-      {errorMessage ? (
-        <p
-          role="alert"
-          data-testid="provider-plan-error"
-          className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700"
-        >
-          {errorMessage}
-        </p>
-      ) : null}
     </section>
   );
 }

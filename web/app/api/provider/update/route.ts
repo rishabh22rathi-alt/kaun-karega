@@ -141,17 +141,38 @@ export async function POST(request: Request) {
   // active region in the city"); we still verify against the city's
   // actual region count to catch tampering.
   //
-  // Failure mode for the plan lookup: fail-OPEN with a loud warn.
+  // Failure mode for the plan lookup:
+  //   - hasRegionCodes (provider is editing their region set)
+  //       → fail-CLOSED: returning 500 PLAN_LOOKUP_FAILED is safer than
+  //         silently allowing an unbounded region save during a
+  //         transient DB blip. The provider can retry; the client UI
+  //         renders this as a generic "couldn't save right now" toast.
+  //   - !hasRegionCodes (old client / non-region edit)
+  //       → fail-OPEN with a warn: there is no region count to enforce
+  //         against, so the request is harmless and rejecting it would
+  //         block legitimate name/category-only edits during the same
+  //         transient blip.
   const { data: planRow, error: planLookupError } = await adminSupabase
     .from("provider_plans")
     .select("plan_code, max_regions, current_period_start, current_period_end")
     .eq("provider_id", providerRow.provider_id)
     .maybeSingle();
 
+  if (planLookupError && hasRegionCodes) {
+    console.error(
+      "[provider/update] provider_plans lookup failed during region edit; failing CLOSED",
+      planLookupError.message || planLookupError
+    );
+    return NextResponse.json(
+      { ok: false, error: "PLAN_LOOKUP_FAILED" },
+      { status: 500 }
+    );
+  }
+
   const plan = effectivePlan(planLookupError ? null : (planRow ?? null));
   if (planLookupError) {
     console.warn(
-      "[provider/update] provider_plans lookup failed; failing OPEN (no enforcement this request)",
+      "[provider/update] provider_plans lookup failed on non-region edit; failing OPEN",
       planLookupError.message || planLookupError
     );
   } else if (hasRegionCodes) {
