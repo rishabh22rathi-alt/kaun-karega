@@ -68,6 +68,10 @@ export async function GET(request: Request) {
         active: plan.active,
         ruleKind: rule.kind,
       },
+      // Phase 1 read-only surface. Pre-registration providers have no
+      // row and therefore no scheduled change. Field is always present
+      // (never undefined) so the client can rely on a stable shape.
+      scheduledPlan: plan.scheduled,
       remaining: {
         region_change: MONTHLY_CHANGE_LIMIT,
         category_change: MONTHLY_CHANGE_LIMIT,
@@ -86,9 +90,14 @@ export async function GET(request: Request) {
   // page hides its "changes left this month" hint when remaining ===
   // limit). The provider_change_log read used to populate these is
   // intentionally skipped to keep the route fast.
+  // Phase 1: also select the scheduled_* columns. They are nullable
+  // and unwritten today; Supabase will silently coerce the columns to
+  // null for rows that pre-date the migration's column additions.
   const planResult = await adminSupabase
     .from("provider_plans")
-    .select("plan_code, max_regions, current_period_start, current_period_end")
+    .select(
+      "plan_code, max_regions, current_period_start, current_period_end, scheduled_plan_code, scheduled_max_regions, scheduled_activates_at, scheduled_payment_order_id"
+    )
     .eq("provider_id", providerId)
     .maybeSingle();
 
@@ -104,6 +113,10 @@ export async function GET(request: Request) {
       active: plan.active,
       ruleKind: rule.kind,
     },
+    // Phase 1 read-only surface. Always null until Phase 2 writes the
+    // scheduled_* columns. Stable key so the client can branch on a
+    // null/non-null check without optional-chain gymnastics.
+    scheduledPlan: plan.scheduled,
     remaining: {
       region_change: MONTHLY_CHANGE_LIMIT,
       category_change: MONTHLY_CHANGE_LIMIT,

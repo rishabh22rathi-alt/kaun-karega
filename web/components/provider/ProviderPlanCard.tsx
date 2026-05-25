@@ -21,6 +21,13 @@ import { PROVIDER_PROFILE_UPDATED_EVENT } from "@/components/sidebarEvents";
 
 const RAZORPAY_SCRIPT_URL = "https://checkout.razorpay.com/v1/checkout.js";
 
+export type ProviderScheduledPlanShape = {
+  code: string;
+  maxRegions: number;
+  activatesAt: string;
+  paymentOrderId: string | null;
+};
+
 export type ProviderPlanShape = {
   code: string;
   maxRegions: number;
@@ -31,6 +38,12 @@ export type ProviderPlanShape = {
   // that pre-date the field) is treated as "payments disabled" so the
   // upgrade UI fails closed rather than offering a checkout that 503s.
   paymentsEnabled?: boolean;
+  // Phase 1 read-only addition. Always null today — the dashboard
+  // route emits it from effectivePlan().scheduled, which only becomes
+  // non-null once Phase 2 writes the scheduled_* columns. Optional so
+  // older mocked payloads (Playwright fixtures that pre-date this
+  // commit) continue to type-check without explicit nulls.
+  scheduledPlan?: ProviderScheduledPlanShape | null;
 };
 
 export type ProviderPlanCardProps = {
@@ -75,10 +88,24 @@ type PlanComparisonEntry = {
   subLabel: string;
   positioning: string;
   bullets: string[];
-  ctaLabel: string;
-  renewLabel: string;
   popular?: boolean;
 };
+
+// Phase 1 wording rules (decided by product):
+//   - active current plan      → "Your plan"
+//   - paid renewal              → "Pay and renew this plan"
+//   - paid select / upgrade /
+//     future-lower placeholder  → "Pay and choose this plan"
+//   - free plan (when not current)
+//                               → "Choose this plan"
+// The literal strings are constants here so the wording is changed in
+// one place if product revises copy in a later phase. They are NOT
+// inlined into JSX so a Playwright text-regex doesn't get
+// accidentally drifted out of sync with the source of truth.
+const CTA_LABEL_YOUR_PLAN = "Your plan";
+const CTA_LABEL_PAID_RENEW = "Pay and renew this plan";
+const CTA_LABEL_PAID_CHOOSE = "Pay and choose this plan";
+const CTA_LABEL_FREE_CHOOSE = "Choose this plan";
 
 const PLAN_COMPARISON: PlanComparisonEntry[] = [
   {
@@ -87,8 +114,6 @@ const PLAN_COMPARISON: PlanComparisonEntry[] = [
     subLabel: "1 region included",
     positioning: "Perfect to get started",
     bullets: ["Receive leads for 1 region", "No expiry"],
-    ctaLabel: "Included",
-    renewLabel: "Included",
   },
   {
     code: "regions_5",
@@ -96,8 +121,6 @@ const PLAN_COMPARISON: PlanComparisonEntry[] = [
     subLabel: "5 regions · 30 days",
     positioning: "Best for active providers",
     bullets: ["Serve up to 5 regions", "30-day validity"],
-    ctaLabel: "Upgrade — ₹31",
-    renewLabel: "Renew — ₹31",
     popular: true,
   },
   {
@@ -106,8 +129,6 @@ const PLAN_COMPARISON: PlanComparisonEntry[] = [
     subLabel: "All regions · 30 days",
     positioning: "Maximum city-wide reach",
     bullets: ["Every region in Jodhpur", "30-day validity"],
-    ctaLabel: "Upgrade — ₹101",
-    renewLabel: "Renew — ₹101",
   },
 ];
 
@@ -262,9 +283,9 @@ export default function ProviderPlanCard({
   const whyUpgradeCopy = isExpired
     ? "Renew below to start getting matched with customers again."
     : effectiveCode === "free"
-      ? "Upgrade to serve more regions and reach more customers."
+      ? "Choose a paid plan to serve more regions and reach more customers."
       : effectiveCode === "regions_5"
-        ? "Upgrade to ₹101 to cover all of Jodhpur."
+        ? "Choose the ₹101 plan to cover all of Jodhpur."
         : "You're on the top plan — full city coverage is active.";
 
   // Dispatch the existing PROVIDER_PROFILE_UPDATED_EVENT so the Sidebar
@@ -680,8 +701,8 @@ export default function ProviderPlanCard({
                   : busyPlan === "regions_5" && phase !== "idle"
                     ? "Processing…"
                     : isExpired
-                      ? "Renew ₹31 / 5 Regions"
-                      : "Upgrade to 5 Regions — ₹31"}
+                      ? `${CTA_LABEL_PAID_RENEW} — ₹31`
+                      : `${CTA_LABEL_PAID_CHOOSE} — ₹31`}
               </button>
             ) : null}
             {showUpgradeAll ? (
@@ -699,8 +720,8 @@ export default function ProviderPlanCard({
                   : busyPlan === "all_jodhpur" && phase !== "idle"
                     ? "Processing…"
                     : isExpired
-                      ? "Renew Full Jodhpur — ₹101"
-                      : "Upgrade to Full Jodhpur — ₹101"}
+                      ? `${CTA_LABEL_PAID_RENEW} — ₹101`
+                      : `${CTA_LABEL_PAID_CHOOSE} — ₹101`}
               </button>
             ) : null}
           </div>
@@ -765,13 +786,19 @@ export default function ProviderPlanCard({
               !isCurrent;
             const isFree = entry.code === "free";
             const busyOnThis = busyPlan === entry.code;
+            // Wording rules per the Phase 1 product spec — see the
+            // CTA_LABEL_* constants above for the source of truth.
+            // Note: when the previous paid plan has expired, the
+            // current effective code collapses to "free" → isCurrent
+            // is true for the free card only, and the paid cards
+            // fall through to the `isExpired` branch as renewals.
             const ctaLabel = isCurrent
-              ? "Your plan"
+              ? CTA_LABEL_YOUR_PLAN
               : isFree
-                ? "Included"
+                ? CTA_LABEL_FREE_CHOOSE
                 : isExpired
-                  ? entry.renewLabel
-                  : entry.ctaLabel;
+                  ? CTA_LABEL_PAID_RENEW
+                  : CTA_LABEL_PAID_CHOOSE;
             return (
               <div
                 key={entry.code}
@@ -834,13 +861,20 @@ export default function ProviderPlanCard({
                 </ul>
                 <div className="mt-4">
                   {isFree ? (
+                    // Phase 1: Free card CTA is wording-only. The
+                    // "Choose this plan" copy is the future Free-
+                    // scheduling action (Phase 2 wires it). Button
+                    // stays disabled in Phase 1 — no action is
+                    // available yet for switching to Free from a paid
+                    // plan, and selecting Free while already on Free
+                    // is a no-op.
                     <button
                       type="button"
                       disabled
                       data-testid={`provider-plan-compare-cta-${entry.code}`}
                       className="inline-flex w-full items-center justify-center rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-500"
                     >
-                      {isCurrent ? "Your plan" : "Included"}
+                      {isCurrent ? CTA_LABEL_YOUR_PLAN : CTA_LABEL_FREE_CHOOSE}
                     </button>
                   ) : (
                     <button

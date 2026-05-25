@@ -1275,9 +1275,15 @@ export async function GET(request: NextRequest) {
     // use adminSupabase rather than the cookie-scoped client.
     // Failure here is non-fatal — dashboard renders without the Plan
     // field rather than erroring out.
+    // Phase 1: also select scheduled_* columns. They are nullable and
+    // unwritten today; effectivePlan() returns `scheduled: null` for
+    // any row where they are all NULL. Existing callers that ignore
+    // the new field are unaffected.
     const { data: providerPlanRow, error: providerPlanError } = await adminSupabase
       .from("provider_plans")
-      .select("plan_code, max_regions, current_period_start, current_period_end")
+      .select(
+        "plan_code, max_regions, current_period_start, current_period_end, scheduled_plan_code, scheduled_max_regions, scheduled_activates_at, scheduled_payment_order_id"
+      )
       .eq("provider_id", provider.provider_id)
       .maybeSingle();
     if (providerPlanError) {
@@ -1848,6 +1854,12 @@ export async function GET(request: NextRequest) {
           currentPeriodEnd: planForResponse.currentPeriodEnd,
           active: planForResponse.active,
           paymentsEnabled: isPaymentEnabled(),
+          // Phase 1 read-only surface. Always null until Phase 2 wires
+          // the create-order / schedule-free writers. The dashboard
+          // does not render a scheduled-plan banner in Phase 1 — the
+          // field is exposed so the client type narrows without
+          // optional-chaining, not so the UI changes.
+          scheduledPlan: planForResponse.scheduled,
         },
         Analytics: {
           Summary: {

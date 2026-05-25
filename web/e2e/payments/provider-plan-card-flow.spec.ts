@@ -195,7 +195,7 @@ test.describe("ProviderPlanCard — Razorpay-first upgrade flow", () => {
       fiveRegions.getByTestId("provider-plan-compare-popular-badge")
     ).toHaveCount(0);
     await expect(page.getByTestId("provider-plan-compare-cta-regions_5")).toHaveText(
-      /Upgrade/i
+      /Pay and choose this plan/i
     );
     await expect(page.getByTestId("provider-plan-compare-cta-regions_5")).not.toHaveText(
       /downgrade/i
@@ -230,10 +230,10 @@ test.describe("ProviderPlanCard — Razorpay-first upgrade flow", () => {
       fiveRegions.getByTestId("provider-plan-compare-popular-badge")
     ).toHaveText(/Most Popular/i);
     await expect(page.getByTestId("provider-plan-compare-cta-regions_5")).toHaveText(
-      /Upgrade.*31/i
+      /Pay and choose this plan/i
     );
     await expect(page.getByTestId("provider-plan-compare-cta-all_jodhpur")).toHaveText(
-      /Upgrade.*101/i
+      /Pay and choose this plan/i
     );
   });
 
@@ -268,7 +268,7 @@ test.describe("ProviderPlanCard — Razorpay-first upgrade flow", () => {
       "Your plan"
     );
     await expect(page.getByTestId("provider-plan-compare-cta-all_jodhpur")).toHaveText(
-      /Upgrade.*101/i
+      /Pay and choose this plan/i
     );
   });
 
