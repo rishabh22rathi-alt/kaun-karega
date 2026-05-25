@@ -52,7 +52,7 @@ export default function RootLayout({
             interactive everywhere except the bell. The component itself
             self-hides for guests, non-providers, and admin routes.
           */}
-          <div className="pointer-events-none fixed inset-x-0 top-3 z-[60] md:top-5">
+          <div className="pointer-events-none fixed inset-x-0 top-0 z-[60] pt-[max(env(safe-area-inset-top),1.5rem)] md:pt-[max(env(safe-area-inset-top),1.25rem)]">
             <div className="pointer-events-none mx-auto flex w-full max-w-6xl justify-end px-4 md:px-6">
               <div className="pointer-events-auto">
                 <GlobalProviderNotificationBell />

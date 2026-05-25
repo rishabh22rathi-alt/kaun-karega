@@ -33,7 +33,7 @@ export default function SidebarToggle() {
   if (shouldHide || isSidebarOpen) return null;
 
   return (
-    <div className="fixed left-0 top-0 z-50 pl-3 pt-[max(env(safe-area-inset-top),0.75rem)] md:hidden">
+    <div className="fixed left-0 top-0 z-50 pl-3 pt-[max(env(safe-area-inset-top),1.5rem)] md:hidden">
       <button
         type="button"
         onClick={handleClick}
