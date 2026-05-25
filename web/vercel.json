@@ -3,6 +3,10 @@
     {
       "path": "/api/admin/announcements/worker/cron",
       "schedule": "0 0 * * *"
+    },
+    {
+      "path": "/api/cron/activate-scheduled-plans",
+      "schedule": "*/5 * * * *"
     }
   ]
 }
