@@ -8,6 +8,35 @@ import {
   verifyWebhookSignature,
 } from "@/lib/payments/server";
 import { effectivePlan } from "@/lib/payments/effectivePlan";
+import { invalidateSnapshots } from "@/lib/admin/snapshotCache";
+
+// Cache keys invalidated after every successful captured-payment write
+// (both immediate-upgrade/renewal and scheduled_paid_lower branches).
+// Centralised here so the two branches stay in sync if the key list ever
+// grows. provider_plan_growth is the new admin dashboard surface;
+// provider_stats keys were also under-invalidated by the webhook before
+// this change (pre-existing gap that we close here too).
+const PAYMENT_CACHE_INVALIDATION_KEYS = [
+  "provider_plan_growth",
+  "provider_stats",
+  "provider_stats.by_category",
+  "provider_stats.by_category.verified",
+] as const;
+
+// Soft-fail wrapper. A cache invalidation failure must NEVER cause us
+// to return 5xx — that would trigger Razorpay's at-least-once retry
+// policy on a payment that's already been recorded as paid, which is
+// worse than the cache being stale for its natural TTL.
+async function safeInvalidatePaymentCaches(): Promise<void> {
+  try {
+    await invalidateSnapshots([...PAYMENT_CACHE_INVALIDATION_KEYS]);
+  } catch (err) {
+    console.warn(
+      "[payments/webhook] snapshot invalidation failed (non-fatal)",
+      err instanceof Error ? err.message : err
+    );
+  }
+}
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -547,6 +576,12 @@ export async function POST(request: Request) {
       );
     }
 
+    // Cache invalidation after the scheduled_paid_lower writes commit.
+    // Awaited (not fire-and-forget) so the L1+L2 purges complete before
+    // we return — but soft-fail so a cache outage can never trigger a
+    // Razorpay retry on an already-paid order.
+    await safeInvalidatePaymentCaches();
+
     return NextResponse.json({ ok: true, scheduled: true });
   }
 
@@ -600,6 +635,11 @@ export async function POST(request: Request) {
       { status: 500 }
     );
   }
+
+  // Cache invalidation after immediate-upgrade / immediate-renewal /
+  // legacy NULL-mode writes commit. Same soft-fail rules as the
+  // scheduled branch — never block the 200 OK.
+  await safeInvalidatePaymentCaches();
 
   return NextResponse.json({ ok: true });
 }

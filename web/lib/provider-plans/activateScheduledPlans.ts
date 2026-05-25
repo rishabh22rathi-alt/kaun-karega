@@ -124,8 +124,12 @@ async function invalidatePostActivationCaches(
 ): Promise<void> {
   // Same key set used by /api/provider/update — keeps the invalidation
   // contract consistent across active-set mutations. area_stats.{city}
-  // is appended only when we have a valid city.
+  // is appended only when we have a valid city. provider_plan_growth
+  // is added here so the admin Plan Growth dashboard (Provider Plan
+  // Growth tab) refreshes after every successful activation —
+  // applies to both the admin manual trigger and the bearer-auth cron.
   const keys: string[] = [
+    "provider_plan_growth",
     "provider_stats",
     "provider_stats.by_category",
     "provider_stats.by_category.verified",

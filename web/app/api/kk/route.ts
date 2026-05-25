@@ -2188,6 +2188,10 @@ export async function POST(request: NextRequest) {
       // single-active-city deployment.
       try {
         await invalidateSnapshots([
+          // provider_plan_growth: registration changes totalProviders
+          // and the implicit-free count surfaced on the admin Plan
+          // Growth dashboard.
+          "provider_plan_growth",
           "area_stats.JOD",
           "provider_stats",
           "provider_stats.by_category",

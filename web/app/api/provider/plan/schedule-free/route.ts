@@ -3,6 +3,7 @@ import { getAuthSession } from "@/lib/auth";
 import { adminSupabase } from "@/lib/supabase/admin";
 import { effectivePlan } from "@/lib/payments/effectivePlan";
 import { isScheduledPlansEnabled } from "@/lib/payments/server";
+import { invalidateSnapshots } from "@/lib/admin/snapshotCache";
 
 /**
  * Phase 3.2A — Schedule a paid → Free plan change.
@@ -252,6 +253,32 @@ export async function POST(request: Request) {
       { ok: false, error: "SCHEDULE_FREE_UPDATE_FAILED" },
       { status: 500 }
     );
+  }
+
+  // Cache invalidation on the successful-write path only. The
+  // idempotent re-request short-circuit above returns BEFORE this
+  // point (no DB write happened, so no cache key needs to flip). The
+  // race-conflict short-circuit BELOW also bypasses this — we only
+  // invalidate when scheduled_* actually changed on this provider.
+  //
+  // provider_plan_growth is the launch-critical key here: scheduled-
+  // free changes scheduled.free count and the "due now" projection
+  // for tomorrow's admin run. provider_stats keys are NOT in this
+  // list because schedule-free doesn't change total/free/paid counts
+  // (active fields are untouched until the future activation).
+  //
+  // Soft-fail wrapper: a cache invalidation failure must NEVER cause
+  // a 5xx response that would mislead the client into thinking the
+  // schedule didn't land (it did).
+  if (updatedRows && updatedRows.length > 0) {
+    try {
+      await invalidateSnapshots(["provider_plan_growth"]);
+    } catch (err) {
+      console.warn(
+        "[provider/plan/schedule-free] snapshot invalidation failed (non-fatal)",
+        err instanceof Error ? err.message : err
+      );
+    }
   }
 
   if (!updatedRows || updatedRows.length === 0) {
