@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { PROVIDER_PROFILE_UPDATED_EVENT } from "@/components/sidebarEvents";
 import PaymentTermsModal from "@/components/provider/PaymentTermsModal";
 import ScheduledRegionPicker from "@/components/provider/ScheduledRegionPicker";
+import ScheduleFreeConfirmModal from "@/components/provider/ScheduleFreeConfirmModal";
 import {
   classifyPlanChange,
   type PlanChangeMode,
@@ -199,6 +200,8 @@ function loadRazorpayScript(): Promise<boolean> {
 //   verified-waiting  → signature verified; waiting for the webhook to
 //                       flip provider_plans. Source of truth for plan
 //                       activation is the webhook, NOT this state.
+//   confirming-free   → Phase 3.2A: ScheduleFreeConfirmModal is open (no payment)
+//   submitting-free   → Phase 3.2A: POST /api/provider/plan/schedule-free in flight
 type UpgradePhase =
   | "idle"
   | "picking-regions"
@@ -206,7 +209,9 @@ type UpgradePhase =
   | "creating-order"
   | "checkout-open"
   | "verifying"
-  | "verified-waiting";
+  | "verified-waiting"
+  | "confirming-free"
+  | "submitting-free";
 
 // Friendly labels for the terms modal + picker so the surrounding
 // copy stays consistent with the plan card. Internal plan_codes
@@ -658,6 +663,143 @@ export default function ProviderPlanCard({
     void runCreateOrder(pendingTarget, pendingRegionCodes);
   }, [phase, pendingTarget, pendingRegionCodes, resetToIdle, runCreateOrder]);
 
+  // ─── Phase 3.2A: Free scheduling flow ──────────────────────────────
+  // Opens the ScheduleFreeConfirmModal. Unlike the paid flow we do NOT
+  // open the picker or the payment-terms modal — there is no payment.
+  // The provider's confirmation in this modal is what triggers the
+  // POST. Client-side guards mirror server-side checks: paid scheduled
+  // plans are locked, free re-requests are idempotent, and only an
+  // active paid provider can step down.
+  const initiateScheduleFree = useCallback(() => {
+    if (phase !== "idle") return;
+    if (!isActive) return;
+    if (effectiveCode === "free") return;
+    if (plan?.scheduledPlan?.code === "free") return;
+    if (plan?.scheduledPlan?.paymentOrderId) {
+      // Paid scheduled is locked — surface a clear inline error rather
+      // than silently no-op, since the Free CTA should already be
+      // disabled in this state.
+      flashStatus(
+        "error",
+        "A paid plan is already scheduled for your next cycle, so Free plan cannot replace it."
+      );
+      return;
+    }
+    setPendingMode("scheduled_free");
+    setPhase("confirming-free");
+  }, [phase, isActive, effectiveCode, plan, flashStatus]);
+
+  const handleScheduleFreeCancel = useCallback(() => {
+    if (phase !== "confirming-free") return;
+    resetToIdle();
+    flashStatus("info", "Free plan scheduling cancelled.", 4_000);
+  }, [phase, resetToIdle, flashStatus]);
+
+  const handleScheduleFreeConfirm = useCallback(async () => {
+    if (phase !== "confirming-free") return;
+    setPhase("submitting-free");
+    flashStatus("info", "Scheduling Free plan…");
+
+    type ScheduleFreePayload = {
+      ok?: boolean;
+      error?: string;
+      message?: string;
+      scheduledPlan?: {
+        code?: string;
+        maxRegions?: number;
+        activatesAt?: string;
+        paymentOrderId?: string | null;
+      };
+    };
+
+    try {
+      const res = await fetch("/api/provider/plan/schedule-free", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirmed: true }),
+      });
+      const data = (await res.json().catch(() => null)) as
+        | ScheduleFreePayload
+        | null;
+
+      if (res.status === 503) {
+        flashStatus(
+          "error",
+          "Free plan scheduling isn't enabled yet. Please try again later."
+        );
+        resetToIdle();
+        return;
+      }
+      if (res.status === 401) {
+        flashStatus("error", "Please log in again to continue.");
+        resetToIdle();
+        return;
+      }
+      if (res.status === 403) {
+        flashStatus("error", "Only registered providers can schedule a plan.");
+        resetToIdle();
+        return;
+      }
+      if (res.status === 409 && data?.error === "PAID_SCHEDULED_LOCKED") {
+        flashStatus(
+          "error",
+          "A paid plan is already scheduled for your next cycle, so Free plan cannot replace it."
+        );
+        resetToIdle();
+        return;
+      }
+      if (res.status === 409 && data?.error === "NOT_ACTIVE_PAID_PLAN") {
+        flashStatus(
+          "error",
+          "Free scheduling is only available while you're on an active paid plan."
+        );
+        resetToIdle();
+        return;
+      }
+      if (res.status === 409 && data?.error === "RACE_CONFLICT") {
+        flashStatus(
+          "error",
+          data.message ||
+            "A paid plan was scheduled at the same time. Please reload and try again."
+        );
+        resetToIdle();
+        return;
+      }
+      if (!res.ok || !data?.ok) {
+        flashStatus(
+          "error",
+          data?.error
+            ? `Could not schedule Free plan (${data.error}).`
+            : "Could not schedule Free plan. Please try again."
+        );
+        resetToIdle();
+        return;
+      }
+
+      // Success. Free scheduling is INSTANT and committed at the DB
+      // layer — unlike the paid flow there's no webhook to wait for.
+      // Reload after a brief confirmation so the dashboard fetches the
+      // updated provider_plans row and renders the free-scheduled
+      // banner.
+      flashStatus("success", "Free plan scheduled for next cycle.");
+      notifyProfileUpdated();
+      window.setTimeout(() => {
+        if (typeof window !== "undefined") {
+          window.location.reload();
+        }
+      }, 1100);
+    } catch (err) {
+      flashStatus(
+        "error",
+        err instanceof Error
+          ? err.message
+          : "Network error while scheduling Free plan."
+      );
+      resetToIdle();
+    }
+  }, [phase, flashStatus, resetToIdle, notifyProfileUpdated]);
+
   const handleManualRefresh = useCallback(() => {
     if (typeof window === "undefined") return;
     window.location.reload();
@@ -818,6 +960,30 @@ export default function ProviderPlanCard({
                 ? ` (${formatExpiryDate(plan.scheduledPlan.activatesAt)})`
                 : ""}
               . This scheduled plan is locked and non-refundable.
+            </p>
+          </div>
+        ) : null}
+        {plan?.scheduledPlan && plan.scheduledPlan.code === "free" ? (
+          // Phase 3.2A: free-scheduled banner. Sibling to the paid
+          // banner above. Free is NOT locked — a later paid scheduled
+          // request can replace it (handled in /api/payments/create-
+          // order), but we don't surface that as a UI affordance here.
+          // No "non-refundable" wording because no payment was taken.
+          <div
+            data-testid="provider-plan-scheduled-free-banner"
+            role="status"
+            className="rounded-xl border border-sky-200 bg-sky-50 px-4 py-3"
+          >
+            <p className="text-sm font-semibold text-sky-900">
+              Free plan scheduled for next cycle.
+            </p>
+            <p className="mt-1 text-xs leading-relaxed text-sky-800">
+              Your current plan continues until expiry
+              {formatExpiryDate(plan.scheduledPlan.activatesAt)
+                ? ` (${formatExpiryDate(plan.scheduledPlan.activatesAt)})`
+                : ""}
+              . After that, we&rsquo;ll keep your oldest region. You can change
+              it after activation.
             </p>
           </div>
         ) : null}
@@ -1020,21 +1186,63 @@ export default function ProviderPlanCard({
                 </ul>
                 <div className="mt-4">
                   {isFree ? (
-                    // Phase 1: Free card CTA is wording-only. The
-                    // "Choose this plan" copy is the future Free-
-                    // scheduling action (Phase 2 wires it). Button
-                    // stays disabled in Phase 1 — no action is
-                    // available yet for switching to Free from a paid
-                    // plan, and selecting Free while already on Free
-                    // is a no-op.
-                    <button
-                      type="button"
-                      disabled
-                      data-testid={`provider-plan-compare-cta-${entry.code}`}
-                      className="inline-flex w-full items-center justify-center rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-500"
-                    >
-                      {isCurrent ? CTA_LABEL_YOUR_PLAN : CTA_LABEL_FREE_CHOOSE}
-                    </button>
+                    (() => {
+                      // Phase 3.2A: Free card is now clickable when the
+                      // provider is on an active paid plan and has no
+                      // existing scheduled plan. Server enforces the
+                      // same rules and rejects with 409 if any guard is
+                      // bypassed.
+                      const isFreeScheduled =
+                        plan?.scheduledPlan?.code === "free";
+                      const isPaidScheduledLocked = Boolean(
+                        plan?.scheduledPlan?.paymentOrderId
+                      );
+                      const canScheduleFree =
+                        !isCurrent &&
+                        isActive &&
+                        effectiveCode !== "free" &&
+                        !isFreeScheduled &&
+                        !isPaidScheduledLocked &&
+                        !isUpgradeBusy;
+                      const freeIsBusy =
+                        phase === "confirming-free" ||
+                        phase === "submitting-free";
+                      const freeLabel = isCurrent
+                        ? CTA_LABEL_YOUR_PLAN
+                        : isFreeScheduled
+                          ? "Scheduled for next cycle"
+                          : freeIsBusy && phase === "submitting-free"
+                            ? "Scheduling…"
+                            : freeIsBusy
+                              ? "Processing…"
+                              : CTA_LABEL_FREE_CHOOSE;
+                      const freeTitle = isPaidScheduledLocked
+                        ? "A paid plan is already scheduled and cannot be replaced."
+                        : isFreeScheduled
+                          ? "Free plan is already scheduled for your next cycle."
+                          : !isActive
+                            ? "Available while you're on an active paid plan."
+                            : undefined;
+                      return (
+                        <button
+                          type="button"
+                          data-testid={`provider-plan-compare-cta-${entry.code}`}
+                          disabled={!canScheduleFree}
+                          onClick={() => {
+                            if (!canScheduleFree) return;
+                            initiateScheduleFree();
+                          }}
+                          title={freeTitle}
+                          className={`inline-flex w-full items-center justify-center rounded-xl px-3 py-2 text-xs font-semibold transition active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 ${
+                            canScheduleFree
+                              ? "border border-[#003d20] bg-white text-[#003d20] hover:bg-[#003d20] hover:text-white"
+                              : "border border-slate-200 bg-slate-50 text-slate-500"
+                          }`}
+                        >
+                          {freeLabel}
+                        </button>
+                      );
+                    })()
                   ) : (
                     <button
                       type="button"
@@ -1099,6 +1307,19 @@ export default function ProviderPlanCard({
           }
           onCancel={handleTermsCancel}
           onConfirm={handleTermsConfirm}
+        />
+      ) : null}
+
+      {/* Phase 3.2A: paid → Free scheduling confirmation. Mounted only
+          when the provider opts into the Free flow from the comparison
+          grid. No payment terms (no payment) — the modal's Confirm
+          button is what triggers POST /api/provider/plan/schedule-free. */}
+      {phase === "confirming-free" || phase === "submitting-free" ? (
+        <ScheduleFreeConfirmModal
+          currentPeriodEndLabel={expiryLabel}
+          busy={phase === "submitting-free"}
+          onCancel={handleScheduleFreeCancel}
+          onConfirm={handleScheduleFreeConfirm}
         />
       ) : null}
     </section>
