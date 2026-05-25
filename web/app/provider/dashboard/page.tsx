@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState, Suspense } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import InAppToastStack, { type InAppToast } from "@/components/InAppToastStack";
 import ProviderDashboardCoachmark from "@/components/ProviderDashboardCoachmark";
@@ -454,6 +454,25 @@ function ProviderDashboardInner() {
     // every state set inside `load`, causing an infinite loop. The first-
     // load detection inside `load` reads the latest `profile` via closure.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phone, metricsRange]);
+
+  // Silent refetch hook passed to ProviderPlanCard. The card calls this
+  // after a successful Razorpay verify to poll until provider_plans
+  // scheduled_* columns are visible (the webhook may not have written
+  // them by the time Razorpay's success handler fires). Deliberately
+  // skips loading/error UI — the initial useEffect-driven load above
+  // owns those surfaces; this path is a quiet state refresh.
+  const refetchProfile = useCallback(async () => {
+    if (!phone) return;
+    try {
+      const profileData = await fetchProviderDashboardProfile(metricsRange);
+      if (!profileData?.ok || !profileData.provider) return;
+      setProfile(profileData.provider as ProviderProfile);
+    } catch {
+      // Non-fatal — caller (e.g. ProviderPlanCard polling) decides
+      // whether to retry. Errors that matter for the page-level error
+      // banner are caught by the initial load useEffect above.
+    }
   }, [phone, metricsRange]);
 
   useEffect(() => {
@@ -1082,6 +1101,7 @@ function ProviderDashboardInner() {
               : profile.Areas?.length ?? 0
           }
           providerName={profile.ProviderName}
+          onPlanRefetchRequested={refetchProfile}
         />
 
         <section

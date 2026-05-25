@@ -57,6 +57,11 @@ export type ProviderPlanCardProps = {
   plan: ProviderPlanShape | null | undefined;
   currentRegionsCount: number;
   providerName?: string;
+  // Optional parent-supplied refetch hook. When provided, the card uses
+  // it to silently re-pull /api/provider/dashboard-profile after a
+  // successful Razorpay payment so the scheduled-plan banner appears
+  // without a manual page refresh. Bounded polling — see verifyPayment.
+  onPlanRefetchRequested?: () => Promise<void>;
 };
 
 type PlanCode = "free" | "regions_5" | "all_jodhpur";
@@ -240,11 +245,20 @@ export default function ProviderPlanCard({
   plan,
   currentRegionsCount,
   providerName,
+  onPlanRefetchRequested,
 }: ProviderPlanCardProps) {
   const [phase, setPhase] = useState<UpgradePhase>("idle");
   const [busyPlan, setBusyPlan] = useState<PlanCode | null>(null);
   const [statusMessage, setStatusMessage] = useState<StatusMessage>(null);
   const statusClearTimeoutRef = useRef<number | null>(null);
+  // Latest plan prop snapshot. The post-payment poll inside an async
+  // closure cannot read the latest prop via closure (captures the
+  // render-time value); a ref tracks it across renders so the poll can
+  // see scheduled_* fields the moment they land.
+  const planRef = useRef(plan);
+  useEffect(() => {
+    planRef.current = plan;
+  }, [plan]);
 
   // PAYMENT_ENABLED kill switch surfaced through dashboard-profile.
   // Treat absence (older payloads, tests that didn't add the field) as
@@ -518,6 +532,46 @@ export default function ProviderPlanCard({
             "Payment received. Plan activation may take a few seconds. Please refresh if it does not update."
           );
           notifyProfileUpdated();
+
+          // Bounded poll: silently re-pull dashboard-profile until the
+          // webhook has written scheduled_* fields (or we exhaust the
+          // budget). Without this, the CTA stays on "Processing…" until
+          // the user manually refreshes — the dashboard does not auto-
+          // refetch on verify completion. Race-safe: Razorpay's success
+          // callback can beat the webhook by several seconds, so the
+          // first refetch is expected to miss; we keep polling.
+          //
+          // On match → resetToIdle so the CTA reverts to its normal
+          // label and the prop-driven scheduled banner takes over the
+          // messaging. On exhaustion → resetToIdle anyway and leave
+          // the existing "Please refresh if it does not update." status
+          // text visible as the fallback. Never surface a hard error
+          // here — the payment IS captured; the only thing missing is
+          // the UI catching up.
+          const POLL_MAX_ATTEMPTS = 5;
+          const POLL_INTERVAL_MS = 1500;
+          const expectedScheduledCode: string = targetPlan;
+          for (let attempt = 0; attempt < POLL_MAX_ATTEMPTS; attempt++) {
+            if (onPlanRefetchRequested) {
+              try {
+                await onPlanRefetchRequested();
+              } catch {
+                // Refetch failure is non-fatal — keep polling. The
+                // status banner already tells the user payment was
+                // received; resetToIdle on exhaustion handles cleanup.
+              }
+            }
+            await new Promise<void>((resolve) =>
+              window.setTimeout(resolve, POLL_INTERVAL_MS)
+            );
+            if (
+              planRef.current?.scheduledPlan?.code === expectedScheduledCode
+            ) {
+              resetToIdle();
+              return;
+            }
+          }
+          resetToIdle();
         } catch (err) {
           flashStatus(
             "error",
@@ -572,7 +626,13 @@ export default function ProviderPlanCard({
       });
       rzp.open();
     },
-    [providerName, flashStatus, resetToIdle, notifyProfileUpdated]
+    [
+      providerName,
+      flashStatus,
+      resetToIdle,
+      notifyProfileUpdated,
+      onPlanRefetchRequested,
+    ]
   );
 
   // Phase 2 entry-point. Replaces the direct create-order call.
