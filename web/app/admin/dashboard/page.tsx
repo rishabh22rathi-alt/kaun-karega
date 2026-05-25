@@ -9,6 +9,7 @@ import AreaTab from "@/components/admin/AreaTab";
 import UsersTab from "@/components/admin/UsersTab";
 import KaamTab from "@/components/admin/KaamTab";
 import SystemHealthTab from "@/components/admin/SystemHealthTab";
+import ScheduledPlansTab from "@/components/admin/ScheduledPlansTab";
 import ReportsTab from "@/components/admin/ReportsTab";
 import IssueReportsTab from "@/components/admin/IssueReportsTab";
 import ChatsTab from "@/components/admin/ChatsTab";
@@ -73,6 +74,7 @@ function DashboardBody() {
       />
       <PushAnalyticsTab defaultOpen={activeTab === "notifications"} />
       <SystemHealthTab />
+      <ScheduledPlansTab />
       <ReportsTab />
       <CategoryTab
         unread={unread.category}
