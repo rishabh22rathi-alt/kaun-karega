@@ -161,9 +161,17 @@ alter table public.push_logs
 alter table public.push_logs
   add constraint push_logs_event_type_check
   check (event_type in (
+    'general',
+    'job_match',
+    'chat_message',
+    'task_update',
+    'admin_alert',
+    'marketing',
+    'new_category',
+    'need_post',
+    'system',
+    'test',
     'new_service_request',
     'job_matched',
-    'chat_message',
-    'test',
     'plan_activated'
   ));

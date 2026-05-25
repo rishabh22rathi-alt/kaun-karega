@@ -130,6 +130,17 @@ async function getRazorpayCheckoutOptions(
   });
 }
 
+// Phase 2: every paid purchase opens a terms-confirmation modal before
+// the create-order POST. Tests that previously clicked the upgrade
+// button and asserted directly on Razorpay state must now click
+// through the terms modal first.
+async function confirmPaymentTerms(page: Page): Promise<void> {
+  const modal = page.getByTestId("payment-terms-modal");
+  await expect(modal).toBeVisible({ timeout: 5_000 });
+  await page.getByTestId("payment-terms-checkbox").check();
+  await page.getByTestId("payment-terms-continue").click();
+}
+
 test.describe("ProviderPlanCard — Razorpay-first upgrade flow", () => {
   test.beforeEach(async ({ page }) => {
     await bootstrapProviderSession(page);
@@ -344,6 +355,7 @@ test.describe("ProviderPlanCard — Razorpay-first upgrade flow", () => {
     const upgrade = page.getByTestId("provider-plan-upgrade-regions-5");
     await expect(upgrade).toBeVisible();
     await upgrade.click();
+    await confirmPaymentTerms(page);
 
     // Once Razorpay modal "opens", both buttons stay disabled.
     await expect
@@ -397,6 +409,7 @@ test.describe("ProviderPlanCard — Razorpay-first upgrade flow", () => {
 
     await gotoPath(page, "/provider/dashboard");
     await page.getByTestId("provider-plan-upgrade-regions-5").click();
+    await confirmPaymentTerms(page);
 
     // Razorpay modal stub is now "open". Simulate the success callback.
     await fireRazorpaySuccess(page);
@@ -447,6 +460,7 @@ test.describe("ProviderPlanCard — Razorpay-first upgrade flow", () => {
     const upgrade = page.getByTestId("provider-plan-upgrade-regions-5");
     await upgrade.click();
     await expect(upgrade).toBeDisabled();
+    await confirmPaymentTerms(page);
 
     await fireRazorpayDismiss(page);
 
@@ -482,6 +496,7 @@ test.describe("ProviderPlanCard — Razorpay-first upgrade flow", () => {
     await gotoPath(page, "/provider/dashboard");
     const upgrade = page.getByTestId("provider-plan-upgrade-regions-5");
     await upgrade.click();
+    await confirmPaymentTerms(page);
 
     await expect(
       page.getByText(/Online payment is not enabled yet/i)
@@ -528,6 +543,7 @@ test.describe("ProviderPlanCard — Razorpay-first upgrade flow", () => {
 
     await gotoPath(page, "/provider/dashboard");
     await page.getByTestId("provider-plan-upgrade-regions-5").click();
+    await confirmPaymentTerms(page);
     await fireRazorpaySuccess(page);
 
     await expect(

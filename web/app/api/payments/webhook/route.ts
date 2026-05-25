@@ -7,6 +7,7 @@ import {
   isPaymentEnabled,
   verifyWebhookSignature,
 } from "@/lib/payments/server";
+import { effectivePlan } from "@/lib/payments/effectivePlan";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -167,9 +168,17 @@ export async function POST(request: Request) {
   //    a forged notes payload (notes are signed by Razorpay only as
   //    part of the whole event, but trusting our own DB row is safer
   //    and removes one class of mistakes).
+  //
+  //    Phase 2 additions in the select list: plan_change_mode tells
+  //    the post-capture branch whether to write provider_plans.scheduled_*
+  //    (scheduled_paid_lower) or update the active period (the legacy
+  //    immediate path). scheduled_activates_at + scheduled_region_codes
+  //    carry the schedule context recorded at order time.
   const { data: orderRows, error: orderLookupError } = await adminSupabase
     .from("payment_orders")
-    .select("order_id, provider_id, plan_code, amount_paise, status")
+    .select(
+      "order_id, provider_id, plan_code, amount_paise, status, plan_change_mode, scheduled_activates_at, scheduled_region_codes, current_plan_code_at_order"
+    )
     .eq("order_id", orderIdFromEvent)
     .limit(1);
 
@@ -252,20 +261,304 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, unknownPlanCode: true });
   }
 
-  // Two writes, ordered: payment_orders first (financial record), then
-  // provider_plans (entitlement). If the second fails, the order is
-  // marked paid and the webhook will retry; the retry path will see
-  // status='paid' but provider_plans missing and re-upsert.
+  // Phase 2: branch on the classification recorded at order time. We
+  // do NOT re-classify here — the order is the contract, and the
+  // provider's effective plan may have shifted between order and
+  // capture (e.g. their current_period_end passed during the few
+  // seconds Razorpay was holding the payment).
   //
-  // To detect that retry path explicitly, we do the writes in the
-  // opposite order: plan upsert first, then payment_orders flip. That
-  // way, "status=paid" implies "provider_plans is upserted."
+  // Legacy orders (created before Phase 2) have plan_change_mode=NULL.
+  // Those fall through the default branch which preserves Stage 2
+  // behaviour exactly: an immediate upsert of provider_plans.
+  const recordedMode = String(
+    (orderRow as { plan_change_mode?: string | null }).plan_change_mode ?? ""
+  );
+  const isScheduledLower = recordedMode === "scheduled_paid_lower";
+
   const now = new Date();
+  const maxRegions = getPlanMaxRegions(orderPlanCode);
+
+  // ── Scheduled paid lower: write provider_plans.scheduled_* + areas ─
+  if (isScheduledLower) {
+    // Phase 3.1 hardening: confirm the provider is currently on an
+    // active paid plan before writing scheduled_* fields. Defends
+    // against two failure modes that should be impossible by design
+    // but would corrupt active state if they ever happened:
+    //   (a) provider_plans row deleted between order and capture
+    //   (b) current_period_end passed during the Razorpay hold window,
+    //       collapsing the effective plan to free
+    // In either case we refuse to advance. The order stays in
+    // 'created' (Razorpay retries up to 24h, then admin reconciles
+    // via the future "stuck payments" surface). Writing scheduled_*
+    // onto a row that no longer represents an active paid plan would
+    // be worse than the alternative.
+    const { data: activePlanRow, error: activePlanError } = await adminSupabase
+      .from("provider_plans")
+      .select(
+        "plan_code, max_regions, current_period_start, current_period_end"
+      )
+      .eq("provider_id", providerId)
+      .maybeSingle();
+
+    if (activePlanError) {
+      console.error(
+        "[payments/webhook] scheduled_paid_lower active-plan lookup failed",
+        activePlanError
+      );
+      return NextResponse.json(
+        { ok: false, error: "ACTIVE_PLAN_LOOKUP_FAILED" },
+        { status: 500 }
+      );
+    }
+
+    const effective = effectivePlan(activePlanRow ?? null);
+    if (!effective.active || effective.code === "free") {
+      console.error(
+        "[payments/webhook] scheduled_paid_lower without active paid plan",
+        {
+          orderId: orderRow.order_id,
+          providerId,
+          effectiveCode: effective.code,
+          effectiveActive: effective.active,
+          currentPeriodEnd: effective.currentPeriodEnd,
+        }
+      );
+      return NextResponse.json(
+        { ok: false, error: "SCHEDULED_NO_ACTIVE_PAID_PLAN" },
+        { status: 500 }
+      );
+    }
+
+    const scheduledActivatesAt = String(
+      (orderRow as { scheduled_activates_at?: string | null })
+        .scheduled_activates_at ?? ""
+    );
+    if (!scheduledActivatesAt) {
+      // Should not happen — the create-order route requires it for
+      // scheduled_paid_lower and the chk_payment_orders_scheduled_lower_
+      // context CHECK constraint enforces it at the DB layer. Log and
+      // refuse to advance.
+      console.error("[payments/webhook] scheduled_paid_lower missing activates_at", {
+        orderId: orderRow.order_id,
+      });
+      return NextResponse.json(
+        { ok: false, error: "SCHEDULED_CONTEXT_MISSING" },
+        { status: 500 }
+      );
+    }
+
+    const rawCodes = (orderRow as {
+      scheduled_region_codes?: string[] | null;
+    }).scheduled_region_codes;
+    if (!Array.isArray(rawCodes) || rawCodes.length === 0) {
+      console.error("[payments/webhook] scheduled_paid_lower missing region codes", {
+        orderId: orderRow.order_id,
+      });
+      return NextResponse.json(
+        { ok: false, error: "SCHEDULED_REGION_CODES_MISSING" },
+        { status: 500 }
+      );
+    }
+
+    // Resolve provider's city_code so provider_scheduled_areas rows
+    // carry the right (region_code, city_code) pair. We re-read instead
+    // of trusting any cached value because the create-order route
+    // already validated city + region at order time; the failure mode
+    // here is "provider deleted all areas between order and capture".
+    let providerCityCode = "";
+    const { data: areaRows } = await adminSupabase
+      .from("provider_areas")
+      .select("city_code")
+      .eq("provider_id", providerId);
+    if (Array.isArray(areaRows)) {
+      for (const row of areaRows as Array<{ city_code?: string | null }>) {
+        const candidate = String(row?.city_code ?? "").trim().toUpperCase();
+        if (/^[A-Z]{3}$/.test(candidate)) {
+          providerCityCode = candidate;
+          break;
+        }
+      }
+    }
+    if (!providerCityCode) {
+      console.error("[payments/webhook] scheduled_paid_lower city unresolved", {
+        orderId: orderRow.order_id,
+      });
+      return NextResponse.json(
+        { ok: false, error: "PROVIDER_CITY_UNKNOWN" },
+        { status: 500 }
+      );
+    }
+
+    // Re-validate region codes against the active service_regions for
+    // the city. Regions may have been deactivated between order and
+    // capture; refuse activation rather than persisting stale codes.
+    //
+    // Phase 3.1: also fetch region_name so we can populate
+    // provider_scheduled_areas.area (now NOT NULL via the
+    // chk_provider_scheduled_areas_area_not_empty CHECK). Storing the
+    // display name here lets the Phase 3.2 activation function copy
+    // rows into provider_areas without an extra join under the lock.
+    const { data: validRows, error: regionsErr } = await adminSupabase
+      .from("service_regions")
+      .select("region_code, region_name")
+      .in("region_code", rawCodes)
+      .eq("city_code", providerCityCode)
+      .eq("active", true);
+    if (regionsErr) {
+      console.error("[payments/webhook] region revalidation failed", regionsErr);
+      return NextResponse.json(
+        { ok: false, error: "REGION_REVALIDATION_FAILED" },
+        { status: 500 }
+      );
+    }
+    const regionNameByCode = new Map<string, string>();
+    for (const r of (validRows ?? []) as Array<{
+      region_code?: string | null;
+      region_name?: string | null;
+    }>) {
+      const code = String(r.region_code ?? "").trim();
+      const name = String(r.region_name ?? "").trim();
+      if (code && name) regionNameByCode.set(code, name);
+    }
+    if (regionNameByCode.size !== rawCodes.length) {
+      console.error("[payments/webhook] some scheduled regions no longer valid", {
+        orderId: orderRow.order_id,
+        requested: rawCodes,
+        valid: Array.from(regionNameByCode.keys()),
+      });
+      // Refuse to advance. Order stays in 'created' for manual review;
+      // the provider's payment is recorded in payment_webhook_events
+      // and razorpay_payment_id is null on payment_orders so support
+      // can reconcile via the Razorpay dashboard.
+      return NextResponse.json(
+        { ok: false, error: "SCHEDULED_REGIONS_DEACTIVATED" },
+        { status: 500 }
+      );
+    }
+
+    // Three writes, all idempotent:
+    //   (a) provider_plans.scheduled_* via UPDATE keyed on provider_id
+    //   (b) provider_scheduled_areas via UPSERT keyed on (provider, region)
+    //   (c) payment_orders.status = 'paid'
+    // Order: (a) → (b) → (c). If (c) fails, Razorpay retries; the retry
+    // path sees status='created' AND already-set scheduled_* fields,
+    // which (a)'s idempotent UPDATE re-issues harmlessly.
+
+    const { error: planUpdateError } = await adminSupabase
+      .from("provider_plans")
+      .upsert(
+        {
+          // We must NOT clobber current plan_code/max_regions/period_*
+          // for an active higher plan. UPSERT with these fields means
+          // a brand-new provider with no row would land here on free
+          // semantics — defensive: a true scheduled_paid_lower requires
+          // an active paid plan, so a missing row indicates a bug
+          // upstream. We branch here rather than blindly upsert.
+          provider_id: providerId,
+          // Preserve current period state by NOT including those
+          // columns. PostgREST upsert with onConflict only touches
+          // the columns we send.
+          scheduled_plan_code: orderPlanCode,
+          scheduled_max_regions: maxRegions,
+          scheduled_activates_at: scheduledActivatesAt,
+          scheduled_payment_order_id: orderRow.order_id,
+          scheduled_at: now.toISOString(),
+          updated_at: now.toISOString(),
+        },
+        { onConflict: "provider_id" }
+      );
+
+    if (planUpdateError) {
+      console.error(
+        "[payments/webhook] scheduled provider_plans upsert failed",
+        planUpdateError
+      );
+      return NextResponse.json(
+        { ok: false, error: "SCHEDULED_PLAN_UPSERT_FAILED" },
+        { status: 500 }
+      );
+    }
+
+    // Replace any pre-existing pending rows for this provider. The
+    // create-order route rejects a second scheduled paid order while
+    // one is queued, so the only way two attempts could overlap is a
+    // retry of the same webhook. Delete-then-insert keeps the table
+    // clean rather than leaving stale codes from a previous attempt.
+    const { error: deletePendingError } = await adminSupabase
+      .from("provider_scheduled_areas")
+      .delete()
+      .eq("provider_id", providerId);
+    if (deletePendingError) {
+      console.error(
+        "[payments/webhook] provider_scheduled_areas delete failed",
+        deletePendingError
+      );
+      return NextResponse.json(
+        { ok: false, error: "SCHEDULED_AREAS_DELETE_FAILED" },
+        { status: 500 }
+      );
+    }
+
+    // Phase 3.1: include area (region_name from service_regions) so
+    // the activation function in Phase 3.2 can copy rows directly into
+    // provider_areas without an extra join. The chk_provider_scheduled_
+    // areas_area_not_empty CHECK constraint rejects NULL/empty here, so
+    // the validation above (regionNameByCode.size === rawCodes.length)
+    // is the only path that reaches this insert; defensive fallback to
+    // the code is unreachable but kept for type safety.
+    const pendingRows = rawCodes.map((code) => ({
+      provider_id: providerId,
+      region_code: code,
+      city_code: providerCityCode,
+      area: regionNameByCode.get(code) ?? code,
+    }));
+    const { error: insertPendingError } = await adminSupabase
+      .from("provider_scheduled_areas")
+      .insert(pendingRows);
+    if (insertPendingError) {
+      console.error(
+        "[payments/webhook] provider_scheduled_areas insert failed",
+        insertPendingError
+      );
+      return NextResponse.json(
+        { ok: false, error: "SCHEDULED_AREAS_INSERT_FAILED" },
+        { status: 500 }
+      );
+    }
+
+    const { error: paidUpdateError } = await adminSupabase
+      .from("payment_orders")
+      .update({
+        status: "paid",
+        razorpay_payment_id: razorpayPaymentId,
+        paid_at: now.toISOString(),
+        raw_webhook: parsed,
+      })
+      .eq("order_id", orderRow.order_id);
+
+    if (paidUpdateError) {
+      console.error(
+        "[payments/webhook] payment_orders paid-update failed (scheduled)",
+        paidUpdateError
+      );
+      return NextResponse.json(
+        { ok: false, error: "ORDER_PAID_UPDATE_FAILED" },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({ ok: true, scheduled: true });
+  }
+
+  // ── Immediate upgrade / renewal / legacy (mode IS NULL) ────────────
+  // Two writes, ordered: plan upsert first, then payment_orders flip.
+  // "status=paid" implies "provider_plans is upserted." If the second
+  // fails, the order stays 'created' and Razorpay retries; the retry
+  // path's idempotent plan upsert re-issues harmlessly.
   const periodStart = now.toISOString();
   const periodEnd = new Date(
     now.getTime() + PLAN_VALIDITY_DAYS * 24 * 60 * 60 * 1000
   ).toISOString();
-  const maxRegions = getPlanMaxRegions(orderPlanCode);
 
   const { error: planUpsertError } = await adminSupabase
     .from("provider_plans")

@@ -44,31 +44,40 @@ export function getPlanRank(planCode: string | null | undefined): number {
  * and webhook handler. Computed from the provider's *currently
  * effective* plan (after expiry collapse) and the requested target.
  *
- *   upgrade              — rank(target) > rank(current). Activates
- *                          immediately on webhook (Phase 2 behavior).
- *   renew                — rank(target) === rank(current), same code,
- *                          and current plan is active (not expired).
- *                          Webhook extends current_period_end.
- *   schedule_paid_lower  — rank(target) < rank(current), target is a
- *                          paid plan, and current plan is active.
- *                          Phase 2 webhook will write scheduled_*
- *                          instead of touching current_period_*.
- *   schedule_free        — rank(target) < rank(current), target is the
- *                          free plan, and current plan is active.
- *                          Phase 2 schedule-free endpoint (no payment)
- *                          will write scheduled_*.
+ *   immediate_upgrade     — rank(target) > rank(current). Activates
+ *                           immediately on webhook (existing path).
+ *   immediate_renewal     — rank(target) === rank(current), same code,
+ *                           and current plan is active (not expired).
+ *                           Webhook extends current_period_end.
+ *   scheduled_paid_lower  — rank(target) < rank(current), target is a
+ *                           paid plan, and current plan is active.
+ *                           Phase 2 webhook writes scheduled_* fields
+ *                           instead of touching current_period_*.
+ *   scheduled_free        — rank(target) < rank(current), target is
+ *                           the free plan, and current plan is active.
+ *                           Reserved for a future no-payment endpoint;
+ *                           Phase 2 rejects this mode in create-order
+ *                           because the payments path can't represent
+ *                           a no-payment transition.
+ *
+ * The persistent shape is the `chk_payment_orders_plan_change_mode`
+ * CHECK constraint on payment_orders, which currently admits only
+ * immediate_upgrade / immediate_renewal / scheduled_paid_lower.
+ * scheduled_free is a UI-side classification only; it never lands in
+ * payment_orders.
  *
  * When the current plan has already expired (`currentActive=false`),
- * any target paid plan is `upgrade` (the provider is effectively on
- * free), and target=free is a no-op (`renew` is returned so callers
- * never see a "schedule_free → already-free" transition; they should
- * separately short-circuit on no-op selections before classifying).
+ * any target paid plan is `immediate_upgrade` (the provider is
+ * effectively on free), and target=free is a no-op (`immediate_renewal`
+ * is returned so callers never see a "scheduled_free → already-free"
+ * transition; they should separately short-circuit on no-op selections
+ * before classifying).
  */
 export type PlanChangeMode =
-  | "upgrade"
-  | "renew"
-  | "schedule_paid_lower"
-  | "schedule_free";
+  | "immediate_upgrade"
+  | "immediate_renewal"
+  | "scheduled_paid_lower"
+  | "scheduled_free";
 
 export function classifyPlanChange(params: {
   currentCode: string;
@@ -81,27 +90,27 @@ export function classifyPlanChange(params: {
   const targetRank = getPlanRank(targetCode);
 
   // Expired or implicit-free current plan: any paid selection is an
-  // upgrade (immediate activation). A target of free is a same-rank
-  // case below and resolves to "renew" — callers should filter no-op
-  // selections before invoking this helper.
+  // immediate_upgrade (immediate activation). A target of free is a
+  // same-rank case below and resolves to immediate_renewal — callers
+  // should filter no-op selections before invoking this helper.
   if (!params.currentActive) {
-    if (targetRank > 0) return "upgrade";
-    return "renew";
+    if (targetRank > 0) return "immediate_upgrade";
+    return "immediate_renewal";
   }
 
-  if (targetRank > currentRank) return "upgrade";
+  if (targetRank > currentRank) return "immediate_upgrade";
 
   if (targetRank === currentRank) {
     // Same-rank-same-code on an active plan is the renewal path
     // (extend period). Different codes with the same rank don't exist
     // today; if a future plan creates that case, classify as
     // upgrade-equivalent to be safe (always pick the more-recent code).
-    if (targetCode === currentCode) return "renew";
-    return "upgrade";
+    if (targetCode === currentCode) return "immediate_renewal";
+    return "immediate_upgrade";
   }
 
   // targetRank < currentRank and current is active: scheduled lower.
   // Free vs paid target picks the right activation pathway.
-  if (targetRank === 0) return "schedule_free";
-  return "schedule_paid_lower";
+  if (targetRank === 0) return "scheduled_free";
+  return "scheduled_paid_lower";
 }

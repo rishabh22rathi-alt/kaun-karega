@@ -15,6 +15,12 @@ export type PushLogEventType =
   | "job_matched"
   | "chat_message"
   | "general"
+  // Phase 3.1: matches the new PushEventType entry. The DB
+  // push_logs.event_type CHECK already admits 'plan_activated' from
+  // the Phase 1 widening migration; this TS entry is what lets the
+  // future Phase 3.2 activation worker call appendPushLog with the
+  // literal without a cast.
+  | "plan_activated"
   | "test";
 
 export type PushLogStatus = "sent" | "failed" | "invalid_token" | "skipped";

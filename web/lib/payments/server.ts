@@ -56,6 +56,30 @@ export function isPaymentEnforcementEnabled(): boolean {
   );
 }
 
+/**
+ * Phase 2 kill switch for the "scheduled provider plan changes" feature.
+ *
+ * When false (default): /api/payments/create-order MUST reject any
+ * request that classifies as scheduled_paid_lower with a 403 error. The
+ * webhook MUST trust the recorded plan_change_mode and never branch
+ * based on this flag — if a scheduled_paid_lower order somehow exists
+ * (flag flipped off between order and capture), honour the recorded
+ * intent rather than silently mutating activation timing.
+ *
+ * When true: the create-order route may classify orders as
+ * scheduled_paid_lower, and the webhook may write provider_plans
+ * scheduled_* columns + provider_scheduled_areas rows.
+ *
+ * Read on every call so flipping in the Vercel env console takes
+ * effect without a redeploy.
+ */
+export function isScheduledPlansEnabled(): boolean {
+  return (
+    String(process.env.KK_SCHEDULED_PLANS_ENABLED || "").trim().toLowerCase() ===
+    "true"
+  );
+}
+
 // ─── Pricing ───────────────────────────────────────────────────────────────
 
 /**

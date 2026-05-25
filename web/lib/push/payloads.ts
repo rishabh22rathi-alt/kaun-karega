@@ -14,6 +14,14 @@ export type PushEventType =
   | "job_matched"
   | "chat_message"
   | "general"
+  // Phase 3.1 reserves the type for the future Phase 3.2 activation
+  // worker. The push send is NOT wired in this phase — the union
+  // entry exists so the planActivatedPayload() builder below
+  // type-checks, and so push_logs writers can reference the literal
+  // without a downstream cast once Phase 3.2 lands. The DB
+  // push_logs.event_type CHECK already admits 'plan_activated' from
+  // the Phase 1 widening migration.
+  | "plan_activated"
   | "test";
 
 export type PushDataPayload = {
@@ -139,5 +147,52 @@ export function announcementPayload(
     announcementId: String(input.announcementId ?? "").trim(),
     audience: String(input.audience ?? "").trim(),
     targetCategory: String(input.targetCategory ?? "").trim(),
+  };
+}
+
+// Phase 3.1: payload for the post-activation push. NOT yet sent by any
+// route — added here so the Phase 3.2 activation worker can import a
+// stable builder rather than constructing the payload inline.
+//
+// `planCode` is the internal code ("free" / "regions_5" / "all_jodhpur");
+// `planLabel` is the provider-facing display ("Free plan" / "₹31 plan" /
+// "₹101 plan"). Caller resolves both so wording stays consistent with
+// the dashboard banner copy. `regionCount` is included as a string for
+// FCM (data values must be strings); 0 is a valid value for the free
+// activation edge case where the provider had no provider_areas rows.
+//
+// deepLink lands the provider on the dashboard so they can verify the
+// new plan state immediately. The dashboard refetch picks up the new
+// active plan from /api/provider/dashboard-profile on mount.
+export type PlanActivatedPayloadInput = {
+  planCode: string;
+  planLabel: string;
+  regionCount: number;
+  activatedAt: string;
+};
+
+export function planActivatedPayload(
+  input: PlanActivatedPayloadInput
+): PushDataPayload {
+  const planCode = String(input.planCode ?? "").trim();
+  const planLabel = String(input.planLabel ?? "").trim();
+  const isFree = planCode === "free";
+  const title = isFree
+    ? "You're now on the Free plan"
+    : "Your new plan is now active";
+  const body = isFree
+    ? "Your Free plan started. Tap to manage your region."
+    : `Your ${planLabel || "new"} plan started. Tap to see updates.`;
+
+  return {
+    title,
+    body,
+    deepLink: "/provider/dashboard",
+    eventType: "plan_activated",
+    sentAt: new Date().toISOString(),
+    planCode,
+    planLabel,
+    regionCount: String(Math.max(0, Math.trunc(input.regionCount ?? 0))),
+    activatedAt: String(input.activatedAt ?? "").trim(),
   };
 }

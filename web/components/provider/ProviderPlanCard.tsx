@@ -2,6 +2,12 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { PROVIDER_PROFILE_UPDATED_EVENT } from "@/components/sidebarEvents";
+import PaymentTermsModal from "@/components/provider/PaymentTermsModal";
+import ScheduledRegionPicker from "@/components/provider/ScheduledRegionPicker";
+import {
+  classifyPlanChange,
+  type PlanChangeMode,
+} from "@/lib/payments/planRank";
 
 /**
  * Stage 4A: Current Plan card for the provider dashboard.
@@ -185,6 +191,8 @@ function loadRazorpayScript(): Promise<boolean> {
 // phase !== "idle" so a second click cannot start a parallel order or
 // re-open the checkout while one is in flight.
 //   idle              → no in-flight upgrade
+//   picking-regions   → ScheduledRegionPicker is open (scheduled_paid_lower only)
+//   confirming-terms  → PaymentTermsModal is open
 //   creating-order    → POST /api/payments/create-order in flight
 //   checkout-open     → Razorpay modal is open (no inline banner)
 //   verifying         → modal closed with success; POST /api/payments/verify in flight
@@ -193,10 +201,32 @@ function loadRazorpayScript(): Promise<boolean> {
 //                       activation is the webhook, NOT this state.
 type UpgradePhase =
   | "idle"
+  | "picking-regions"
+  | "confirming-terms"
   | "creating-order"
   | "checkout-open"
   | "verifying"
   | "verified-waiting";
+
+// Friendly labels for the terms modal + picker so the surrounding
+// copy stays consistent with the plan card. Internal plan_codes
+// (regions_5, all_jodhpur) are unchanged.
+const PLAN_PRICE_LABEL: Record<Exclude<PlanCode, "free">, string> = {
+  regions_5: "₹31",
+  all_jodhpur: "₹101",
+};
+const PLAN_SHORT_LABEL: Record<Exclude<PlanCode, "free">, string> = {
+  regions_5: "₹31 plan",
+  all_jodhpur: "₹101 plan",
+};
+// Required region count for the scheduled-paid-lower picker. Mirrors
+// PLAN_PRICING.{code}.maxRegions on the server. all_jodhpur is
+// city-wide and never appears here (rank 2 is the top tier — there is
+// no higher rank to schedule "down to" all_jodhpur from).
+const PLAN_REQUIRED_REGIONS: Record<Exclude<PlanCode, "free">, number> = {
+  regions_5: 5,
+  all_jodhpur: 99,
+};
 
 type StatusKind = "info" | "success" | "error";
 type StatusMessage = { kind: StatusKind; text: string } | null;
@@ -301,25 +331,38 @@ export default function ProviderPlanCard({
     }
   }, []);
 
+  // Phase 2 state additions. `pendingTarget` is the plan the provider
+  // clicked while a modal is open; `pendingRegionCodes` carries the
+  // picker's selection forward into the terms modal → create-order
+  // POST. `pendingMode` is the client-side classification used to
+  // pick which modal to open; the SERVER re-classifies authoritatively.
+  const [pendingTarget, setPendingTarget] = useState<
+    Exclude<PlanCode, "free"> | null
+  >(null);
+  const [pendingMode, setPendingMode] = useState<PlanChangeMode | null>(null);
+  const [pendingRegionCodes, setPendingRegionCodes] = useState<string[] | null>(
+    null
+  );
+
   const resetToIdle = useCallback(() => {
     setPhase("idle");
     setBusyPlan(null);
+    setPendingTarget(null);
+    setPendingMode(null);
+    setPendingRegionCodes(null);
   }, []);
 
-  const handleUpgrade = useCallback(
-    async (targetPlan: Exclude<PlanCode, "free">) => {
-      // Single-flight guard: any non-idle phase blocks a second click,
-      // even before busyPlan is set. Prevents a double-click between
-      // setState calls from creating two payment_orders rows.
-      if (phase !== "idle") return;
-      if (!paymentsEnabled) {
-        flashStatus(
-          "error",
-          "Online payment is not enabled yet. Please try again later."
-        );
-        return;
-      }
-      setBusyPlan(targetPlan);
+  // The POST → Razorpay portion of the flow. Split out of the click
+  // handler in Phase 2 so the picker → terms modal sequence can call
+  // it after consent without duplicating the network code. Body now
+  // always carries `agreed_terms: true` (server enforces) and
+  // optionally `scheduled_region_codes` for the scheduled_paid_lower
+  // case.
+  const runCreateOrder = useCallback(
+    async (
+      targetPlan: Exclude<PlanCode, "free">,
+      scheduledRegionCodes: string[] | null
+    ) => {
       setPhase("creating-order");
       flashStatus("info", "Creating order…");
 
@@ -330,6 +373,7 @@ export default function ProviderPlanCard({
         amount?: number;
         currency?: string;
         error?: string;
+        plan_change_mode?: string;
       };
       let orderData: CreateOrderPayload | null = null;
 
@@ -338,7 +382,13 @@ export default function ProviderPlanCard({
           method: "POST",
           credentials: "same-origin",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ plan_code: targetPlan }),
+          body: JSON.stringify({
+            plan_code: targetPlan,
+            agreed_terms: true,
+            ...(scheduledRegionCodes
+              ? { scheduled_region_codes: scheduledRegionCodes }
+              : {}),
+          }),
         });
 
         if (orderRes.status === 503) {
@@ -517,15 +567,96 @@ export default function ProviderPlanCard({
       });
       rzp.open();
     },
-    [
-      phase,
-      paymentsEnabled,
-      providerName,
-      flashStatus,
-      resetToIdle,
-      notifyProfileUpdated,
-    ]
+    [providerName, flashStatus, resetToIdle, notifyProfileUpdated]
   );
+
+  // Phase 2 entry-point. Replaces the direct create-order call.
+  // Classifies the change client-side, then routes the provider
+  // through the right confirmation surface:
+  //   • scheduled_paid_lower → ScheduledRegionPicker first
+  //   • upgrade / renew      → PaymentTermsModal directly
+  // The actual Razorpay-order POST happens only after the
+  // PaymentTermsModal's `Continue to payment` button. The server
+  // re-classifies authoritatively — the client classification only
+  // decides which modal to show.
+  const initiatePurchase = useCallback(
+    (targetPlan: Exclude<PlanCode, "free">) => {
+      if (phase !== "idle") return;
+      if (!paymentsEnabled) {
+        flashStatus(
+          "error",
+          "Online payment is not enabled yet. Please try again later."
+        );
+        return;
+      }
+      // Block while a paid scheduled change is already queued. Server
+      // enforces this with a 409 too; the client guard keeps the
+      // popups from opening at all so the provider sees a clear
+      // message immediately.
+      if (
+        plan?.scheduledPlan &&
+        plan.scheduledPlan.code !== "free" &&
+        plan.scheduledPlan.code !== targetPlan
+      ) {
+        flashStatus(
+          "error",
+          "A plan change is already scheduled. You can pick a new plan after it activates."
+        );
+        return;
+      }
+
+      const mode = classifyPlanChange({
+        currentCode: code,
+        targetCode: targetPlan,
+        currentActive: isActive,
+      });
+
+      setBusyPlan(targetPlan);
+      setPendingTarget(targetPlan);
+      setPendingMode(mode);
+      setPendingRegionCodes(null);
+
+      if (mode === "scheduled_paid_lower") {
+        setPhase("picking-regions");
+      } else {
+        // upgrade / renew → straight to terms modal. schedule_free is
+        // not reachable here (the picker click handler never invokes
+        // initiatePurchase for the free card in Phase 2).
+        setPhase("confirming-terms");
+      }
+    },
+    [phase, paymentsEnabled, plan, code, isActive, flashStatus]
+  );
+
+  const handlePickerCancel = useCallback(() => {
+    if (phase !== "picking-regions") return;
+    resetToIdle();
+    flashStatus("info", "Plan change cancelled.", 4_000);
+  }, [phase, resetToIdle, flashStatus]);
+
+  const handlePickerConfirm = useCallback(
+    (codes: string[]) => {
+      if (phase !== "picking-regions") return;
+      setPendingRegionCodes(codes);
+      setPhase("confirming-terms");
+    },
+    [phase]
+  );
+
+  const handleTermsCancel = useCallback(() => {
+    if (phase !== "confirming-terms") return;
+    resetToIdle();
+    flashStatus("info", "Payment cancelled.", 4_000);
+  }, [phase, resetToIdle, flashStatus]);
+
+  const handleTermsConfirm = useCallback(() => {
+    if (phase !== "confirming-terms") return;
+    if (!pendingTarget) {
+      resetToIdle();
+      return;
+    }
+    void runCreateOrder(pendingTarget, pendingRegionCodes);
+  }, [phase, pendingTarget, pendingRegionCodes, resetToIdle, runCreateOrder]);
 
   const handleManualRefresh = useCallback(() => {
     if (typeof window === "undefined") return;
@@ -662,6 +793,34 @@ export default function ProviderPlanCard({
             {expiryLabel ? ` — expired ${expiryLabel}` : ""}. Now running as Free.
           </p>
         ) : null}
+        {plan?.scheduledPlan && plan.scheduledPlan.code !== "free" ? (
+          // Phase 2: paid-scheduled-lower banner. The provider sees this
+          // immediately after a successful payment for the scheduled
+          // plan; their current plan continues until expiry. No cancel
+          // button — scheduled paid plans are locked and non-refundable
+          // by business rule. Phase 3 will add a region-edit affordance.
+          <div
+            data-testid="provider-plan-scheduled-banner"
+            role="status"
+            className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3"
+          >
+            <p className="text-sm font-semibold text-amber-900">
+              Your {asKnownPlanCode(plan.scheduledPlan.code) === "regions_5"
+                ? "₹31"
+                : asKnownPlanCode(plan.scheduledPlan.code) === "all_jodhpur"
+                  ? "₹101"
+                  : ""}{" "}
+              plan is scheduled for next cycle.
+            </p>
+            <p className="mt-1 text-xs leading-relaxed text-amber-800">
+              Your current plan continues until expiry
+              {formatExpiryDate(plan.scheduledPlan.activatesAt)
+                ? ` (${formatExpiryDate(plan.scheduledPlan.activatesAt)})`
+                : ""}
+              . This scheduled plan is locked and non-refundable.
+            </p>
+          </div>
+        ) : null}
         {isActive && hasExpiryHint && code !== "free" ? (
           <p className="text-slate-500" data-testid="provider-plan-expiry">
             Renews / Expires on {expiryLabel || "—"}
@@ -692,7 +851,7 @@ export default function ProviderPlanCard({
                 data-testid="provider-plan-upgrade-regions-5"
                 disabled={isUpgradeBusy}
                 onClick={() => {
-                  void handleUpgrade("regions_5");
+                  initiatePurchase("regions_5");
                 }}
                 className="inline-flex items-center justify-center rounded-xl bg-[#003d20] px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#002a16] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 sm:flex-1"
               >
@@ -711,7 +870,7 @@ export default function ProviderPlanCard({
                 data-testid="provider-plan-upgrade-all-jodhpur"
                 disabled={isUpgradeBusy}
                 onClick={() => {
-                  void handleUpgrade("all_jodhpur");
+                  initiatePurchase("all_jodhpur");
                 }}
                 className="inline-flex items-center justify-center rounded-xl border border-[#003d20] bg-white px-4 py-2.5 text-sm font-semibold text-[#003d20] shadow-sm transition hover:bg-[#003d20] hover:text-white active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 sm:flex-1"
               >
@@ -885,7 +1044,7 @@ export default function ProviderPlanCard({
                       }
                       onClick={() => {
                         if (entry.code === "free") return;
-                        void handleUpgrade(entry.code);
+                        initiatePurchase(entry.code);
                       }}
                       title={
                         !paymentsEnabled
@@ -914,6 +1073,34 @@ export default function ProviderPlanCard({
         </div>
       </div>
 
+      {/* Phase 2: scheduled-paid-lower picker. Conditionally mounted so
+          its internal state resets cleanly on every new attempt. */}
+      {phase === "picking-regions" && pendingTarget ? (
+        <ScheduledRegionPicker
+          requiredCount={PLAN_REQUIRED_REGIONS[pendingTarget]}
+          targetPlanLabel={PLAN_SHORT_LABEL[pendingTarget]}
+          cityCode={null}
+          onCancel={handlePickerCancel}
+          onConfirm={handlePickerConfirm}
+        />
+      ) : null}
+
+      {/* Phase 2: payment terms confirmation. Conditionally mounted so
+          the checkbox state resets cleanly on every new attempt. */}
+      {phase === "confirming-terms" && pendingTarget ? (
+        <PaymentTermsModal
+          amountLabel={PLAN_PRICE_LABEL[pendingTarget]}
+          intent={
+            pendingMode === "scheduled_paid_lower"
+              ? "schedule"
+              : pendingMode === "immediate_renewal"
+                ? "renew"
+                : "choose"
+          }
+          onCancel={handleTermsCancel}
+          onConfirm={handleTermsConfirm}
+        />
+      ) : null}
     </section>
   );
 }
