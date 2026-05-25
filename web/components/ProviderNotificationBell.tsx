@@ -196,21 +196,18 @@ export default function ProviderNotificationBell({ notifications, unreadCount }:
           />
 
           {/*
-            Panel: bottom-sheet on mobile, anchored dropdown on md+.
-            Single element, classes flip at the md breakpoint so we don't
-            duplicate JSX.
+            Panel: top-sheet on mobile (anchored just below the bell row),
+            right-anchored dropdown on md+. Single element, classes flip at
+            the md breakpoint so we don't duplicate JSX. The mobile top
+            offset mirrors the bell wrapper's safe-area pattern + the bell
+            button height (3.5rem ≈ 44px button + 12px gap) so the panel
+            never overlaps the bell.
           */}
           <div
             role="menu"
             aria-label="Provider notifications"
-            className="fixed inset-x-0 bottom-0 z-50 flex max-h-[85vh] flex-col overflow-hidden rounded-t-3xl border-t border-slate-200 bg-white shadow-[0_-20px_60px_rgba(15,23,42,0.22)] md:absolute md:inset-x-auto md:bottom-auto md:right-0 md:top-12 md:max-h-[60vh] md:w-[min(22rem,calc(100vw-2rem))] md:rounded-2xl md:border md:shadow-[0_20px_60px_rgba(15,23,42,0.18)]"
+            className="fixed inset-x-0 top-[calc(max(env(safe-area-inset-top),1.5rem)+3.5rem)] z-50 flex max-h-[85vh] flex-col overflow-hidden rounded-b-3xl border-b border-slate-200 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.22)] md:absolute md:inset-x-auto md:right-0 md:top-12 md:max-h-[60vh] md:w-[min(22rem,calc(100vw-2rem))] md:rounded-2xl md:border md:shadow-[0_20px_60px_rgba(15,23,42,0.18)]"
           >
-            {/* Drag handle — mobile only, gives the sheet a tactile cue. */}
-            <div
-              aria-hidden="true"
-              className="mx-auto mt-2 h-1.5 w-10 shrink-0 rounded-full bg-slate-200 md:hidden"
-            />
-
             <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-4 py-3">
               <p className="text-sm font-bold text-[#003d20]">Notifications</p>
               <div className="flex items-center gap-2">
