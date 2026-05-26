@@ -20,6 +20,7 @@ import {
   LogOut,
   ChevronDown,
 } from "lucide-react";
+import InstallAppMenuRow from "../pwa/InstallAppMenuRow";
 
 type Props = {
   open: boolean;
@@ -197,6 +198,10 @@ export default function AdminMenuSheet({
               onClose={onClose}
               testId="admin-menu-chats"
             />
+            {/* Phase 2 PWA — install entry point for admins too.
+                Self-hides when installed or when the browser does
+                not support our install paths. */}
+            <InstallAppMenuRow onClose={onClose} />
           </div>
 
           {/* More tools — collapsed by default */}

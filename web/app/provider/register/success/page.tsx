@@ -1,8 +1,9 @@
 import Link from "next/link";
+import InstallAppPromptCard from "@/components/pwa/InstallAppPromptCard";
 
 export default function ProviderRegisterSuccessPage() {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4 py-8">
+    <div className="flex min-h-screen flex-col items-center bg-slate-50 px-4 py-8">
       <div className="w-full max-w-xl rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-sm md:p-8">
         <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
           Service Provider
@@ -21,6 +22,13 @@ export default function ProviderRegisterSuccessPage() {
         >
           Go to Home
         </Link>
+      </div>
+
+      {/* Phase 2 PWA reminder — provider just signed up; high-intent
+          moment. Self-hides when installed / unsupported / dismissed
+          within the 7-day cooldown. */}
+      <div className="mt-4 w-full max-w-xl">
+        <InstallAppPromptCard />
       </div>
     </div>
   );

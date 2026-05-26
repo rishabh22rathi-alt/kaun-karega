@@ -8,6 +8,7 @@ import ProviderDashboardCoachmark from "@/components/ProviderDashboardCoachmark"
 import ProviderAliasSubmitter from "@/components/ProviderAliasSubmitter";
 import ProviderPledgeModal from "@/components/ProviderPledgeModal";
 import PlatformAnnouncementBanner from "@/components/PlatformAnnouncementBanner";
+import InstallAppPromptCard from "@/components/pwa/InstallAppPromptCard";
 import ProviderPlanCard, {
   type ProviderPlanShape,
 } from "@/components/provider/ProviderPlanCard";
@@ -972,6 +973,12 @@ function ProviderDashboardInner() {
             so only banners targeting categories this provider offers
             surface here. */}
         <PlatformAnnouncementBanner />
+        {/* Phase 2 PWA reminder — provider just landed on the dashboard.
+            `oncePerKey` ensures one dismissal on this surface silences
+            the card here permanently for this user, even if the global
+            7-day cooldown later clears. Card self-hides when installed
+            or when install is unsupported. */}
+        <InstallAppPromptCard oncePerKey="kk_pwa_reminder_dashboard_seen" />
         {alreadyRegisteredNotice ? (
           <div className="rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-800">
             You are already registered. You can update your details from dashboard.

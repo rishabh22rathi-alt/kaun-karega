@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { getTaskDisplayLabel } from "@/lib/taskDisplay";
 import { normalizeVerifiedValue } from "@/lib/providerPresentation";
+import InstallAppPromptCard from "@/components/pwa/InstallAppPromptCard";
 
 type SuccessClientProps = {
   service: string;
@@ -291,6 +292,13 @@ export default function SuccessClient({
 
   return (
     <>
+      {/* Phase 2 PWA reminder — high-intent moment (user just
+          successfully submitted a request). Self-hides when already
+          installed, when install is unsupported, or when the 7-day
+          dismissal cooldown is active. */}
+      <div className="mb-4 w-full max-w-xl">
+        <InstallAppPromptCard />
+      </div>
       <div className="w-full max-w-xl rounded-3xl border border-slate-200 bg-white p-5 text-center shadow-lg md:p-6">
         <h1 className="text-2xl font-semibold text-slate-900 md:text-3xl">
           Request Posted Successfully

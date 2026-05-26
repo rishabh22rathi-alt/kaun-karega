@@ -19,6 +19,7 @@ import {
 import { clearAuthSession, getAuthSession, type AuthSession } from "@/lib/auth";
 import { isProviderVerifiedBadge } from "@/lib/providerPresentation";
 import { fetchProviderDashboardProfile } from "@/lib/providerDashboardProfile";
+import InstallAppMenuRow from "./pwa/InstallAppMenuRow";
 
 const PROVIDER_PROFILE_STORAGE_KEY = "kk_provider_profile";
 const ADMIN_SESSION_STORAGE_KEY = "kk_admin_session";
@@ -344,6 +345,12 @@ export default function MenuSheet({
                 <span>Notification Settings</span>
               </Link>
             ) : null}
+
+            {/* Phase 2 PWA — Install/Add-to-Home-Screen entry point.
+                Self-hides when installed or when neither beforeinstallprompt
+                nor iOS Safari install path is available. Cooldown does NOT
+                apply to the menu row (user-pulled UI). */}
+            <InstallAppMenuRow onClose={onClose} />
 
             <Link
               href="/report-issue"
