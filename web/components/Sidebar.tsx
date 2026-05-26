@@ -28,7 +28,9 @@ import {
 import { clearAuthSession, getAuthSession, type AuthSession } from "@/lib/auth";
 import { isProviderVerifiedBadge } from "@/lib/providerPresentation";
 import { fetchProviderDashboardProfile } from "@/lib/providerDashboardProfile";
-import { useSessionGuard } from "@/lib/useSessionGuard";
+// useSessionGuard moved to web/components/SessionGuardMount.tsx so the
+// stale-session probe still runs on mobile, where this Sidebar is hidden
+// (`hidden md:flex`) in favour of MobileBottomNav.
 
 const PROVIDER_PROFILE_STORAGE_KEY = "kk_provider_profile";
 const ADMIN_SESSION_STORAGE_KEY = "kk_admin_session";
@@ -122,11 +124,10 @@ export default function Sidebar() {
   const isLoggedIn = Boolean(session?.phone);
   const shouldHide = pathname?.startsWith("/admin");
 
-  // Single-active-session: Sidebar mounts globally, including public pages.
-  // In public mode a stale cookie is cleaned up and rendered as Guest without
-  // redirecting away from the homepage. Protected pages mount their own strict
-  // guard and still redirect to /login on stale sessions.
-  useSessionGuard({ mode: "public" });
+  // Single-active-session probe now lives in SessionGuardMount mounted by
+  // RootLayout — see app/layout.tsx. Keeping the probe outside this
+  // component lets us hide the desktop sidebar on mobile without losing
+  // the stale-session cleanup.
 
   useEffect(() => {
     const handler = (event: Event) => {
@@ -705,16 +706,20 @@ export default function Sidebar() {
 
   return (
     <>
-      {/* Mobile overlay */}
+      {/* Mobile overlay — kept for backward-compat with the legacy
+          SIDEBAR_TOGGLE_EVENT `open: true` path. On mobile the bottom-nav
+          Menu sheet now owns this surface, so the overlay is also gated
+          `md:hidden`-free but harmlessly invisible because `isOpen` is
+          never set on mobile (SidebarToggle is unmounted in layout.tsx). */}
       <div
-        className={`fixed inset-0 z-30 bg-black/40 transition-opacity ${
+        className={`fixed inset-0 z-30 bg-black/40 transition-opacity hidden md:block ${
           isOpen ? "opacity-100" : "pointer-events-none opacity-0"
         }`}
         onClick={() => setIsOpen(false)}
       />
 
       <aside
-        className={`fixed inset-y-0 left-0 z-40 min-h-screen overflow-hidden bg-[#003d20] text-white shadow-lg transition-all duration-200 flex flex-col ${
+        className={`fixed inset-y-0 left-0 z-40 min-h-screen overflow-hidden bg-[#003d20] text-white shadow-lg transition-all duration-200 hidden md:flex md:flex-col ${
           isCollapsed ? "w-16" : "w-64"
         } ${isOpen ? "translate-x-0" : "-translate-x-full"} md:translate-x-0`}
       >

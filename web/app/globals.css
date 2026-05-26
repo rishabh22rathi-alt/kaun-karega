@@ -4,6 +4,14 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+
+  /*
+   * Mobile bottom-nav reserved height. Written from MobileBottomNav at
+   * runtime so the main content can `pb-[var(--kk-bottom-nav-height)]`
+   * without hard-coding a value here. Stays "0px" on desktop and on
+   * routes where the bottom nav is hidden (admin, full-screen chat).
+   */
+  --kk-bottom-nav-height: 0px;
 }
 
 /* Tailwind theme variables */
