@@ -10,6 +10,11 @@ type KaamTabProps = {
   // still work without the indicator.
   unread?: UnreadIndicator | null;
   onMarkRead?: () => void;
+  // When true, the accordion auto-opens AND scrolls itself into view.
+  // Wired by /admin/dashboard/page.tsx via the ?tab=kaam deep-link so
+  // the admin mobile bottom-nav's Kaam tab lands the user with the
+  // section already expanded. Optional — existing callers keep working.
+  defaultOpen?: boolean;
 };
 
 // Kaam accordion for /admin/dashboard.
@@ -515,11 +520,32 @@ function MonthlyReportPanel(): ReactElement {
 export default function KaamTab({
   unread,
   onMarkRead,
+  defaultOpen = false,
 }: KaamTabProps = {}) {
   // Open-transition guard so mark-read fires exactly once per
   // closed → open cycle, not on every re-render while open.
   const markReadFiredRef = useRef(false);
-  const [isOpen, setIsOpen] = useState(false);
+  const [isOpen, setIsOpen] = useState(defaultOpen);
+  // Render-time "adjust state when a prop changes" pattern (React 19
+  // docs). Honors a later flip to defaultOpen=true without writing
+  // setState inside a useEffect — which would trip the
+  // react-hooks/set-state-in-effect rule.
+  const [trackedDefaultOpen, setTrackedDefaultOpen] = useState(defaultOpen);
+  if (trackedDefaultOpen !== defaultOpen) {
+    setTrackedDefaultOpen(defaultOpen);
+    if (defaultOpen) setIsOpen(true);
+  }
+  const sectionRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (!defaultOpen) return;
+    const handle = window.requestAnimationFrame(() => {
+      sectionRef.current?.scrollIntoView({
+        block: "start",
+        behavior: "smooth",
+      });
+    });
+    return () => window.cancelAnimationFrame(handle);
+  }, [defaultOpen]);
   const [kaam, setKaam] = useState<KaamRow[] | null>(null);
   const [totalKaam, setTotalKaam] = useState<number | null>(null);
   const [monthlyKaam, setMonthlyKaam] = useState<MonthlyKaamPoint[]>([]);
@@ -677,7 +703,10 @@ export default function KaamTab({
   }
 
   return (
-    <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+    <section
+      ref={sectionRef}
+      className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"
+    >
       <button
         type="button"
         onClick={() => setIsOpen((v) => !v)}

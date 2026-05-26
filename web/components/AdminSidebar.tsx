@@ -125,14 +125,19 @@ export default function AdminSidebar({
 
   return (
     <>
+      {/* Mobile overlay — kept for backward-compat with tablet (md–lg)
+          where AdminTopbar's hamburger still opens this drawer. On phone
+          viewports the bottom-nav Menu sheet replaces this surface; the
+          `<aside>` below is `hidden md:flex` so the drawer cannot slide
+          in there even if isOpen flips true. */}
       <div
-        className={`fixed inset-0 bg-black/40 transition-opacity md:hidden ${
+        className={`fixed inset-0 bg-black/40 transition-opacity md:hidden hidden ${
           isOpen ? "opacity-100" : "pointer-events-none opacity-0"
         }`}
         onClick={onClose}
       />
       <aside
-        className={`z-40 flex flex-col bg-slate-900 text-slate-100 shadow-2xl transition-[width,transform] duration-200 ${
+        className={`z-40 hidden md:flex md:flex-col bg-slate-900 text-slate-100 shadow-2xl transition-[width,transform] duration-200 ${
           isCollapsed ? "w-20" : "w-72"
         } ${
           isDesktop

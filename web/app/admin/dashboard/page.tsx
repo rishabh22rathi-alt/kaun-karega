@@ -57,12 +57,16 @@ function DashboardBody() {
         </p>
       </div>
 
-      <ProvidersTab />
+      <ProvidersTab defaultOpen={activeTab === "providers"} />
       <UsersTab
         unread={unread.users}
         onMarkRead={() => void markRead("users")}
       />
-      <KaamTab unread={unread.kaam} onMarkRead={() => void markRead("kaam")} />
+      <KaamTab
+        defaultOpen={activeTab === "kaam"}
+        unread={unread.kaam}
+        onMarkRead={() => void markRead("kaam")}
+      />
       <IssueReportsTab
         defaultOpen={activeTab === "reports"}
         unread={unread.reports}

@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown } from "lucide-react";
 
 import CacheStatusBar from "@/components/admin/CacheStatusBar";
@@ -122,8 +122,43 @@ function drilldownKey(
   return `${mode}::${unmapped ? "u" : "m"}::${category.trim().toLowerCase()}`;
 }
 
-export default function ProvidersTab() {
-  const [isOpen, setIsOpen] = useState(false);
+type ProvidersTabProps = {
+  // When true, the accordion auto-opens AND scrolls itself into view.
+  // Wired by /admin/dashboard/page.tsx via the ?tab=providers deep-link
+  // so the admin mobile bottom-nav's Providers tab lands the user with
+  // the section already expanded. Optional so existing standalone
+  // mounts keep working without changes.
+  defaultOpen?: boolean;
+};
+
+export default function ProvidersTab({
+  defaultOpen = false,
+}: ProvidersTabProps = {}) {
+  const [isOpen, setIsOpen] = useState(defaultOpen);
+  // Render-time "adjust state when a prop changes" pattern (React 19
+  // docs). Honors a later flip to defaultOpen=true (e.g. a deep-link
+  // arrives via in-app navigation, not a fresh mount) without writing
+  // setState inside a useEffect — which would trip the
+  // react-hooks/set-state-in-effect rule.
+  const [trackedDefaultOpen, setTrackedDefaultOpen] = useState(defaultOpen);
+  if (trackedDefaultOpen !== defaultOpen) {
+    setTrackedDefaultOpen(defaultOpen);
+    if (defaultOpen) setIsOpen(true);
+  }
+  const sectionRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (!defaultOpen) return;
+    // rAF so the accordion has expanded and contributed its height
+    // before we measure. scroll-margin would be cleaner but adding it
+    // here keeps the change isolated to this tab.
+    const handle = window.requestAnimationFrame(() => {
+      sectionRef.current?.scrollIntoView({
+        block: "start",
+        behavior: "smooth",
+      });
+    });
+    return () => window.cancelAnimationFrame(handle);
+  }, [defaultOpen]);
   // Bumped on every CATEGORY_CHANGED_EVENT so the snapshot-cache
   // hook below sees a refreshKey change and re-runs its read-through
   // fetch. Tab-open is NOT a bump source — the hook already refetches
@@ -900,7 +935,10 @@ export default function ProvidersTab() {
   };
 
   return (
-    <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+    <section
+      ref={sectionRef}
+      className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"
+    >
       <button
         type="button"
         onClick={() => setIsOpen((v) => !v)}
