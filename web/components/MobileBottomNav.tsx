@@ -309,7 +309,7 @@ export default function MobileBottomNav() {
         },
         {
           label: "Alerts",
-          href: "/login?next=/dashboard/notifications",
+          href: "/login?next=/dashboard/alerts",
           icon: Bell,
         },
         menuTab,
@@ -332,7 +332,7 @@ export default function MobileBottomNav() {
         },
         {
           label: "Alerts",
-          href: "/provider/notifications",
+          href: "/provider/alerts",
           icon: Bell,
           badge: providerUnread,
         },
@@ -362,7 +362,7 @@ export default function MobileBottomNav() {
       },
       {
         label: "Alerts",
-        href: "/dashboard/notifications",
+        href: "/dashboard/alerts",
         icon: Bell,
       },
       menuTab,
@@ -443,6 +443,7 @@ export default function MobileBottomNav() {
                     aria-label="Open menu"
                     aria-expanded={menuOpen}
                     aria-haspopup="dialog"
+                    data-testid="mobile-bottom-nav-menu"
                     onClick={() => setMenuOpen((v) => !v)}
                     className="block h-full w-full focus:outline-none focus-visible:bg-white/10"
                   >

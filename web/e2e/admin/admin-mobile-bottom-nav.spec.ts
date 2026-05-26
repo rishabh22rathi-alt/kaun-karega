@@ -246,7 +246,7 @@ test.describe("Admin mobile bottom nav", () => {
     diag.assertClean();
   });
 
-  test("Alerts tab routes to /admin/notifications and badge reflects unread", async ({
+  test("Alerts tab routes to /admin/alerts and badge reflects unread", async ({
     page,
     diag,
   }) => {
@@ -263,7 +263,7 @@ test.describe("Admin mobile bottom nav", () => {
     await expect(badge).toHaveText("3");
 
     await page.getByTestId("admin-bottom-nav-tab-alerts").click();
-    await expect(page).toHaveURL(/\/admin\/notifications/);
+    await expect(page).toHaveURL(/\/admin\/alerts/);
 
     diag.assertClean();
   });
@@ -283,6 +283,7 @@ test.describe("Admin mobile bottom nav", () => {
 
     await expect(page.getByTestId("admin-menu-announcements")).toBeVisible();
     await expect(page.getByTestId("admin-menu-notification-analytics")).toBeVisible();
+    await expect(page.getByTestId("admin-menu-notification-settings")).toBeVisible();
     await expect(page.getByTestId("admin-menu-reports")).toBeVisible();
     await expect(page.getByTestId("admin-menu-chats")).toBeVisible();
     await expect(page.getByTestId("admin-menu-user-view")).toBeVisible();

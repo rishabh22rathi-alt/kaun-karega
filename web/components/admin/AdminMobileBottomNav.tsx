@@ -181,11 +181,11 @@ export default function AdminMobileBottomNav({
     },
     {
       label: "Alerts",
-      href: "/admin/notifications",
+      href: "/admin/alerts",
       icon: Bell,
       testId: "admin-bottom-nav-tab-alerts",
       isActive: (p) =>
-        p === "/admin/notifications" || p.startsWith("/admin/notifications/"),
+        p === "/admin/alerts" || p.startsWith("/admin/alerts/"),
       badgeKey: "alerts",
     },
   ];

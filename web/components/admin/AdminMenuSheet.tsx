@@ -8,6 +8,7 @@ import {
   BarChart3,
   MessageSquareWarning,
   MessageSquare,
+  Settings,
   Users,
   Tags,
   ScrollText,
@@ -174,6 +175,13 @@ export default function AdminMenuSheet({
               label="Notification Analytics"
               onClose={onClose}
               testId="admin-menu-notification-analytics"
+            />
+            <SheetRow
+              href="/admin/notifications"
+              icon={Settings}
+              label="Notification Settings"
+              onClose={onClose}
+              testId="admin-menu-notification-settings"
             />
             <SheetRow
               href="/admin/dashboard?tab=reports"

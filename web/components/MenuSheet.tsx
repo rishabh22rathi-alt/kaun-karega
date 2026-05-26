@@ -8,7 +8,7 @@ import {
   UserPlus,
   MessageSquareWarning,
   ShieldCheck,
-  Bell,
+  Settings,
   LogOut,
   LogIn,
 } from "lucide-react";
@@ -238,8 +238,17 @@ export default function MenuSheet({
 
   const showRegisterCta =
     isLoggedIn && !isAdmin && providerExists === false;
-  const showProviderNotificationsArchive =
+  // "Notification Settings" row — splits by role so the destination
+  // matches the surface the user actually has preferences on. The
+  // user variant uses `!== true` so it also renders during the brief
+  // window when providerExists is still null (in-flight provider
+  // lookup). Otherwise the menu would show no settings row at all
+  // for the first paint, which is a UX regression. Confirmed-provider
+  // sessions swap to the provider variant once the API resolves.
+  const showProviderNotificationSettings =
     isLoggedIn && !isAdmin && providerExists === true;
+  const showUserNotificationSettings =
+    isLoggedIn && !isAdmin && providerExists !== true;
 
   return (
     <>
@@ -312,14 +321,27 @@ export default function MenuSheet({
               </button>
             ) : null}
 
-            {showProviderNotificationsArchive ? (
+            {showProviderNotificationSettings ? (
               <Link
                 href="/provider/notifications"
                 onClick={onClose}
+                data-testid="menu-notification-settings"
                 className="flex items-center gap-3 rounded-lg px-3 py-3 text-sm font-semibold text-[#003d20] transition hover:bg-slate-100"
               >
-                <Bell className="h-4 w-4 text-[#003d20]" />
-                <span>Notifications archive</span>
+                <Settings className="h-4 w-4 text-[#003d20]" />
+                <span>Notification Settings</span>
+              </Link>
+            ) : null}
+
+            {showUserNotificationSettings ? (
+              <Link
+                href="/dashboard/notifications"
+                onClick={onClose}
+                data-testid="menu-notification-settings"
+                className="flex items-center gap-3 rounded-lg px-3 py-3 text-sm font-semibold text-[#003d20] transition hover:bg-slate-100"
+              >
+                <Settings className="h-4 w-4 text-[#003d20]" />
+                <span>Notification Settings</span>
               </Link>
             ) : null}
 
