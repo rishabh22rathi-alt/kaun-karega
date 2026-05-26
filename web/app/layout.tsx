@@ -1,9 +1,10 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import Sidebar from "@/components/Sidebar";
 import GlobalProviderNotificationBell from "@/components/GlobalProviderNotificationBell";
 import MobileBottomNav from "@/components/MobileBottomNav";
 import SessionGuardMount from "@/components/SessionGuardMount";
+import PwaServiceWorkerRegister from "@/components/PwaServiceWorkerRegister";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -19,9 +20,29 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Kaun Karega",
   description: "Find trusted local service providers for any work. Post your task and get connected instantly.",
+  // Manifest is served at /manifest.webmanifest by Next from
+  // app/manifest.ts. Without this `manifest` field, Next does not
+  // emit the <link rel="manifest"> tag and the browser cannot
+  // satisfy the PWA install gate.
+  manifest: "/manifest.webmanifest",
+  // iOS Safari "Add to Home Screen" support. Standalone mode +
+  // status-bar style + home-screen label.
+  appleWebApp: {
+    capable: true,
+    title: "Kaun Karega",
+    statusBarStyle: "default",
+  },
   verification: {
     google: "cby0V9TmJBPIdjWBLuxJhXeOG9QWsKYfMJtddlnuFy0",
   },
+};
+
+// Theme color must live on the `viewport` export in Next 15+ (Next 16
+// included). Setting it here publishes the <meta name="theme-color">
+// tag so the Android Chrome address bar / system status bar tints
+// match the brand forest green.
+export const viewport: Viewport = {
+  themeColor: "#003d20",
 };
 
 export default function RootLayout({
@@ -47,6 +68,11 @@ export default function RootLayout({
               stale-session probe still runs on mobile, where the sidebar is
               hidden (`hidden md:flex`). */}
           <SessionGuardMount />
+          {/* PWA Phase 1 — registers /sw.js in production only. The
+              service worker is intentionally pass-through (no caching);
+              this component only exists to satisfy Chrome's
+              installability gate. Renders nothing. */}
+          <PwaServiceWorkerRegister />
           <Sidebar />
           {/*
             Global notification bell — desktop only. On mobile the bottom-nav
