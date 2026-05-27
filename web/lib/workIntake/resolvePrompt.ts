@@ -1,0 +1,156 @@
+// Prompt construction, tool schema, parsing, and the model call for the
+// work-intake classifier. Server-only.
+
+import type Anthropic from "@anthropic-ai/sdk";
+
+import {
+  getAnthropicClient,
+  WORK_INTAKE_MAX_TOKENS,
+  WORK_INTAKE_MODEL,
+  WORK_INTAKE_TIMEOUT_MS,
+} from "@/lib/ai/anthropicClient";
+import type { WorkIntakeAiRaw, WorkIntakeSafety } from "@/lib/workIntake/types";
+
+export const WORK_INTAKE_TOOL_NAME = "classify_provider_work";
+
+const SYSTEM_INSTRUCTIONS = `You classify a service provider's free-text description of the work they do.
+The provider may write in Hindi, Hinglish, Marwari, or English.
+
+Rules:
+- Choose AT MOST ONE main category. It MUST be copied EXACTLY from the ACTIVE
+  CATEGORIES list when one fits. If none fits, set mainCategory to "" (empty)
+  and isNew=true with a short proposed category name in workTags is NOT required
+  — just leave mainCategory empty and isNew=true.
+- Do NOT invent categories that are not in the list when a listed one fits.
+- workTags: 0-6 short specialisation terms the provider mentioned (e.g. tools,
+  materials, sub-services). Keep each short. Never include unsafe content.
+- confidence: 0..1 for how sure you are about the main category.
+- safety classification:
+  - "red": illegal/sexual/adult/violent, contract killing (supari), goons,
+    weapons, fraud, fake documents, hacking/scams, drugs, or any harmful,
+    unethical, or offensive request. Block these.
+  - "yellow": unclear, brand-new/unknown service, low confidence, or
+    sensitive-but-legal work.
+  - "green": a normal, clearly legal service that maps to an active category
+    with high confidence.
+- Respond ONLY by calling the ${WORK_INTAKE_TOOL_NAME} tool.`;
+
+export const WORK_INTAKE_TOOL: Anthropic.Tool = {
+  name: WORK_INTAKE_TOOL_NAME,
+  description:
+    "Return the single best main category (from the active set, or empty if new), suggested work tags, a confidence score, and a safety classification.",
+  input_schema: {
+    type: "object",
+    properties: {
+      mainCategory: {
+        type: "string",
+        description:
+          "Exact active category name, or empty string if no active category fits.",
+      },
+      isNew: {
+        type: "boolean",
+        description: "True when this is a new/unknown service not in the list.",
+      },
+      confidence: {
+        type: "number",
+        description: "0..1 confidence in the chosen main category.",
+      },
+      safety: {
+        type: "string",
+        enum: ["green", "yellow", "red"],
+      },
+      workTags: {
+        type: "array",
+        items: { type: "string" },
+        description: "0-6 short specialisation terms.",
+      },
+    },
+    required: ["mainCategory", "isNew", "confidence", "safety", "workTags"],
+  },
+};
+
+function buildSystemBlocks(candidates: string[]): Anthropic.TextBlockParam[] {
+  const list = candidates.length > 0 ? candidates.join("\n") : "(none)";
+  // Both blocks are stable across calls within a short window → prompt-cache
+  // them so repeated resolves are cheap (the variable text goes in the user
+  // turn, which is not cached).
+  return [
+    {
+      type: "text",
+      text: SYSTEM_INSTRUCTIONS,
+      cache_control: { type: "ephemeral" },
+    },
+    {
+      type: "text",
+      text: `ACTIVE CATEGORIES (candidate set):\n${list}`,
+      cache_control: { type: "ephemeral" },
+    },
+  ];
+}
+
+function buildUserText(text: string, cityCode?: string): string {
+  const cityLine = cityCode ? `City: ${cityCode}\n` : "";
+  return `${cityLine}Provider description:\n"""${text}"""`;
+}
+
+export function parseAiRaw(input: unknown): WorkIntakeAiRaw | null {
+  if (!input || typeof input !== "object") return null;
+  const o = input as Record<string, unknown>;
+
+  const safetyRaw = String(o.safety ?? "").toLowerCase();
+  const safety: WorkIntakeSafety =
+    safetyRaw === "green" || safetyRaw === "red" ? safetyRaw : "yellow";
+
+  const mainRaw = typeof o.mainCategory === "string" ? o.mainCategory.trim() : "";
+  const mainCategory = mainRaw.length > 0 ? mainRaw : null;
+
+  const confNum =
+    typeof o.confidence === "number" ? o.confidence : Number(o.confidence);
+  const confidence = Number.isFinite(confNum)
+    ? Math.min(1, Math.max(0, confNum))
+    : 0;
+
+  const isNew = o.isNew === true || o.isNew === "true";
+
+  const workTags = Array.isArray(o.workTags)
+    ? o.workTags.map((t) => String(t ?? "").trim()).filter((t) => t.length > 0)
+    : [];
+
+  return { mainCategory, isNew, confidence, safety, workTags };
+}
+
+/**
+ * Calls the model and returns a normalized AI raw result. Throws on missing
+ * key, timeout, transport error, missing tool_use, or parse failure — the
+ * route maps any throw to the AI_UNAVAILABLE manual fallback.
+ */
+export async function classifyWorkIntake(params: {
+  text: string;
+  candidates: string[];
+  cityCode?: string;
+}): Promise<WorkIntakeAiRaw> {
+  const client = getAnthropicClient();
+  if (!client) throw new Error("NO_API_KEY");
+
+  const message = await client.messages.create(
+    {
+      model: WORK_INTAKE_MODEL,
+      max_tokens: WORK_INTAKE_MAX_TOKENS,
+      system: buildSystemBlocks(params.candidates),
+      tools: [WORK_INTAKE_TOOL],
+      tool_choice: { type: "tool", name: WORK_INTAKE_TOOL_NAME },
+      messages: [
+        { role: "user", content: buildUserText(params.text, params.cityCode) },
+      ],
+    },
+    { timeout: WORK_INTAKE_TIMEOUT_MS, maxRetries: 0 }
+  );
+
+  const toolBlock = message.content.find((b) => b.type === "tool_use");
+  if (!toolBlock || toolBlock.type !== "tool_use") {
+    throw new Error("NO_TOOL_USE");
+  }
+  const raw = parseAiRaw(toolBlock.input);
+  if (!raw) throw new Error("PARSE_FAILED");
+  return raw;
+}

@@ -12,6 +12,7 @@
     "test:e2e:audit:list": "playwright test -c pw-e2e-audit.config.ts --list"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.99.0",
     "@supabase/ssr": "^0.10.2",
     "@supabase/supabase-js": "^2.103.3",
     "canvas-confetti": "^1.9.4",
