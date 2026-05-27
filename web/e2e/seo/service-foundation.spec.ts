@@ -295,11 +295,15 @@ test.describe("Phase 2.0a — public category-stats endpoint", () => {
           `slug "${slug}" response leaked forbidden field "${forbidden}"`
         ).toBe(false);
       }
-      // Phone-shaped 10-digit sequence (with optional +91 prefix).
-      // The endpoint must never echo or expose any phone number.
+      // Phone-shaped sequence — Indian mobile numbers MUST start
+      // with 6, 7, 8, or 9 (TRAI prefix range). The tighter pattern
+      // catches a real leaked provider phone while ignoring
+      // arbitrary 10-digit runs in build artifacts. The endpoint
+      // response is JSON so build hashes shouldn't appear anyway,
+      // but this matches the same regex used on the HTML pages.
       expect(
-        /(?:\+?91[ -]?)?\d{10}/.test(raw),
-        `slug "${slug}" response contains a phone-shaped 10-digit sequence`
+        /(?:\+?91[ -]?)?[6-9]\d{9}/.test(raw),
+        `slug "${slug}" response contains an Indian-mobile-shaped sequence`
       ).toBe(false);
     }
   });
