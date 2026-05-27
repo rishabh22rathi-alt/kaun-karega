@@ -56,10 +56,13 @@ test.describe("PWA installability", () => {
   });
 
   test("all manifest icons resolve with image/png", async ({ page, diag }) => {
+    // Keep in sync with web/app/manifest.ts — these are the exact
+    // paths the manifest declares so the test verifies every icon
+    // Chrome / iOS will fetch is actually served.
     const paths = [
-      "/icons/icon-192.png",
-      "/icons/icon-512.png",
-      "/icons/icon-512-maskable.png",
+      "/icons/icon-192-v2.png",
+      "/icons/icon-512-v2.png",
+      "/icons/icon-512-maskable-v2.png",
     ];
     for (const path of paths) {
       const res = await page.request.get(path);
