@@ -278,6 +278,25 @@ export type PwaInstallOutcome =
   | "ios"
   | "unsupported";
 
+/**
+ * Discriminator for which install path the UI should drive when the
+ * user taps the install menu row. Centralises the precedence so the
+ * row component does not re-derive it (and risk drifting from the
+ * `promptInstall()` resolution).
+ *
+ *   - "android-prompt": a captured beforeinstallprompt is available —
+ *     calling promptInstall() will trigger Chrome's native install
+ *     dialog. Single-use; flips back to "android-fallback" after
+ *     prompt() runs (the hook nulls the deferred event).
+ *   - "ios-sheet": iOS Safari (no programmatic install API) — UI
+ *     must open the manual Add-to-Home-Screen instructions sheet.
+ *   - "android-fallback": no captured prompt and not iOS — typically
+ *     desktop, Android Chrome before the engagement heuristic fires,
+ *     or an unsupported browser. UI must open the Chrome-menu
+ *     instruction sheet so the user has a path forward.
+ */
+export type PwaInstallPath = "android-prompt" | "ios-sheet" | "android-fallback";
+
 export type PwaInstallHook = {
   isInstalled: boolean;
   isIosSafari: boolean;
@@ -286,10 +305,23 @@ export type PwaInstallHook = {
   isDismissedRecently: boolean;
   /**
    * True when the Menu install row should render. Cooldown does NOT
-   * apply — the menu is user-pulled UI. Only `isInstalled` /
-   * `!isInstallSupported` hide it.
+   * apply — the menu is user-pulled UI. The ONLY gate is whether the
+   * app is already installed (display-mode standalone, navigator
+   * .standalone, or the persisted `kk_pwa_installed` flag).
+   *
+   * Intentionally NOT gated on `isInstallSupported`: a row that
+   * disappears on browsers that have not yet fired beforeinstallprompt
+   * (or that never will) is worse than one that opens an instruction
+   * sheet — the user otherwise has no way to discover the
+   * install affordance. The row's click handler dispatches to the
+   * correct path via `installPath`.
    */
   shouldShowMenuRow: boolean;
+  /**
+   * Which install path the menu row's click handler should drive.
+   * See {@link PwaInstallPath} for the precedence rules.
+   */
+  installPath: PwaInstallPath;
   /**
    * True when a reminder card may render on a high-intent page.
    * Honors the 7-day cooldown. Per-surface "first visit only" flags
@@ -303,6 +335,15 @@ export type PwaInstallHook = {
 export function usePwaInstall(): PwaInstallHook {
   const s = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
   const isInstallSupported = s.canPromptAndroid || s.isIosSafari;
+  // iOS takes precedence over a captured Android prompt because iOS
+  // Safari never fires beforeinstallprompt in the first place — a
+  // captured prompt on an iOS UA would indicate a UA spoof or test
+  // setup, in which case the iOS sheet is still the correct path.
+  const installPath: PwaInstallPath = s.isIosSafari
+    ? "ios-sheet"
+    : s.canPromptAndroid
+      ? "android-prompt"
+      : "android-fallback";
 
   return {
     isInstalled: s.isInstalled,
@@ -310,7 +351,8 @@ export function usePwaInstall(): PwaInstallHook {
     canPromptAndroid: s.canPromptAndroid,
     isInstallSupported,
     isDismissedRecently: s.isDismissedRecently,
-    shouldShowMenuRow: !s.isInstalled && isInstallSupported,
+    shouldShowMenuRow: !s.isInstalled,
+    installPath,
     shouldShowReminder:
       !s.isInstalled && isInstallSupported && !s.isDismissedRecently,
     promptInstall: async (): Promise<PwaInstallOutcome> => {

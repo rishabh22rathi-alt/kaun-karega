@@ -322,6 +322,16 @@ export default function MenuSheet({
               </button>
             ) : null}
 
+            {/* PWA Install / Add-to-Home-Screen — positioned above
+                Notification Settings so it sits prominently at the top
+                of the action list once the user is past the identity
+                card. Self-hides only when the app is already installed
+                (display-mode standalone, navigator.standalone, or
+                kk_pwa_installed flag). On click, routes to the
+                correct path (iOS sheet / native prompt / Android
+                fallback sheet) via usePwaInstall.installPath. */}
+            <InstallAppMenuRow onClose={onClose} />
+
             {showProviderNotificationSettings ? (
               <Link
                 href="/provider/notifications"
@@ -345,12 +355,6 @@ export default function MenuSheet({
                 <span>Notification Settings</span>
               </Link>
             ) : null}
-
-            {/* Phase 2 PWA — Install/Add-to-Home-Screen entry point.
-                Self-hides when installed or when neither beforeinstallprompt
-                nor iOS Safari install path is available. Cooldown does NOT
-                apply to the menu row (user-pulled UI). */}
-            <InstallAppMenuRow onClose={onClose} />
 
             <Link
               href="/report-issue"

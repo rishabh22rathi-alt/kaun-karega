@@ -386,7 +386,52 @@ test.describe("PWA install UI — installed state hides everything", () => {
 
 // ─────────────────────────────────────────────────────────────────────
 //  Admin Menu install row — uses stable testid path
+//
+//  Why admin-menu instead of public-bar menu: the public bottom-nav
+//  Menu button has a documented Playwright/React state-update race
+//  (see e2e/notifications/alerts-vs-settings-split.spec.ts). The
+//  AdminMenuSheet uses a stable testid path that opens reliably and
+//  renders the SAME InstallAppMenuRow component as the public
+//  MenuSheet, so behavior coverage transfers 1:1 across both surfaces.
 // ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Boilerplate mocks needed to reach the admin dashboard without console
+ * noise. Factored out so the new test cases below don't repeat the
+ * same 6+ mockJson calls inline.
+ */
+async function setupAdminDashboard(
+  page: import("@playwright/test").Page
+): Promise<void> {
+  await mockAdminDashboardApis(page);
+  await mockJson(page, "**/api/admin/notifications", {
+    status: 200,
+    body: { success: true, unreadCount: 0, notifications: [] },
+  });
+  await mockJson(page, "**/api/admin/unread-summary", jsonOk({ unread: {} }));
+  await mockJson(page, "**/api/admin-verify", {
+    status: 200,
+    body: {
+      ok: true,
+      admin: { name: "QA Admin", role: "admin", permissions: [] },
+    },
+  });
+  await mockJson(
+    page,
+    "**/api/admin/provider-stats",
+    jsonOk({ data: { total: 0, verified: 0, underReview: 0 } })
+  );
+  await mockJson(
+    page,
+    "**/api/admin/notification-preferences",
+    jsonOk({ preferences: {} })
+  );
+  await mockJson(
+    page,
+    "**/api/announcements/active",
+    jsonOk({ announcement: null })
+  );
+}
 
 test.describe("PWA install menu row — Admin Menu Sheet", () => {
   test.use({ viewport: MOBILE_VIEWPORT });
@@ -398,34 +443,7 @@ test.describe("PWA install menu row — Admin Menu Sheet", () => {
     await bootstrapAdminSession(page);
     await setupPwa(page);
     allowWhoamiNoise(diag);
-    await mockAdminDashboardApis(page);
-    await mockJson(page, "**/api/admin/notifications", {
-      status: 200,
-      body: { success: true, unreadCount: 0, notifications: [] },
-    });
-    await mockJson(page, "**/api/admin/unread-summary", jsonOk({ unread: {} }));
-    await mockJson(page, "**/api/admin-verify", {
-      status: 200,
-      body: {
-        ok: true,
-        admin: { name: "QA Admin", role: "admin", permissions: [] },
-      },
-    });
-    await mockJson(
-      page,
-      "**/api/admin/provider-stats",
-      jsonOk({ data: { total: 0, verified: 0, underReview: 0 } })
-    );
-    await mockJson(
-      page,
-      "**/api/admin/notification-preferences",
-      jsonOk({ preferences: {} })
-    );
-    await mockJson(
-      page,
-      "**/api/announcements/active",
-      jsonOk({ announcement: null })
-    );
+    await setupAdminDashboard(page);
 
     await gotoPath(page, "/admin/dashboard");
     await dispatchBeforeInstallPrompt(page);
@@ -439,38 +457,110 @@ test.describe("PWA install menu row — Admin Menu Sheet", () => {
     diag.assertClean();
   });
 
+  test("install row visible even WITHOUT beforeinstallprompt (always-visible when not installed)", async ({
+    page,
+    diag,
+  }) => {
+    // Regression guard for the visibility loosening: prior to this
+    // change the row required a captured deferred prompt OR iOS Safari
+    // UA. Now it must show whenever the app is not installed so the
+    // user can always discover an install path.
+    await bootstrapAdminSession(page);
+    await setupPwa(page);
+    allowWhoamiNoise(diag);
+    await setupAdminDashboard(page);
+
+    await gotoPath(page, "/admin/dashboard");
+    // NOTE: no dispatchBeforeInstallPrompt — simulates a Chrome/desktop
+    // session where the engagement heuristic has not yet fired.
+
+    await page.getByTestId("admin-bottom-nav-tab-menu").click();
+    await expect(page.getByTestId("admin-menu-sheet")).toBeVisible();
+
+    const installRow = page.getByTestId("pwa-install-menu-row");
+    await expect(installRow).toBeVisible();
+    await expect(installRow).toContainText(/install kaun karega app/i);
+    diag.assertClean();
+  });
+
+  test("Android fallback: click without beforeinstallprompt opens Android instructions sheet", async ({
+    page,
+    diag,
+  }) => {
+    await bootstrapAdminSession(page);
+    await setupPwa(page);
+    allowWhoamiNoise(diag);
+    await setupAdminDashboard(page);
+
+    await gotoPath(page, "/admin/dashboard");
+    // No beforeinstallprompt dispatched → installPath resolves to
+    // "android-fallback" → click must open the help sheet, never
+    // silently no-op.
+
+    await page.getByTestId("admin-bottom-nav-tab-menu").click();
+    await expect(page.getByTestId("admin-menu-sheet")).toBeVisible();
+
+    // Pre-condition guard: iOS sheet must NOT already be open just
+    // because the menu is open. Covers the no-auto-open requirement
+    // from the user's iOS clarification.
+    await expect(page.getByTestId("ios-install-instructions")).toHaveCount(0);
+    // Same guard for the Android fallback sheet — it must only
+    // appear after the user clicks the row.
+    await expect(page.getByTestId("android-install-instructions")).toHaveCount(
+      0
+    );
+
+    await page.getByTestId("pwa-install-menu-row").click();
+
+    await expect(
+      page.getByTestId("android-install-instructions")
+    ).toBeVisible();
+    // Hard assertion: Android click must NEVER surface the iOS sheet.
+    await expect(page.getByTestId("ios-install-instructions")).toHaveCount(0);
+
+    // Sanity-check the help copy explains the Chrome ⋮ menu path.
+    const sheet = page.getByTestId("android-install-instructions");
+    await expect(sheet).toContainText(/install app/i);
+
+    diag.assertClean();
+  });
+
+  test("Android with beforeinstallprompt: click calls prompt() (no Android fallback sheet)", async ({
+    page,
+    diag,
+  }) => {
+    await bootstrapAdminSession(page);
+    await setupPwa(page);
+    allowWhoamiNoise(diag);
+    await setupAdminDashboard(page);
+
+    await gotoPath(page, "/admin/dashboard");
+    await dispatchBeforeInstallPrompt(page, "dismissed");
+
+    await page.getByTestId("admin-bottom-nav-tab-menu").click();
+    await expect(page.getByTestId("admin-menu-sheet")).toBeVisible();
+    await page.getByTestId("pwa-install-menu-row").click();
+
+    // Native prompt fired — neither instruction sheet should appear.
+    await expect(page.getByTestId("android-install-instructions")).toHaveCount(
+      0
+    );
+    await expect(page.getByTestId("ios-install-instructions")).toHaveCount(0);
+
+    const called = await page.evaluate(
+      () =>
+        (window as unknown as { __kkPromptCalled?: boolean }).__kkPromptCalled
+    );
+    expect(called).toBe(true);
+
+    diag.assertClean();
+  });
+
   test("install row hidden when already installed", async ({ page, diag }) => {
     await bootstrapAdminSession(page);
     await setupPwa(page);
     allowWhoamiNoise(diag);
-    await mockAdminDashboardApis(page);
-    await mockJson(page, "**/api/admin/notifications", {
-      status: 200,
-      body: { success: true, unreadCount: 0, notifications: [] },
-    });
-    await mockJson(page, "**/api/admin/unread-summary", jsonOk({ unread: {} }));
-    await mockJson(page, "**/api/admin-verify", {
-      status: 200,
-      body: {
-        ok: true,
-        admin: { name: "QA Admin", role: "admin", permissions: [] },
-      },
-    });
-    await mockJson(
-      page,
-      "**/api/admin/provider-stats",
-      jsonOk({ data: { total: 0, verified: 0, underReview: 0 } })
-    );
-    await mockJson(
-      page,
-      "**/api/admin/notification-preferences",
-      jsonOk({ preferences: {} })
-    );
-    await mockJson(
-      page,
-      "**/api/announcements/active",
-      jsonOk({ announcement: null })
-    );
+    await setupAdminDashboard(page);
     await page.addInitScript(() => {
       window.localStorage.setItem("kk_pwa_installed", "yes");
     });
@@ -481,6 +571,124 @@ test.describe("PWA install menu row — Admin Menu Sheet", () => {
     await page.getByTestId("admin-bottom-nav-tab-menu").click();
     await expect(page.getByTestId("admin-menu-sheet")).toBeVisible();
     await expect(page.getByTestId("pwa-install-menu-row")).toHaveCount(0);
+    diag.assertClean();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+//  iOS menu row — guided coachmark opens on EXPLICIT click only
+//
+//  Per spec: the iOS Add-to-Home-Screen sheet MUST NOT auto-open. It
+//  appears only when the user taps "Add Kaun Karega to Home Screen"
+//  in the menu (or the explicit install button on the prompt card —
+//  covered above in the prompt-card iOS describe block).
+// ─────────────────────────────────────────────────────────────────────
+
+test.describe("PWA install menu row — iOS Safari (manual click only)", () => {
+  test.use({ viewport: MOBILE_VIEWPORT, userAgent: IOS_SAFARI_UA });
+
+  test("iOS coachmark does NOT appear on initial page load", async ({
+    page,
+    diag,
+  }) => {
+    await bootstrapAdminSession(page);
+    await setupPwa(page);
+    allowWhoamiNoise(diag);
+    await setupAdminDashboard(page);
+
+    await gotoPath(page, "/admin/dashboard");
+    // The hook detects iOS Safari UA on init, but no UI auto-opens.
+    await page.waitForLoadState("load");
+    await page.waitForFunction(
+      () =>
+        (window as unknown as { __kkPwaInstallReady?: boolean })
+          .__kkPwaInstallReady === true,
+      null,
+      { timeout: 10_000 }
+    );
+    await expect(page.getByTestId("ios-install-instructions")).toHaveCount(0);
+    diag.assertClean();
+  });
+
+  test("iOS coachmark does NOT appear just by opening the menu", async ({
+    page,
+    diag,
+  }) => {
+    await bootstrapAdminSession(page);
+    await setupPwa(page);
+    allowWhoamiNoise(diag);
+    await setupAdminDashboard(page);
+
+    await gotoPath(page, "/admin/dashboard");
+    await page.getByTestId("admin-bottom-nav-tab-menu").click();
+    await expect(page.getByTestId("admin-menu-sheet")).toBeVisible();
+
+    // The install row is visible (iOS path, not installed) but the
+    // coachmark must remain closed until the user actually taps it.
+    await expect(page.getByTestId("pwa-install-menu-row")).toBeVisible();
+    await expect(page.getByTestId("ios-install-instructions")).toHaveCount(0);
+    diag.assertClean();
+  });
+
+  test("clicking 'Add Kaun Karega to Home Screen' opens iOS coachmark", async ({
+    page,
+    diag,
+  }) => {
+    await bootstrapAdminSession(page);
+    await setupPwa(page);
+    allowWhoamiNoise(diag);
+    await setupAdminDashboard(page);
+
+    await gotoPath(page, "/admin/dashboard");
+    await page.getByTestId("admin-bottom-nav-tab-menu").click();
+
+    const installRow = page.getByTestId("pwa-install-menu-row");
+    await expect(installRow).toBeVisible();
+    // iOS label per spec.
+    await expect(installRow).toContainText(/add kaun karega to home screen/i);
+
+    await installRow.click();
+
+    await expect(page.getByTestId("ios-install-instructions")).toBeVisible();
+    diag.assertClean();
+  });
+
+  test("iOS coachmark contains Safari, Share, Add to Home Screen, and Add steps", async ({
+    page,
+    diag,
+  }) => {
+    await bootstrapAdminSession(page);
+    await setupPwa(page);
+    allowWhoamiNoise(diag);
+    await setupAdminDashboard(page);
+
+    await gotoPath(page, "/admin/dashboard");
+    await page.getByTestId("admin-bottom-nav-tab-menu").click();
+    await page.getByTestId("pwa-install-menu-row").click();
+
+    const sheet = page.getByTestId("ios-install-instructions");
+    await expect(sheet).toBeVisible();
+
+    // All four guided steps + footer hint must be present.
+    await expect(
+      page.getByTestId("ios-install-step-safari")
+    ).toContainText(/safari/i);
+    await expect(
+      page.getByTestId("ios-install-step-share")
+    ).toContainText(/share/i);
+    await expect(
+      page.getByTestId("ios-install-step-add-to-home-screen")
+    ).toContainText(/add to home screen/i);
+    await expect(page.getByTestId("ios-install-step-add")).toContainText(
+      /^Tap Add/i
+    );
+    await expect(page.getByTestId("ios-install-footer")).toContainText(
+      /home screen/i
+    );
+    // The Apple-limitation explainer must be present so the user
+    // understands why we can't just trigger the popup directly.
+    await expect(sheet).toContainText(/iphone does not let websites/i);
+
     diag.assertClean();
   });
 });
