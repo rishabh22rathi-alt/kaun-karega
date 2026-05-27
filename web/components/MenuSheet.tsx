@@ -325,11 +325,15 @@ export default function MenuSheet({
             {/* PWA Install / Add-to-Home-Screen — positioned above
                 Notification Settings so it sits prominently at the top
                 of the action list once the user is past the identity
-                card. Self-hides only when the app is already installed
-                (display-mode standalone, navigator.standalone, or
-                kk_pwa_installed flag). On click, routes to the
-                correct path (iOS sheet / native prompt / Android
-                fallback sheet) via usePwaInstall.installPath. */}
+                card. Self-hides ONLY while the page is currently
+                running as a standalone PWA (display-mode standalone
+                / fullscreen / minimal-ui, or navigator.standalone on
+                iOS). The persisted `kk_pwa_installed` flag does NOT
+                hide this row — the menu is the user's manual install
+                entry in browser mode and must stay reachable across
+                logout/login or after a prior install. On click,
+                routes to the right path (iOS sheet / native prompt /
+                Android fallback) via usePwaInstall.installPath. */}
             <InstallAppMenuRow onClose={onClose} />
 
             {showProviderNotificationSettings ? (

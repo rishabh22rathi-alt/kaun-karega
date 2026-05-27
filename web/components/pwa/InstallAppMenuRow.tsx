@@ -27,9 +27,13 @@ type Props = {
  *   - Anything else (desktop, Android pre-engagement, unsupported):
  *     open the Chrome-menu fallback instructions sheet.
  *
- * Hides only when `isInstalled` is true (display-mode standalone,
- * navigator.standalone, or persisted kk_pwa_installed flag). The
- * 7-day cooldown does NOT apply — this is user-pulled UI.
+ * Hides ONLY while the page is currently running as a standalone
+ * PWA (display-mode standalone/fullscreen/minimal-ui, or
+ * navigator.standalone === true on iOS). The persisted
+ * `kk_pwa_installed` flag does NOT hide this row — the menu is the
+ * user's manual install entry and must stay reachable in normal
+ * browser mode even after a prior install on the same device. 7-day
+ * cooldown does NOT apply here (user-pulled UI).
  */
 export default function InstallAppMenuRow({ onClose }: Props) {
   const { shouldShowMenuRow, installPath, promptInstall } = usePwaInstall();

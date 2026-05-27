@@ -95,6 +95,44 @@ function allowWhoamiNoise(
 }
 
 /**
+ * Override `window.matchMedia` so the three display-mode queries the
+ * hook OR's all report matches=true. Used to simulate a tab currently
+ * rendered inside a standalone PWA window. Other queries fall through
+ * to the real matchMedia so the rest of the app behaves normally.
+ *
+ * MUST be installed via addInitScript BEFORE the page navigates so
+ * the override is in place when usePwaInstall's module-level init()
+ * runs.
+ */
+async function mockMatchMediaStandalone(
+  page: import("@playwright/test").Page
+): Promise<void> {
+  await page.addInitScript(() => {
+    const original = window.matchMedia.bind(window);
+    const STANDALONE_QUERIES = new Set([
+      "(display-mode: standalone)",
+      "(display-mode: fullscreen)",
+      "(display-mode: minimal-ui)",
+    ]);
+    window.matchMedia = ((query: string) => {
+      if (STANDALONE_QUERIES.has(query)) {
+        return {
+          matches: true,
+          media: query,
+          onchange: null,
+          addEventListener: () => {},
+          removeEventListener: () => {},
+          addListener: () => {},
+          removeListener: () => {},
+          dispatchEvent: () => false,
+        } as unknown as MediaQueryList;
+      }
+      return original(query);
+    }) as typeof window.matchMedia;
+  });
+}
+
+/**
  * Dispatch a synthetic beforeinstallprompt event so the hook captures
  * a usable deferred prompt. The mocked prompt() resolves immediately
  * and userChoice resolves to "accepted" by default — callers can
@@ -287,7 +325,7 @@ test.describe("PWA install card — iOS Safari", () => {
     diag.assertClean();
   });
 
-  test("navigator.standalone === true hides everything", async ({
+  test("navigator.standalone === true hides the prompt card without persisting kk_pwa_installed", async ({
     page,
     diag,
   }) => {
@@ -300,7 +338,10 @@ test.describe("PWA install card — iOS Safari", () => {
       });
     });
     await gotoPath(page, "/provider/register/success");
+    // Card hides because isStandalone is true → shouldShowReminder
+    // resolves false regardless of any persisted state.
     await expect(page.getByTestId("pwa-install-prompt-card")).toHaveCount(0);
+
     // The usePwaInstall chunk is lazy-loaded (server-component page
     // referencing a client component); wait for init() to actually
     // run before asserting its side-effects.
@@ -312,13 +353,15 @@ test.describe("PWA install card — iOS Safari", () => {
       null,
       { timeout: 10_000 }
     );
-    // Side-effect: the hook detects standalone on init → persists the
-    // permanent flag so cleared localStorage on a future visit still
-    // hides install UI as long as standalone mode is observed.
+    // Regression guard: init() MUST NOT write kk_pwa_installed just
+    // because navigator.standalone (or display-mode standalone) was
+    // observed at boot. Pre-emptive persistence used to poison every
+    // future browser-mode session — see the install-row visibility
+    // bug fix that split isStandalone from wasInstalledEver.
     const installed = await page.evaluate(() =>
       window.localStorage.getItem("kk_pwa_installed")
     );
-    expect(installed).toBe("yes");
+    expect(installed).toBeNull();
     diag.assertClean();
   });
 });
@@ -556,7 +599,17 @@ test.describe("PWA install menu row — Admin Menu Sheet", () => {
     diag.assertClean();
   });
 
-  test("install row hidden when already installed", async ({ page, diag }) => {
+  test("install row REMAINS VISIBLE in browser mode despite kk_pwa_installed=yes (bug-regression guard)", async ({
+    page,
+    diag,
+  }) => {
+    // Bug history: a single transient standalone observation (or a
+    // real appinstalled on a prior session) wrote kk_pwa_installed=yes
+    // and that flag then permanently hid the menu row even when the
+    // user returned to the site in a normal browser tab — e.g. after
+    // logout/login. The fix split isStandalone (runtime) from
+    // wasInstalledEver (persisted) and gates the row on !isStandalone
+    // only. This test pins that behavior.
     await bootstrapAdminSession(page);
     await setupPwa(page);
     allowWhoamiNoise(diag);
@@ -566,11 +619,116 @@ test.describe("PWA install menu row — Admin Menu Sheet", () => {
     });
 
     await gotoPath(page, "/admin/dashboard");
+    // NO matchMedia standalone override and NO navigator.standalone
+    // override → the page is in normal browser mode. The persisted
+    // flag must NOT hide the row.
+
+    await page.getByTestId("admin-bottom-nav-tab-menu").click();
+    await expect(page.getByTestId("admin-menu-sheet")).toBeVisible();
+    await expect(page.getByTestId("pwa-install-menu-row")).toBeVisible();
+    diag.assertClean();
+  });
+
+  test("install row REMAINS VISIBLE after appinstalled fires in same tab (browser mode)", async ({
+    page,
+    diag,
+  }) => {
+    // appinstalled means "the user accepted install" — the current
+    // browser tab is still a browser tab; Chrome opens a separate
+    // standalone window whose own matchMedia/navigator.standalone
+    // will resolve true. The browser tab's menu row must therefore
+    // stay visible so the user can still see the install entry if
+    // they return to it.
+    await bootstrapAdminSession(page);
+    await setupPwa(page);
+    allowWhoamiNoise(diag);
+    await setupAdminDashboard(page);
+
+    await gotoPath(page, "/admin/dashboard");
     await dispatchBeforeInstallPrompt(page);
 
     await page.getByTestId("admin-bottom-nav-tab-menu").click();
     await expect(page.getByTestId("admin-menu-sheet")).toBeVisible();
+    await expect(page.getByTestId("pwa-install-menu-row")).toBeVisible();
+
+    // Dispatch appinstalled — writes kk_pwa_installed and flips
+    // wasInstalledEver to true, but isStandalone stays false in
+    // this tab.
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event("appinstalled"));
+    });
+
+    // Sanity: the persisted flag was written by the only legitimate
+    // writer (appinstalled), but the menu row stays visible.
+    const installed = await page.evaluate(() =>
+      window.localStorage.getItem("kk_pwa_installed")
+    );
+    expect(installed).toBe("yes");
+    await expect(page.getByTestId("pwa-install-menu-row")).toBeVisible();
+
+    diag.assertClean();
+  });
+
+  test("install row HIDDEN when display-mode matchMedia reports standalone", async ({
+    page,
+    diag,
+  }) => {
+    // Currently running as standalone PWA → menu row hidden.
+    await bootstrapAdminSession(page);
+    await setupPwa(page);
+    allowWhoamiNoise(diag);
+    await setupAdminDashboard(page);
+    await mockMatchMediaStandalone(page);
+
+    await gotoPath(page, "/admin/dashboard");
+    await page.getByTestId("admin-bottom-nav-tab-menu").click();
+    await expect(page.getByTestId("admin-menu-sheet")).toBeVisible();
     await expect(page.getByTestId("pwa-install-menu-row")).toHaveCount(0);
+
+    // Reinforcement: even with the runtime override hiding the row,
+    // init() must NOT poison localStorage. Future browser-mode
+    // sessions on the same device should still see the row.
+    const installed = await page.evaluate(() =>
+      window.localStorage.getItem("kk_pwa_installed")
+    );
+    expect(installed).toBeNull();
+
+    diag.assertClean();
+  });
+
+  test("install row HIDDEN when navigator.standalone === true (iOS standalone)", async ({
+    page,
+    diag,
+  }) => {
+    await bootstrapAdminSession(page);
+    await setupPwa(page);
+    allowWhoamiNoise(diag);
+    await setupAdminDashboard(page);
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, "standalone", {
+        value: true,
+        configurable: true,
+      });
+    });
+
+    await gotoPath(page, "/admin/dashboard");
+    await page.getByTestId("admin-bottom-nav-tab-menu").click();
+    await expect(page.getByTestId("admin-menu-sheet")).toBeVisible();
+    await expect(page.getByTestId("pwa-install-menu-row")).toHaveCount(0);
+
+    // Same persistence regression guard as the matchMedia variant.
+    await page.waitForFunction(
+      () =>
+        (window as unknown as { __kkPwaInstallReady?: boolean })
+          .__kkPwaInstallReady === true,
+      null,
+      { timeout: 10_000 }
+    );
+    const installed = await page.evaluate(() =>
+      window.localStorage.getItem("kk_pwa_installed")
+    );
+    expect(installed).toBeNull();
+
     diag.assertClean();
   });
 });

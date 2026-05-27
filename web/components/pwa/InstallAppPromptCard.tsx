@@ -27,13 +27,15 @@ type Props = {
  * post-login dashboards. NEVER render on the homepage, /admin/*,
  * chat threads, payment/login flows.
  *
- * Visibility gate:
- *   - hidden if installed (display-mode / navigator.standalone /
- *     kk_pwa_installed flag — usePwaInstall handles)
- *   - hidden if unsupported (neither captured beforeinstallprompt nor
+ * Visibility gate (all must be true for the card to render):
+ *   - NOT currently running as a standalone PWA (display-mode
+ *     standalone/fullscreen/minimal-ui or navigator.standalone)
+ *   - has never been installed before — `kk_pwa_installed` flag NOT
+ *     set (the flag is written only by a real `appinstalled` event)
+ *   - install path is supported (captured beforeinstallprompt OR
  *     iOS Safari)
- *   - hidden if dismissed within the last 7 days
- *   - hidden if oncePerKey is set and previously dismissed
+ *   - not dismissed within the last 7 days
+ *   - oncePerKey not previously dismissed (if provided)
  *
  * On Android Chromium tap: triggers prompt(). On accepted/dismissed,
  * the hook flips canPromptAndroid → card auto-hides until next page

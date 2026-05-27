@@ -199,8 +199,12 @@ export default function AdminMenuSheet({
               testId="admin-menu-chats"
             />
             {/* Phase 2 PWA — install entry point for admins too.
-                Self-hides when installed or when the browser does
-                not support our install paths. */}
+                Self-hides ONLY while the current page is rendered
+                as a standalone PWA (display-mode standalone /
+                fullscreen / minimal-ui, or navigator.standalone on
+                iOS). Persisted `kk_pwa_installed` does NOT hide
+                this row — admins in a browser tab keep the manual
+                install entry even after a prior install. */}
             <InstallAppMenuRow onClose={onClose} />
           </div>
 

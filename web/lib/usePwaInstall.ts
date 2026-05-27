@@ -10,13 +10,30 @@ import { useSyncExternalStore } from "react";
  *      late-mounting card/menu-row can still call prompt() against it.
  *      Listener is attached at module load — runs as soon as this
  *      file is parsed on the client.
- *   2. Detect installed/standalone state via four signals OR'd:
- *        - localStorage `kk_pwa_installed === "yes"`
- *        - matchMedia (display-mode: standalone | fullscreen | minimal-ui)
- *        - navigator.standalone === true (iOS Safari)
- *      If any signal is true, mark installed permanently and write
- *      the localStorage flag so future visits short-circuit faster.
- *   3. Listen for `appinstalled` and set the permanent flag.
+ *   2. Track TWO independent install signals that the install UI
+ *      consumes differently:
+ *        a. `isStandalone` — RUNTIME ONLY. True when the page is
+ *           currently displayed in a standalone PWA window. Sources
+ *           OR'd:
+ *             - matchMedia (display-mode: standalone | fullscreen |
+ *               minimal-ui)
+ *             - navigator.standalone === true (iOS Safari)
+ *           Re-evaluated on every matchMedia change. NOT persisted.
+ *           Used by the menu row's visibility gate so the manual
+ *           install entry stays reachable in normal browser mode
+ *           even after a prior install on the same device.
+ *        b. `wasInstalledEver` — PERSISTED. Read from localStorage
+ *           `kk_pwa_installed === "yes"`. Written ONLY by the real
+ *           `appinstalled` event listener. Suppresses high-intent
+ *           reminder cards for users who already installed; does
+ *           NOT hide the menu row.
+ *   3. Listen for `appinstalled` and persist the `kk_pwa_installed`
+ *      flag — the ONLY writer of that key. Pre-emptive writes from
+ *      `init()` and the display-mode change listener were removed
+ *      because they made a transient standalone observation
+ *      permanently poison browser-mode UI (a user who opened the PWA
+ *      once would never see the install row in their browser tab
+ *      again).
  *   4. Detect iOS Safari (excluding in-app browsers + iOS Chrome/FF).
  *   5. Track "Not now" dismissal timestamp at `kk_pwa_install_dismissed_at`
  *      and expose a 7-day cooldown helper.
@@ -29,7 +46,10 @@ import { useSyncExternalStore } from "react";
  *   the server output, then flip after the client commits.
  *
  * STORAGE KEYS — the ONLY localStorage keys this hook touches:
- *   - kk_pwa_installed: "yes" sentinel (permanent until manually cleared)
+ *   - kk_pwa_installed: "yes" sentinel, written ONLY on real
+ *     `appinstalled`. Persists across sessions to suppress reminder
+ *     cards for users who already installed. Does NOT hide the
+ *     manual menu install row.
  *   - kk_pwa_install_dismissed_at: Date.now() string (expires after 7d)
  */
 
@@ -43,7 +63,16 @@ type BeforeInstallPromptEvent = Event & {
 };
 
 type State = {
-  isInstalled: boolean;
+  // CURRENT runtime standalone display-mode. Re-evaluated when
+  // matchMedia fires. NOT persisted, NOT influenced by
+  // kk_pwa_installed. The ONLY signal for the user-pulled menu row's
+  // visibility — see hook contract below.
+  isStandalone: boolean;
+  // PERSISTED "user installed at some point" sentinel from
+  // kk_pwa_installed. Written ONLY by the appinstalled listener.
+  // Survives across sessions and is used to suppress reminder cards;
+  // does NOT hide the manual menu row.
+  wasInstalledEver: boolean;
   isIosSafari: boolean;
   canPromptAndroid: boolean;
   dismissedAt: number | null;
@@ -56,7 +85,8 @@ type State = {
 };
 
 const SERVER_SNAPSHOT: State = {
-  isInstalled: false,
+  isStandalone: false,
+  wasInstalledEver: false,
   isIosSafari: false,
   canPromptAndroid: false,
   dismissedAt: null,
@@ -91,13 +121,15 @@ function detectIosSafari(): boolean {
   return isSafari && !isInAppOrAltBrowser;
 }
 
-function detectInstalled(): boolean {
+/**
+ * Runtime-only standalone detection. Pure read of the current window
+ * state — does NOT read localStorage and does NOT cause any write.
+ * If any of the three display-mode media queries match, or
+ * navigator.standalone is true (iOS), the page is currently running
+ * as an installed PWA window.
+ */
+function detectStandalone(): boolean {
   if (typeof window === "undefined") return false;
-  try {
-    if (window.localStorage.getItem(INSTALLED_KEY) === "yes") return true;
-  } catch {
-    // localStorage may be unavailable in restricted contexts
-  }
   try {
     if (window.matchMedia("(display-mode: standalone)").matches) return true;
     if (window.matchMedia("(display-mode: fullscreen)").matches) return true;
@@ -112,6 +144,16 @@ function detectInstalled(): boolean {
     // standalone is iOS-specific; defensive guard
   }
   return false;
+}
+
+function readWasInstalledEver(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(INSTALLED_KEY) === "yes";
+  } catch {
+    // localStorage may be unavailable in restricted contexts
+    return false;
+  }
 }
 
 function persistInstalled(): void {
@@ -177,15 +219,14 @@ function init(): void {
   if (typeof window === "undefined") return;
   initialized = true;
 
-  const installed = detectInstalled();
-  if (installed) persistInstalled();
-
-  const initialDismissedAt = readDismissedAt();
   state = {
-    isInstalled: installed,
+    // Runtime-only — never poisons future browser-mode sessions.
+    isStandalone: detectStandalone(),
+    // Persisted — does NOT gate the menu row.
+    wasInstalledEver: readWasInstalledEver(),
     isIosSafari: detectIosSafari(),
     canPromptAndroid: false,
-    dismissedAt: initialDismissedAt,
+    dismissedAt: readDismissedAt(),
     isDismissedRecently: false,
   };
   // Compute the initial isDismissedRecently + schedule the expiry
@@ -205,39 +246,52 @@ function init(): void {
     { passive: false }
   );
 
-  // Permanent installed flag on appinstalled.
+  // appinstalled is the SINGLE source of truth for "user installed
+  // this app". This listener is the ONLY writer of kk_pwa_installed.
+  // Note we do NOT set isStandalone here: the current tab is still
+  // a browser tab — the standalone PWA opens in a separate window
+  // whose own matchMedia/navigator.standalone will resolve true.
+  // Setting isStandalone here would incorrectly hide the menu row
+  // in the user's current browser tab.
   window.addEventListener("appinstalled", () => {
     deferredPrompt = null;
     persistInstalled();
-    updateState({ isInstalled: true, canPromptAndroid: false });
+    updateState({ wasInstalledEver: true, canPromptAndroid: false });
   });
 
-  // If display-mode flips to standalone while the page is open
-  // (e.g. user installed via Chrome menu, then switched to the new
-  // window), promote immediately.
-  try {
-    const mq = window.matchMedia("(display-mode: standalone)");
-    const onChange = (event: MediaQueryListEvent): void => {
-      if (event.matches) {
-        persistInstalled();
-        updateState({ isInstalled: true, canPromptAndroid: false });
+  // Track display-mode changes reactively so the row hides the
+  // moment the user transitions into a standalone window (e.g., a
+  // Chrome session that swaps in-place). Listening on all three
+  // modes the snapshot OR's keeps `isStandalone` accurate without
+  // depending on the order they fire. NOTE: this listener does NOT
+  // write to localStorage — that responsibility belongs solely to
+  // the `appinstalled` event.
+  const modes = ["standalone", "fullscreen", "minimal-ui"] as const;
+  for (const mode of modes) {
+    try {
+      const mq = window.matchMedia(`(display-mode: ${mode})`);
+      const onChange = (): void => {
+        updateState({ isStandalone: detectStandalone() });
+      };
+      if (typeof mq.addEventListener === "function") {
+        mq.addEventListener("change", onChange);
       }
-    };
-    if (typeof mq.addEventListener === "function") {
-      mq.addEventListener("change", onChange);
+    } catch {
+      // matchMedia.addEventListener missing on very old browsers
     }
-  } catch {
-    // matchMedia.addEventListener missing on very old browsers
   }
 
   // Cross-tab sync via storage event. Dismissal + installed flag
-  // changes in one tab reflect in others without a refresh.
+  // changes in one tab reflect in others without a refresh. The
+  // INSTALLED_KEY branch updates `wasInstalledEver` (reminder card
+  // gate) — it does NOT touch `isStandalone` since localStorage is
+  // not a standalone-state signal.
   window.addEventListener("storage", (event) => {
     if (event.key === DISMISSED_KEY) {
       updateState({ dismissedAt: readDismissedAt() });
       recomputeDismissal();
-    } else if (event.key === INSTALLED_KEY && event.newValue === "yes") {
-      updateState({ isInstalled: true, canPromptAndroid: false });
+    } else if (event.key === INSTALLED_KEY) {
+      updateState({ wasInstalledEver: event.newValue === "yes" });
     }
   });
 
@@ -298,23 +352,44 @@ export type PwaInstallOutcome =
 export type PwaInstallPath = "android-prompt" | "ios-sheet" | "android-fallback";
 
 export type PwaInstallHook = {
-  isInstalled: boolean;
+  /**
+   * True while the page is currently rendered inside a standalone
+   * PWA window (display-mode standalone/fullscreen/minimal-ui, or
+   * navigator.standalone === true on iOS). Runtime-only — does NOT
+   * read or honor the persisted `kk_pwa_installed` flag.
+   */
+  isStandalone: boolean;
+  /**
+   * True when the user has installed the app at some prior point
+   * (per the persisted `kk_pwa_installed` flag, written ONLY by a
+   * real `appinstalled` event). Survives across browser sessions.
+   * Used to suppress high-intent reminder cards for users who
+   * already installed — does NOT hide the manual menu install row.
+   */
+  wasInstalledEver: boolean;
   isIosSafari: boolean;
   canPromptAndroid: boolean;
   isInstallSupported: boolean;
   isDismissedRecently: boolean;
   /**
-   * True when the Menu install row should render. Cooldown does NOT
-   * apply — the menu is user-pulled UI. The ONLY gate is whether the
-   * app is already installed (display-mode standalone, navigator
-   * .standalone, or the persisted `kk_pwa_installed` flag).
+   * True when the Menu install row should render.
    *
-   * Intentionally NOT gated on `isInstallSupported`: a row that
-   * disappears on browsers that have not yet fired beforeinstallprompt
-   * (or that never will) is worse than one that opens an instruction
-   * sheet — the user otherwise has no way to discover the
-   * install affordance. The row's click handler dispatches to the
-   * correct path via `installPath`.
+   * Gate: `!isStandalone` ONLY. The manual menu install row is the
+   * user's discoverability anchor in browser mode and MUST stay
+   * reachable even after a previous install — i.e., the persisted
+   * `kk_pwa_installed` flag intentionally does NOT hide this row.
+   * Hiding the row only when the current page is itself running as
+   * a standalone PWA prevents the historical bug where one
+   * transient standalone observation poisoned every future browser
+   * session on the same device.
+   *
+   * Cooldown does NOT apply (user-pulled UI). The 7-day dismissal
+   * key gates only the prompt card.
+   *
+   * Install-support detection (canPromptAndroid / isIosSafari) does
+   * NOT gate the row either — the click handler dispatches to the
+   * Android-fallback instruction sheet so users on any browser have
+   * a path forward.
    */
   shouldShowMenuRow: boolean;
   /**
@@ -324,8 +399,14 @@ export type PwaInstallHook = {
   installPath: PwaInstallPath;
   /**
    * True when a reminder card may render on a high-intent page.
-   * Honors the 7-day cooldown. Per-surface "first visit only" flags
-   * are layered on top by the card consumer.
+   *
+   * Gate: all of:
+   *   - !isStandalone (don't pester users already inside the PWA)
+   *   - !wasInstalledEver (don't re-pester users who installed before)
+   *   - isInstallSupported (no point if no path exists)
+   *   - !isDismissedRecently (7-day cooldown from "Not now")
+   * Per-surface "first visit only" flags are layered on top by the
+   * card consumer.
    */
   shouldShowReminder: boolean;
   promptInstall: () => Promise<PwaInstallOutcome>;
@@ -346,17 +427,25 @@ export function usePwaInstall(): PwaInstallHook {
       : "android-fallback";
 
   return {
-    isInstalled: s.isInstalled,
+    isStandalone: s.isStandalone,
+    wasInstalledEver: s.wasInstalledEver,
     isIosSafari: s.isIosSafari,
     canPromptAndroid: s.canPromptAndroid,
     isInstallSupported,
     isDismissedRecently: s.isDismissedRecently,
-    shouldShowMenuRow: !s.isInstalled,
+    shouldShowMenuRow: !s.isStandalone,
     installPath,
     shouldShowReminder:
-      !s.isInstalled && isInstallSupported && !s.isDismissedRecently,
+      !s.isStandalone &&
+      !s.wasInstalledEver &&
+      isInstallSupported &&
+      !s.isDismissedRecently,
     promptInstall: async (): Promise<PwaInstallOutcome> => {
-      if (s.isInstalled) return "unsupported";
+      // Only block prompt() when we are CURRENTLY running standalone
+      // — wasInstalledEver is intentionally not a guard here so a
+      // user who uninstalled and is back in browser mode can
+      // reinstall via the row's prompt() path.
+      if (s.isStandalone) return "unsupported";
       if (deferredPrompt) {
         const event = deferredPrompt;
         // Consume the deferred prompt: it can only be used once. Null
