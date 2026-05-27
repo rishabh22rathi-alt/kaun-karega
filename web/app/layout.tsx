@@ -17,9 +17,71 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+// SEO Phase 1-A — production canonical origin. All `openGraph.url`,
+// `alternates.canonical`, image src resolution, and the manifest URL
+// resolve against this base. Must be the live HTTPS origin (not the
+// dev URL) so previews and crawlers receive absolute kaunkarega.com
+// links rather than localhost:3000 references.
+const SITE_URL = "https://kaunkarega.com";
+const SITE_NAME = "Kaun Karega";
+const SITE_DESCRIPTION =
+  "Find trusted local service providers in Jodhpur — electricians, plumbers, carpenters, AC technicians and more. Post your task and get connected to nearby providers on WhatsApp instantly.";
+const SITE_OG_IMAGE = "/icons/icon-512-v2.png";
+
 export const metadata: Metadata = {
-  title: "Kaun Karega",
-  description: "Find trusted local service providers for any work. Post your task and get connected instantly.",
+  metadataBase: new URL(SITE_URL),
+  title: {
+    // `default` is used for the homepage and any page that does not
+    // export its own metadata.title. `template` is applied when a
+    // child page exports just a string title (e.g. "Privacy" becomes
+    // "Privacy | Kaun Karega").
+    default: `${SITE_NAME} — Find Local Service Providers in Jodhpur`,
+    template: `%s | ${SITE_NAME}`,
+  },
+  description: SITE_DESCRIPTION,
+  // Default canonical points at the origin root. Per-page metadata
+  // SHOULD override this with its own canonical to prevent duplicate-
+  // content issues across query-string variants of the homepage.
+  alternates: {
+    canonical: "/",
+  },
+  // Default robots posture: public pages may be indexed and links
+  // followed. Private routes (admin, dashboard, provider, etc.) layer
+  // their own `robots: { index: false }` on top via layout metadata,
+  // and the parallel `app/robots.ts` declares the Disallow list.
+  robots: {
+    index: true,
+    follow: true,
+    googleBot: {
+      index: true,
+      follow: true,
+      "max-image-preview": "large",
+      "max-snippet": -1,
+      "max-video-preview": -1,
+    },
+  },
+  openGraph: {
+    type: "website",
+    url: SITE_URL,
+    siteName: SITE_NAME,
+    locale: "en_IN",
+    title: `${SITE_NAME} — Find Local Service Providers in Jodhpur`,
+    description: SITE_DESCRIPTION,
+    images: [
+      {
+        url: SITE_OG_IMAGE,
+        width: 512,
+        height: 512,
+        alt: `${SITE_NAME} logo`,
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: `${SITE_NAME} — Find Local Service Providers in Jodhpur`,
+    description: SITE_DESCRIPTION,
+    images: [SITE_OG_IMAGE],
+  },
   // Manifest is served at /manifest.webmanifest by Next from
   // app/manifest.ts. Without this `manifest` field, Next does not
   // emit the <link rel="manifest"> tag and the browser cannot
@@ -29,12 +91,55 @@ export const metadata: Metadata = {
   // status-bar style + home-screen label.
   appleWebApp: {
     capable: true,
-    title: "Kaun Karega",
+    title: SITE_NAME,
     statusBarStyle: "default",
   },
   verification: {
     google: "cby0V9TmJBPIdjWBLuxJhXeOG9QWsKYfMJtddlnuFy0",
   },
+};
+
+// SEO Phase 1-A — Organization + WebSite JSON-LD. Inlined as a single
+// @graph payload so Google parses both entities in one read and links
+// the WebSite to the Organization via @id reference.
+//
+// `sameAs` is intentionally omitted — populate with social profile
+// URLs (Instagram, Facebook, LinkedIn) once those accounts exist and
+// are verifiably owned. Surfacing the wrong URL here misleads the
+// knowledge panel.
+//
+// No SearchAction is declared on the WebSite node — the homepage's
+// site-internal search is interactive (client component) and does
+// not yet have a stable GET URL pattern. Add when /search?q=… exists.
+const STRUCTURED_DATA = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "Organization",
+      "@id": `${SITE_URL}/#organization`,
+      name: SITE_NAME,
+      url: SITE_URL,
+      logo: `${SITE_URL}${SITE_OG_IMAGE}`,
+      description: SITE_DESCRIPTION,
+      areaServed: {
+        "@type": "City",
+        name: "Jodhpur",
+        containedInPlace: {
+          "@type": "State",
+          name: "Rajasthan",
+        },
+      },
+    },
+    {
+      "@type": "WebSite",
+      "@id": `${SITE_URL}/#website`,
+      url: SITE_URL,
+      name: SITE_NAME,
+      description: SITE_DESCRIPTION,
+      inLanguage: "en-IN",
+      publisher: { "@id": `${SITE_URL}/#organization` },
+    },
+  ],
 };
 
 // Theme color must live on the `viewport` export in Next 15+ (Next 16
@@ -55,6 +160,14 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased overflow-x-hidden`}
       >
+        {/* SEO Phase 1-A — Organization + WebSite JSON-LD. Inlined as a
+            raw <script type="application/ld+json"> rather than next/script
+            so it appears in the initial server HTML (Googlebot reads
+            JSON-LD on first render; deferred scripts are skipped). */}
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(STRUCTURED_DATA) }}
+        />
         <div
           id="kk-app-shell"
           className="flex min-h-screen"
