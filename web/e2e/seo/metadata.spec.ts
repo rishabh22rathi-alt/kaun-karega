@@ -132,6 +132,160 @@ test.describe("SEO Phase 1-A — homepage HTML", () => {
     expect(html).toMatch(/"name"\s*:\s*"Jodhpur"/);
   });
 
+  test("Phase 1-B — initial HTML contains visible H1 mentioning Jodhpur", async ({
+    request,
+  }) => {
+    const res = await request.get(appUrl("/"));
+    const html = await res.text();
+    // The server-rendered SEO band exposes an <h1 data-testid="kk-home-seo-h1">.
+    // It must be present in the FIRST byte stream (no JS execution
+    // required) and mention "Jodhpur" so Google sees the geo signal.
+    expect(html).toMatch(
+      /<h1[^>]+data-testid="kk-home-seo-h1"[^>]*>[^<]*Jodhpur[^<]*<\/h1>/i
+    );
+  });
+
+  test("Phase 1-B — initial HTML lists popular service keywords", async ({
+    request,
+  }) => {
+    const res = await request.get(appUrl("/"));
+    const html = await res.text();
+    // These are the canonical service names surfaced by the SSR popular-
+    // services list. At least 8 of them must appear so Google's
+    // categorisation of the page captures the breadth of local services
+    // we cover. The full list is defined in app/page.tsx POPULAR_SERVICES.
+    const required = [
+      "Electrician",
+      "Plumber",
+      "AC Repair",
+      "Carpenter",
+      "Painter",
+      "Tutor",
+      "Tailor",
+      "Photographer",
+    ];
+    for (const name of required) {
+      expect(
+        html,
+        `homepage initial HTML must contain "${name}"`
+      ).toContain(name);
+    }
+  });
+
+  test("Phase 1-B — homepage does NOT show a visible brand-variant sentence", async ({
+    request,
+  }) => {
+    const res = await request.get(appUrl("/"));
+    const html = await res.text();
+    // Per the Phase 1-B correction: the visible "People also search for"
+    // sentence was removed because it read as brand-anxiety copy. The
+    // typo coverage now lives ONLY in the Organization.alternateName
+    // JSON-LD asserted by a separate test below. This guard prevents a
+    // future commit from accidentally re-introducing the visible line.
+    expect(html).not.toMatch(/People also search for/i);
+    expect(html).not.toContain('data-testid="kk-home-seo-brand-variants"');
+  });
+
+  test("Phase 1-B — SEO footer band has its core testids", async ({
+    request,
+  }) => {
+    const res = await request.get(appUrl("/"));
+    const html = await res.text();
+    // Hard-pin the structural anchors so a future refactor (e.g. splitting
+    // the section into a separate component) can't silently drop them.
+    // The brand-variant testid is intentionally absent — see the
+    // "does NOT show a visible brand-variant sentence" test above.
+    expect(html).toContain('data-testid="kk-home-seo-h1"');
+    expect(html).toContain('data-testid="kk-home-seo-intro"');
+    expect(html).toContain('data-testid="kk-home-seo-popular-list"');
+  });
+
+  test("Phase 1-B — provider CTA copy is Devanagari-localised (not duplicated)", async ({
+    request,
+  }) => {
+    // The dark "For Service Providers" section in HomePageClient.tsx
+    // was refreshed again — this time in Hindi (Devanagari) so local
+    // Jodhpur providers feel directly addressed in their own
+    // language. Only ONE provider CTA ships — the duplicate guard at
+    // the bottom of this test enforces that contract. Every prior
+    // English-only and Hinglish-romanised intermediate copy is
+    // asserted absent below so a future commit can't silently revert
+    // to an older voice.
+    //
+    // Note: SSR HTML carries Devanagari characters as raw UTF-8 (Next
+    // sets <meta charset="utf-8">), so substring matching on the
+    // literal characters is the correct way to assert presence.
+    const res = await request.get(appUrl("/"));
+    const html = await res.text();
+
+    // ── Positive copy assertions — the new Devanagari strings ──
+    // Eyebrow label — the visual is uppercased via CSS, but the
+    // literal HTML text is "For Service Providers". A case-
+    // insensitive regex passes either form so a future commit that
+    // drops the CSS `uppercase` and writes the label in all-caps
+    // directly is also accepted.
+    expect(html).toMatch(/for service providers/i);
+    // Heading refreshed to the "बनिए उस सवाल का जवाब, जब कोई पूछे —
+    // ये काम कौन करेगा?" two-line form. Asserting each line
+    // separately (instead of the full concatenated string) tolerates
+    // the inline <br /> between them without making the regex
+    // sensitive to surrounding whitespace.
+    expect(html).toContain("बनिए उस सवाल का जवाब");
+    expect(html).toContain("ये काम कौन करेगा?");
+    // Phase 1-B styling refinement: the city name "जोधपुर" is wrapped
+    // in an emphasis <span> (text-lg/sm:text-xl + orange-400 +
+    // semibold). "वासी" is a separate run. Asserting both words
+    // individually (rather than the previous concatenated
+    // "जोधपुरवासी") pins the split.
+    expect(html).toContain("जोधपुर");
+    expect(html).toContain("वासी");
+    expect(html).toContain("आपके हुनर");
+    expect(html).toContain("रोज़ाना");
+    expect(html).toContain("आपको ढूंढ न पा रहे");
+    // Brand-orange in-line highlight on "Kaun Karega" was added in
+    // the second paragraph. The substring appears elsewhere on the
+    // page too (JSON-LD `name` / `<title>`), so this assertion is a
+    // presence check, not an in-CTA-only one.
+    expect(html).toContain("Kaun Karega");
+    expect(html).toContain("Jodhpur"); // still in title/JSON-LD
+    expect(html).toContain("Register as Provider");
+    // Bullet copy mixes English platform-mechanics with Hindi action
+    // labels. Pin both shapes so a copy edit can't silently collapse
+    // one direction.
+    expect(html).toContain("Free registration to start");
+    expect(html).toContain("अपनी सर्विस और एरिया चुनें");
+    expect(html).toContain("लोकल ग्राहकों से काम की रिक्वेस्ट पाएं");
+    expect(html).toContain("Leads को provider dashboard से manage करें");
+
+    // ── Negative guards — every prior shipped copy variant ──
+    // English-only headings + bullets.
+    expect(html).not.toContain("Grow your business with Kaun Karega");
+    expect(html).not.toContain("List your service business");
+    expect(html).not.toContain("Zero upfront cost or commission");
+    expect(html).not.toContain("Customers come to you — no cold calling");
+    expect(html).not.toContain("Choose your service area");
+    // Hinglish-romanised intermediate variant.
+    expect(html).not.toContain("Kya aap koi kaam ya service karte hain?");
+    expect(html).not.toContain("Apni service aur area choose karein");
+    // Earlier Devanagari variant where the city + "वासी" were
+    // concatenated. The styling refinement explicitly splits them so
+    // "जोधपुर" can carry its own emphasis. Pin the split.
+    expect(html).not.toContain("जोधपुरवासी");
+    // Prior heading copy was the direct question "क्या आप कोई काम...".
+    // The new heading reframes it as an aspiration ("बनिए उस सवाल का
+    // जवाब..."). Pin that the reframing stuck.
+    expect(html).not.toContain("क्या आप कोई काम, हुनर या सर्विस करते हैं?");
+
+    // Exactly one CTA button to /provider/register should appear in
+    // the homepage HTML (this section's button). A second occurrence
+    // would mean a duplicate CTA was added somewhere else.
+    const registerOccurrences = html.split("Register as Provider").length - 1;
+    expect(
+      registerOccurrences,
+      `expected exactly 1 "Register as Provider" CTA, got ${registerOccurrences}`
+    ).toBe(1);
+  });
+
   test("Organization JSON-LD lists curated brand alternateNames", async ({
     request,
   }) => {
@@ -237,6 +391,16 @@ test.describe("SEO Phase 1-A — private routes carry noindex (where layout exis
     // Sanity that the metadata changes did not break the homepage
     // render. The homepage is a large client component; just confirm
     // it returns HTTP 200 and does not throw during initial paint.
+    //
+    // Same anonymous-visitor whoami-401 noise that e2e/public/home.spec.ts
+    // allowlists — the disclaimer bootstrap in HomePageClient.tsx
+    // legitimately probes /api/auth/whoami on mount. The 401 is the
+    // expected unauthenticated response; the hook short-circuits.
+    // Whether the 401 lands inside the test's console capture window
+    // depends on dev-server warmth + Playwright timing, so the test
+    // was previously flake-sensitive. Allow-listing locks it down.
+    diag.allowConsoleError(/Failed to load resource.*401/);
+    diag.allowHttpError(/whoami/);
     await gotoPath(page, "/");
     await expect(page).toHaveTitle(/Kaun Karega/);
     diag.assertClean();
