@@ -7,6 +7,8 @@ import confetti from "canvas-confetti";
 import InAppToastStack, { type InAppToast } from "@/components/InAppToastStack";
 import ProviderAliasSubmitter from "@/components/ProviderAliasSubmitter";
 import { PROVIDER_PROFILE_UPDATED_EVENT } from "@/components/sidebarEvents";
+import { useTypewriterPlaceholder } from "@/hooks/useTypewriterPlaceholder";
+import { isProviderWorkIntakeEnabled } from "@/lib/featureFlags";
 import {
   PROVIDER_PLEDGE_TEXT,
   PROVIDER_PLEDGE_VERSION,
@@ -228,6 +230,21 @@ function capitalizeWords(text: string) {
     .join(" ");
 }
 
+// Animated placeholder examples for the Phase-1 work-intake textbox. General,
+// respectful examples spanning different service types — deliberately NOT
+// sweeper-specific (those were discussion-only). Mixed Hindi / Hinglish /
+// Marwari-flavoured Devanagari + Latin so providers see they can write in
+// whatever script/language is easiest. These are PLACEHOLDER hints only; they
+// are never submitted and never influence category selection in this phase.
+const WORK_INTAKE_HINTS = [
+  "main ghar ka repair ka kaam karta hu...",
+  "मैं लोहे और welding ka kaam karta हूँ...",
+  "main cooler, fan aur chhote repair karta hu...",
+  "मैं decoration aur event ka kaam करता हूँ...",
+  "main furniture repair aur polish ka kaam karta hu...",
+  "मैं packing, shifting aur loading ka kaam करता हूँ...",
+];
+
 function ProviderRegisterPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -393,6 +410,41 @@ function ProviderRegisterPageInner() {
 
   const editTarget = searchParams.get("edit");
   const isEditMode = editTarget === "services" || editTarget === "areas";
+
+  // ── Provider Work Intake (Phase 1 — UI foundation only) ────────────────
+  // Gated entirely behind NEXT_PUBLIC_PROVIDER_WORK_INTAKE_ENABLED. When the
+  // flag is off, `workIntakeEnabled` is false, the block below never renders,
+  // and the existing manual category flow is byte-for-byte unchanged.
+  //
+  // IMPORTANT (Phase 1 rules): this textbox is LOCAL STATE ONLY. It is never
+  // sent to any backend, never calls AI, and never touches selectedCategories,
+  // selectedWorkTags, customCategoryKeys, or handleSubmit. It is purely the UI
+  // shell the AI resolve flow will plug into in a later phase.
+  const workIntakeEnabled = isProviderWorkIntakeEnabled();
+  // UI-only: whether the "Bol ke samjhaaye" explanation panel is open. The
+  // intake input itself reuses the existing `catQuery` state as the single
+  // source of truth — no second text state.
+  const [showBolExplanation, setShowBolExplanation] = useState(false);
+  // Animate the existing category-search placeholder only while it is empty and
+  // no category is picked yet, so the typewriter never fights real typing.
+  // `catQuery` / `selectedCategories` are declared above; `isMaxReached` is
+  // derived later, so the cap is expressed here via the raw count. Hook is
+  // SSR-safe and self-cleans its timers.
+  const { text: workIntakePlaceholder } = useTypewriterPlaceholder(
+    WORK_INTAKE_HINTS,
+    {
+      enabled:
+        workIntakeEnabled &&
+        catQuery.trim() === "" &&
+        selectedCategories.length < MAX_CATEGORIES,
+      // Faster cycle so more example hints surface quickly while staying
+      // readable (Phase-1 polish). Overridden per call site; the hook's own
+      // defaults are unchanged so other future consumers are unaffected.
+      typeMs: 40,
+      deleteMs: 24,
+      pauseCompleteMs: 650,
+    }
+  );
 
   useEffect(() => {
     const userPhone = getUserPhone();
@@ -1666,22 +1718,113 @@ function ProviderRegisterPageInner() {
                   </span>
                 </div>
                 <p className="mb-2 text-xs text-slate-500">(Choose the services you actually provide)</p>
-                <input
-                  type="text"
-                  value={catQuery}
-                  onChange={(event) => {
-                    const formatted = capitalizeWords(event.target.value);
-                    setCatQuery(formatted);
-                  }}
-                  disabled={isMaxReached || showSuccessCelebration}
-                  placeholder={
-                    isMaxReached
-                      ? "You can choose only one main service category"
-                      : "Search categories"
-                  }
-                  data-testid="kk-category-search"
-                  className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 shadow-sm outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-200"
-                />
+
+                {/* ── Provider Work Intake (Phase 1 UI shell) ──────────────
+                    Renders ONLY behind NEXT_PUBLIC_PROVIDER_WORK_INTAKE_ENABLED.
+                    Compact help header above the EXISTING category search — no
+                    separate input. The category search below doubles as the
+                    natural-language intake. Purely cosmetic in this phase: it
+                    reuses `catQuery`, is never submitted differently, and does
+                    not change the manual category selection behaviour. */}
+                {workIntakeEnabled ? (
+                  <div
+                    data-testid="kk-work-intake-section"
+                    className="mb-3 rounded-xl border border-orange-200 bg-orange-50/60 px-3 py-2.5"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-sm font-bold text-[#003d20]">
+                        What work do you do?
+                      </p>
+                      <button
+                        type="button"
+                        data-testid="kk-bol-ke-samjhaaye"
+                        aria-expanded={showBolExplanation}
+                        onClick={() => setShowBolExplanation((v) => !v)}
+                        className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-[#003d20] bg-white px-3 py-1.5 text-xs font-bold text-[#003d20] shadow-sm transition hover:bg-[#003d20] hover:text-white"
+                      >
+                        <span aria-hidden="true">💬</span>
+                        Bol ke samjhaaye
+                      </button>
+                    </div>
+
+                    {showBolExplanation ? (
+                      <div
+                        data-testid="kk-bol-explanation"
+                        className="mt-2.5 rounded-xl border border-orange-200 bg-white px-3 py-2.5 text-xs leading-5 text-slate-700"
+                      >
+                        <p>
+                          Apna kaam simple bhasha mein bataiye. Jaise aap
+                          customer ko samjhate ho, waise hi yahan likhiye. Kaun
+                          Karega aapke kaam ko sahi service aur work type mein
+                          set karne mein madad karega.
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => setShowBolExplanation(false)}
+                          className="mt-2 inline-flex items-center rounded-full bg-[#003d20] px-3 py-1 text-[11px] font-semibold text-white transition hover:bg-[#002a16]"
+                        >
+                          Theek hai
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                {/* The existing category search is the SINGLE intake input. When
+                    the flag is on and the field is empty, a dark/bold overlay
+                    renders the animated Hindi/Hinglish hint (native placeholder
+                    is too light); the overlay is pointer-events-none so taps and
+                    typing reach the input, and the native placeholder is made
+                    transparent only while the overlay shows. When the flag is
+                    off, the input renders exactly as before. */}
+                {(() => {
+                  const showIntakeOverlay =
+                    workIntakeEnabled &&
+                    catQuery === "" &&
+                    !isMaxReached &&
+                    !showSuccessCelebration;
+                  return (
+                    <div className="relative">
+                      <input
+                        type="text"
+                        value={catQuery}
+                        onChange={(event) => {
+                          const formatted = capitalizeWords(event.target.value);
+                          setCatQuery(formatted);
+                        }}
+                        disabled={isMaxReached || showSuccessCelebration}
+                        aria-label={
+                          workIntakeEnabled
+                            ? "Search a service or describe your work"
+                            : undefined
+                        }
+                        placeholder={
+                          isMaxReached
+                            ? "You can choose only one main service category"
+                            : "Search categories"
+                        }
+                        data-testid="kk-category-search"
+                        className={`w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 shadow-sm outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-200 ${
+                          showIntakeOverlay ? "placeholder:text-transparent" : ""
+                        }`}
+                      />
+                      {showIntakeOverlay ? (
+                        <div
+                          aria-hidden="true"
+                          data-testid="kk-work-intake-overlay"
+                          className="pointer-events-none absolute inset-0 flex items-center truncate px-4 text-sm font-semibold text-black"
+                        >
+                          {workIntakePlaceholder || "Search categories"}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })()}
+                {workIntakeEnabled ? (
+                  <p className="mt-2 text-[11px] text-slate-500">
+                    Search a service or describe your work in your own words.
+                  </p>
+                ) : null}
                 {/* Discoverability hint — the "+ Add as new service"
                     affordance below only surfaces after 3+ chars with no
                     match. The chip strip is empty by default (no full
