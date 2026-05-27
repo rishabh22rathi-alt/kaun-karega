@@ -131,6 +131,49 @@ test.describe("SEO Phase 1-A — homepage HTML", () => {
     // Google understands the local relevance.
     expect(html).toMatch(/"name"\s*:\s*"Jodhpur"/);
   });
+
+  test("Organization JSON-LD lists curated brand alternateNames", async ({
+    request,
+  }) => {
+    // Phase 1-A.1 micro-patch — alternateName helps Google's Knowledge
+    // Panel associate natural search variants with the canonical brand.
+    // The accepted list is small and curated; the rejected list below
+    // is asserted absent so a future commit cannot quietly inflate the
+    // array with low-quality typos that would discount the whole JSON-LD.
+    const res = await request.get(appUrl("/"));
+    const html = await res.text();
+
+    expect(html).toMatch(/"alternateName"\s*:\s*\[/);
+    for (const accepted of [
+      "Kon Karega",
+      "Kaun Krega",
+      "KaunKarega",
+      "कौन करेगा",
+      "Konkrega",
+    ]) {
+      expect(
+        html,
+        `alternateName must include "${accepted}"`
+      ).toContain(accepted);
+    }
+
+    // Guardrail — these variants are explicitly excluded per the
+    // brand-typo plan. Rough misspellings dilute the alternateName
+    // quality signal; double-compressed forms and letter-swaps are
+    // already handled by Google's spell-correction.
+    for (const rejected of [
+      "konkayega",
+      "kankrega",
+      "kaunkaregaa",
+      "Kon Krega",
+      "Koun Karega",
+    ]) {
+      expect(
+        html,
+        `alternateName must NOT include "${rejected}"`
+      ).not.toContain(rejected);
+    }
+  });
 });
 
 test.describe("SEO Phase 1-A — private routes carry noindex (where layout exists)", () => {

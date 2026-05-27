@@ -118,6 +118,30 @@ const STRUCTURED_DATA = {
       "@type": "Organization",
       "@id": `${SITE_URL}/#organization`,
       name: SITE_NAME,
+      // Curated brand-alias list for Knowledge Panel matching. Each
+      // entry is a natural variant a real user types or writes:
+      //   - "Kon Karega" — common English-transliteration dropping
+      //     the "au" diphthong.
+      //   - "Kaun Krega" — common vowel-drop typing error.
+      //   - "KaunKarega" — single-word/handle/URL form.
+      //   - "कौन करेगा" — canonical Devanagari script form.
+      //   - "Konkrega" — concatenated vowel-drop, observed in casual
+      //     chat-style searches.
+      //
+      // INTENTIONALLY EXCLUDED to keep the array credible (Google
+      // discounts JSON-LD with low-quality alternateName arrays):
+      // rough misspellings like "konkayega", "kankrega",
+      // "kaunkaregaa", letter-swaps like "Koun Karega", and
+      // double-compressed forms like "Kon Krega". Add only after
+      // Search Console proves real query volume — see the brand-typo
+      // planning notes for the evidence threshold.
+      alternateName: [
+        "Kon Karega",
+        "Kaun Krega",
+        "KaunKarega",
+        "कौन करेगा",
+        "Konkrega",
+      ],
       url: SITE_URL,
       logo: `${SITE_URL}${SITE_OG_IMAGE}`,
       description: SITE_DESCRIPTION,
