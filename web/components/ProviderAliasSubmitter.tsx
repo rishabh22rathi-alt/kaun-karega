@@ -25,6 +25,13 @@ type SubmittedCustom = {
   error?: string;
 };
 
+// Friendly, code-free messages shown to providers. Internal backend error
+// codes (e.g. PROVIDER_DOES_NOT_OFFER_CATEGORY) must NEVER reach the UI.
+const MSG_CATEGORY_NOT_SAVED =
+  "You selected a new main service. Please tap Save Changes first, then choose work terms.";
+const MSG_GENERIC_SAVE_ERROR =
+  "Something went wrong while saving this work term. Please take a screenshot and send it to Kaun Karega support on WhatsApp.";
+
 function humanizeAliasError(code: string): string {
   switch (code) {
     case "ALIAS_ALREADY_EXISTS":
@@ -32,7 +39,9 @@ function humanizeAliasError(code: string): string {
     case "ALIAS_COLLIDES_WITH_CANONICAL":
       return "Matches existing category";
     case "PROVIDER_DOES_NOT_OFFER_CATEGORY":
-      return "Not your category";
+      // Unsaved new main category — guide to Save Changes instead of the
+      // cryptic "Not your category".
+      return MSG_CATEGORY_NOT_SAVED;
     case "ALIAS_TOO_LONG":
       return "Too long";
     case "MISSING_FIELDS":
@@ -41,7 +50,8 @@ function humanizeAliasError(code: string): string {
     case "CANONICAL_CATEGORY_NOT_FOUND":
       return "Profile not loaded";
     default:
-      return "Submit failed";
+      // Never echo an unknown/raw code; point the provider to support.
+      return MSG_GENERIC_SAVE_ERROR;
   }
 }
 
@@ -200,7 +210,14 @@ export default function ProviderAliasSubmitter({
           : prev.filter((s) => norm(s) !== norm(label))
       );
       const code = err instanceof Error ? err.message : "save_failed";
-      setSavedTermsError(`Could not save that change (${code}). Please try again.`);
+      // Map to a friendly, code-free message. PROVIDER_DOES_NOT_OFFER_CATEGORY
+      // means the provider picked a new main category but hasn't saved it yet;
+      // everything else points to support. The raw code is never rendered.
+      setSavedTermsError(
+        code === "PROVIDER_DOES_NOT_OFFER_CATEGORY"
+          ? MSG_CATEGORY_NOT_SAVED
+          : MSG_GENERIC_SAVE_ERROR
+      );
     } finally {
       setPendingChip((prev) => {
         const next = new Set(prev);

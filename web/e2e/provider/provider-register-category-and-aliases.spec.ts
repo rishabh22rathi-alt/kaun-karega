@@ -36,7 +36,7 @@ import {
   buildProviderDashboardResponse,
 } from "../_support/data";
 import { gotoPath } from "../_support/home";
-import { jsonOk, mockJson, mockKkActions } from "../_support/routes";
+import { jsonError, jsonOk, mockJson, mockKkActions } from "../_support/routes";
 import { appUrl } from "../_support/runtime";
 import { test, expect } from "../_support/test";
 
@@ -316,6 +316,69 @@ test.describe("Provider edit: ProviderAliasSubmitter mounts with work-term flow"
     await expect(
       page.getByText(/Pending admin approval/i)
     ).toBeVisible({ timeout: 5_000 });
+  });
+
+  test("403 PROVIDER_DOES_NOT_OFFER_CATEGORY shows friendly Save-Changes message, no raw code, chip reverts", async ({
+    page,
+  }) => {
+    // Simulate the unsaved-new-category case: backend rejects the work-term
+    // save because provider_services still holds the old category.
+    await mockJson(page, "**/api/provider/work-terms", ({ request }) => {
+      if (request.method() === "POST") {
+        return jsonError("PROVIDER_DOES_NOT_OFFER_CATEGORY", 403);
+      }
+      if (request.method() === "GET") return jsonOk({ items: [] });
+      return jsonOk({});
+    });
+
+    await gotoPath(page, "/provider/register?edit=services");
+    await expect(page.getByText(/Live work terms/i)).toBeVisible({
+      timeout: 5_000,
+    });
+
+    const chip = page.getByRole("button", { name: /^AC Doctor$/ });
+    await chip.click();
+
+    // Friendly, code-free guidance.
+    await expect(
+      page.getByText(
+        /You selected a new main service\. Please tap Save Changes first, then choose work terms\./i
+      )
+    ).toBeVisible({ timeout: 5_000 });
+    // Raw internal code must never reach the UI.
+    await expect(page.getByText(/PROVIDER_DOES_NOT_OFFER_CATEGORY/)).toHaveCount(
+      0
+    );
+    // Optimistic selection reverts after the failed save.
+    await expect(chip).toHaveAttribute("aria-pressed", "false");
+  });
+
+  test("unknown 500 save error shows support message, no raw HTTP/internal code", async ({
+    page,
+  }) => {
+    await mockJson(page, "**/api/provider/work-terms", ({ request }) => {
+      if (request.method() === "POST") {
+        return jsonError("INTERNAL_SERVER_ERROR", 500);
+      }
+      if (request.method() === "GET") return jsonOk({ items: [] });
+      return jsonOk({});
+    });
+
+    await gotoPath(page, "/provider/register?edit=services");
+    await expect(page.getByText(/Live work terms/i)).toBeVisible({
+      timeout: 5_000,
+    });
+
+    await page.getByRole("button", { name: /^AC Doctor$/ }).click();
+
+    await expect(
+      page.getByText(
+        /Something went wrong while saving this work term\. Please take a screenshot and send it to Kaun Karega support on WhatsApp\./i
+      )
+    ).toBeVisible({ timeout: 5_000 });
+    // No raw code or HTTP status leaked.
+    await expect(page.getByText(/INTERNAL_SERVER_ERROR/)).toHaveCount(0);
+    await expect(page.getByText(/HTTP_500/)).toHaveCount(0);
   });
 });
 
