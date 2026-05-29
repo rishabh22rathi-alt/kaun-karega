@@ -7,20 +7,6 @@ import confetti from "canvas-confetti";
 import InAppToastStack, { type InAppToast } from "@/components/InAppToastStack";
 import ProviderAliasSubmitter from "@/components/ProviderAliasSubmitter";
 import { PROVIDER_PROFILE_UPDATED_EVENT } from "@/components/sidebarEvents";
-import { useTypewriterPlaceholder } from "@/hooks/useTypewriterPlaceholder";
-import {
-  isProviderWorkIntakeAssistantEnabled,
-  isProviderWorkIntakeConfirmEnabled,
-  isProviderWorkIntakeEnabled,
-} from "@/lib/featureFlags";
-import ProviderWorkIntakeConfirm, {
-  type IntakeState,
-} from "@/components/ProviderWorkIntakeConfirm";
-import ProviderWorkIntakeAssistant, {
-  type AssistantApplyGreen,
-  type AssistantApplyYellowProposal,
-} from "@/components/provider/ProviderWorkIntakeAssistant";
-import { fetchResolve } from "@/lib/workIntake/clientResolve";
 import {
   PROVIDER_PLEDGE_TEXT,
   PROVIDER_PLEDGE_VERSION,
@@ -189,22 +175,6 @@ function uniqueCategoryValues(list: string[]): string[] {
   return uniqueStrings(list.map((item) => normalizeCategoryInput(item)));
 }
 
-// Heuristic sentence detector used by the Phase 2B sentence guard. A "sentence"
-// is anything that's too long OR has too many whitespace-separated tokens to
-// reasonably be a category name. Short Title-Case names ("Pet Grooming",
-// "Packers Movers", "Event Decoration") stay below both bounds; provider
-// natural-language inputs ("main packing shifting loading karta hu") cross them.
-// Pure function so the test boundary is just the constants above.
-const SENTENCE_GUARD_MAX_LEN = 30;
-const SENTENCE_GUARD_MAX_WORDS = 4;
-function looksLikeSentence(text: string): boolean {
-  const normalized = normalizeCategoryInput(text);
-  if (!normalized) return false;
-  if (normalized.length > SENTENCE_GUARD_MAX_LEN) return true;
-  const wordCount = normalized.split(/\s+/).filter(Boolean).length;
-  return wordCount > SENTENCE_GUARD_MAX_WORDS;
-}
-
 async function parseJsonSafe(response: Response): Promise<any> {
   const text = await response.text();
   if (!text) return null;
@@ -257,21 +227,6 @@ function capitalizeWords(text: string) {
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ");
 }
-
-// Animated placeholder examples for the Phase-1 work-intake textbox. General,
-// respectful examples spanning different service types — deliberately NOT
-// sweeper-specific (those were discussion-only). Mixed Hindi / Hinglish /
-// Marwari-flavoured Devanagari + Latin so providers see they can write in
-// whatever script/language is easiest. These are PLACEHOLDER hints only; they
-// are never submitted and never influence category selection in this phase.
-const WORK_INTAKE_HINTS = [
-  "main ghar ka repair ka kaam karta hu...",
-  "मैं लोहे और welding ka kaam karta हूँ...",
-  "main cooler, fan aur chhote repair karta hu...",
-  "मैं decoration aur event ka kaam करता हूँ...",
-  "main furniture repair aur polish ka kaam karta hu...",
-  "मैं packing, shifting aur loading ka kaam करता हूँ...",
-];
 
 function ProviderRegisterPageInner() {
   const router = useRouter();
@@ -419,30 +374,6 @@ function ProviderRegisterPageInner() {
   const [pledgeAccepted, setPledgeAccepted] = useState(false);
   const [pledgeError, setPledgeError] = useState<string | null>(null);
 
-  const showAssistantAppliedHint = () => {
-    // After the assistant applies its resolution + plays the thanking
-    // voice/visual feedback, surface the post-submit reminder so the provider
-    // knows they still need to tap Submit Application. The toast auto-dismiss
-    // is slightly longer than the page's existing "Saved" toast so providers
-    // have time to read a longer Hinglish sentence.
-    const id = `aa-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    setToasts((current) => [
-      ...current,
-      {
-        id,
-        title: "Aage badhein",
-        // Edit mode persists through /api/provider/update (the "Save Changes"
-        // button), not the registration submit, so the reminder differs.
-        message: isEditMode
-          ? "Ab badlav save karne ke liye 'Save Changes' dabayein."
-          : "Ab registration complete karne ke liye form submit karein.",
-      },
-    ]);
-    window.setTimeout(() => {
-      setToasts((current) => current.filter((t) => t.id !== id));
-    }, 4500);
-  };
-
   const showSuccessToast = (message: string) => {
     const id = `save-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     setToasts((current) => [...current, { id, title: "Saved", message }]);
@@ -462,403 +393,6 @@ function ProviderRegisterPageInner() {
 
   const editTarget = searchParams.get("edit");
   const isEditMode = editTarget === "services" || editTarget === "areas";
-
-  // ── Provider Work Intake (Phase 1 — UI foundation only) ────────────────
-  // Gated entirely behind NEXT_PUBLIC_PROVIDER_WORK_INTAKE_ENABLED. When the
-  // flag is off, `workIntakeEnabled` is false, the block below never renders,
-  // and the existing manual category flow is byte-for-byte unchanged.
-  //
-  // IMPORTANT (Phase 1 rules): this textbox is LOCAL STATE ONLY. It is never
-  // sent to any backend, never calls AI, and never touches selectedCategories,
-  // selectedWorkTags, customCategoryKeys, or handleSubmit. It is purely the UI
-  // shell the AI resolve flow will plug into in a later phase.
-  const workIntakeEnabled = isProviderWorkIntakeEnabled();
-  // Voice-first assistant. Available in BOTH new-registration and edit mode.
-  // In edit mode the assistant only REPLACES the single selected main category
-  // (the slot is pre-filled from the provider's saved profile); it never auto-
-  // writes work terms — ProviderAliasSubmitter remains the work-term authority,
-  // and /api/provider/update stays the only final write path. Gated solely on
-  // the master flag so a misconfigured deploy can't half-enable it.
-  const workIntakeAssistantEnabled = isProviderWorkIntakeAssistantEnabled();
-  // Phase 2B — "Mera kaam samjho" inline confirmation flow. Forced OFF in edit
-  // mode (ProviderAliasSubmitter handles the equivalent surface against an
-  // existing provider row) and when the Phase 1 flag is off (the trigger lives
-  // inside the Phase 1 panel). Also forced OFF when the voice-first assistant
-  // flag is ON — the assistant modal replaces this inline UI as the production
-  // AI surface. The inline path stays for QA bisection when the assistant flag
-  // is off.
-  const workIntakeConfirmEnabled =
-    !isEditMode &&
-    !workIntakeAssistantEnabled &&
-    isProviderWorkIntakeConfirmEnabled();
-  const [assistantOpen, setAssistantOpen] = useState(false);
-  const [intake, setIntake] = useState<IntakeState>({ kind: "idle" });
-  // Per-canonical bag of AI-suggested tags that aren't yet active aliases.
-  // Folded into the existing `workTags` JSON payload at submit time so no new
-  // wire field is introduced. Tags whose isExistingAlias=true go into
-  // selectedWorkTags directly (same path as a manual chip tap).
-  const [pendingWorkTags, setPendingWorkTags] = useState<
-    Record<string, string[]>
-  >({});
-  // AbortController for the in-flight resolve so a stale response from a
-  // previous catQuery never overwrites the panel after the user starts typing
-  // again. Ref (not state) — we never render off this and React re-renders
-  // would churn the controller unnecessarily.
-  const intakeAbortRef = useRef<AbortController | null>(null);
-  // UI-only: whether the "Bol ke samjhaaye" explanation panel is open. The
-  // intake input itself reuses the existing `catQuery` state as the single
-  // source of truth — no second text state.
-  const [showBolExplanation, setShowBolExplanation] = useState(false);
-  // Animate the existing category-search placeholder only while it is empty and
-  // no category is picked yet, so the typewriter never fights real typing.
-  // `catQuery` / `selectedCategories` are declared above; `isMaxReached` is
-  // derived later, so the cap is expressed here via the raw count. Hook is
-  // SSR-safe and self-cleans its timers.
-  const { text: workIntakePlaceholder } = useTypewriterPlaceholder(
-    WORK_INTAKE_HINTS,
-    {
-      enabled:
-        workIntakeEnabled &&
-        catQuery.trim() === "" &&
-        selectedCategories.length < MAX_CATEGORIES,
-      // Faster cycle so more example hints surface quickly while staying
-      // readable (Phase-1 polish). Overridden per call site; the hook's own
-      // defaults are unchanged so other future consumers are unaffected.
-      typeMs: 40,
-      deleteMs: 24,
-      pauseCompleteMs: 650,
-    }
-  );
-
-  // ── Phase 2B — intake resolve handlers ───────────────────────────────────
-  // Cleanup: any time the page unmounts mid-resolve, abort the request so we
-  // don't fire a setState on an unmounted component.
-  useEffect(() => {
-    return () => {
-      intakeAbortRef.current?.abort();
-    };
-  }, []);
-
-  const handleRunIntake = async () => {
-    if (!workIntakeConfirmEnabled) return;
-    const text = catQuery.trim();
-    if (text.length < 3) return;
-    if (selectedCategories.length >= MAX_CATEGORIES) return;
-
-    // Cancel any prior in-flight resolve so a slow earlier request can't
-    // override the response we're about to render.
-    intakeAbortRef.current?.abort();
-    const controller = new AbortController();
-    intakeAbortRef.current = controller;
-
-    setIntake({ kind: "resolving", text });
-
-    try {
-      const data = await fetchResolve(text, selectedCityCode || undefined, {
-        signal: controller.signal,
-      });
-
-      // If a newer trigger / catQuery edit replaced our controller, drop this
-      // response — the user's already moved on.
-      if (intakeAbortRef.current !== controller) return;
-      intakeAbortRef.current = null;
-
-      if (!data.ok) {
-        setIntake({ kind: "manual", reason: data.reason });
-        return;
-      }
-      if (data.blocked || data.safety === "red") {
-        setIntake({ kind: "red", text });
-        return;
-      }
-      // Multi-category disambiguation takes precedence over yellow/green so
-      // that a misbehaving model that ALSO set mainCategory can't bypass the
-      // single-choice gate. The route already enforced ≥2 active matches.
-      if (
-        data.needsSingleCategoryChoice &&
-        Array.isArray(data.possibleCategories) &&
-        data.possibleCategories.length >= 2
-      ) {
-        setIntake({
-          kind: "choose-category",
-          text,
-          possibleCategories: data.possibleCategories,
-        });
-        return;
-      }
-      if (data.safety === "yellow" || !data.mainCategory) {
-        setIntake({
-          kind: "yellow",
-          text,
-          mainCategory: data.mainCategory,
-          workTags: data.workTags,
-          reason: data.reason,
-        });
-        return;
-      }
-      // safety === green AND mainCategory present. Existence is server-
-      // verified; we trust isExisting=true here as the closed-set gate.
-      setIntake({
-        kind: "green",
-        text,
-        mainCategory: data.mainCategory,
-        workTags: data.workTags,
-      });
-    } catch (err) {
-      // Caller-initiated aborts are intentional — leave state alone, the
-      // input-change effect already moved us to idle.
-      if (err && typeof err === "object" && (err as { name?: string }).name === "AbortError") {
-        return;
-      }
-      if (intakeAbortRef.current === controller) intakeAbortRef.current = null;
-      setIntake({ kind: "manual", reason: "AI_UNAVAILABLE" });
-    }
-  };
-
-  const dismissIntake = () => {
-    intakeAbortRef.current?.abort();
-    intakeAbortRef.current = null;
-    setIntake({ kind: "idle" });
-  };
-
-  const retryIntake = () => {
-    // "Try different wording" — return to idle so the panel disappears; we
-    // intentionally don't auto-rerun: the provider needs to type new text.
-    dismissIntake();
-  };
-
-  // ── Assistant adapters (Phase 2B voice rework) ────────────────────────────
-  // These callbacks receive resolution data DIRECTLY from the assistant modal
-  // (which owns its own state machine) and route it through the exact same
-  // form-mutation paths the inline-confirm handlers use. The voice path and
-  // the inline-confirm path therefore land identical wire payloads.
-  const applyGreenFromAssistant = (data: AssistantApplyGreen) => {
-    const { mainCategory, workTags } = data;
-    if (!mainCategory.isExisting) return;
-    const canonical = mainCategory.canonical;
-    const canonKey = categoryKey(canonical);
-
-    setSelectedCategories((prev) => {
-      // Edit mode = single-category REPLACE. The slot is pre-filled from the
-      // provider's saved profile, so appending would hit MAX_CATEGORIES and
-      // no-op; instead swap the one category for the assistant's pick.
-      if (isEditMode) return [canonical];
-      if (hasCategoryKey(prev, canonKey)) return prev;
-      if (prev.length >= MAX_CATEGORIES) return prev;
-      return [...prev, canonical];
-    });
-    setCustomCategoryKeys((prev) => prev.filter((k) => k !== canonKey));
-
-    // Work-term persistence is INTENTIONALLY skipped in edit mode. There the
-    // work-term authority is ProviderAliasSubmitter (writes to
-    // /api/provider/work-terms + /api/provider/aliases with admin review);
-    // /api/provider/update never carries workTags, so populating these
-    // register-only states would falsely imply the tags were saved. The
-    // assistant still SHOWS its understanding in the modal — it just doesn't
-    // pretend to persist tags here.
-    if (!isEditMode) {
-      const existingLabels: string[] = [];
-      const newLabels: string[] = [];
-      for (const tag of workTags) {
-        const label = String(tag.label || "").trim();
-        if (!label) continue;
-        if (tag.isExistingAlias) existingLabels.push(label);
-        else newLabels.push(label);
-      }
-      if (existingLabels.length > 0) {
-        setSelectedWorkTags((prev) => {
-          const current = prev[canonKey] || [];
-          const merged = [...current];
-          for (const label of existingLabels) {
-            if (!merged.includes(label)) merged.push(label);
-          }
-          if (merged.length === current.length) return prev;
-          return { ...prev, [canonKey]: merged };
-        });
-      }
-      if (newLabels.length > 0) {
-        setPendingWorkTags((prev) => {
-          const current = prev[canonKey] || [];
-          const merged = [...current];
-          for (const label of newLabels) {
-            if (!merged.includes(label)) merged.push(label);
-          }
-          if (merged.length === current.length) return prev;
-          return { ...prev, [canonKey]: merged };
-        });
-      }
-    }
-    setCatQuery("");
-    setSubmitError("");
-    setSuccess(null);
-    showAssistantAppliedHint();
-  };
-
-  const applyYellowProposalFromAssistant = (
-    data: AssistantApplyYellowProposal
-  ) => {
-    const proposed = (data.mainCategory.canonical ?? "").trim();
-    if (!proposed) return;
-    if (data.mainCategory.isExisting) return; // defensive — only new proposals
-    const key = categoryKey(proposed);
-    const selectedKeys = toCategoryLookup(selectedCategories);
-    if (isEditMode) {
-      // Single-category REPLACE. The proposed name is a NEW (non-active)
-      // category, so it still rides customCategoryKeys → pendingNewCategories
-      // and is queued for admin review by /api/provider/update. No auto-
-      // approve: the server filters non-active categories out of
-      // provider_services regardless of this client state.
-      setSelectedCategories([proposed]);
-    } else if (!selectedKeys.has(key)) {
-      if (selectedCategories.length >= MAX_CATEGORIES) return;
-      setSelectedCategories((prev) => uniqueCategoryValues([...prev, proposed]));
-    }
-    setCustomCategoryKeys((prev) =>
-      prev.includes(key) ? prev : [...prev, key]
-    );
-    setCatQuery("");
-    setSubmitError("");
-    setSuccess(null);
-    triggerConfettiAndModal();
-    showAssistantAppliedHint();
-  };
-
-  const applySingleChoiceFromAssistant = (canonical: string) => {
-    const name = String(canonical || "").trim();
-    if (!name) return;
-    const key = categoryKey(name);
-    setSelectedCategories(() => [name]);
-    setCustomCategoryKeys((prev) => prev.filter((k) => k !== key));
-    setSelectedWorkTags((wt) => (Object.keys(wt).length === 0 ? wt : {}));
-    setPendingWorkTags((wt) => (Object.keys(wt).length === 0 ? wt : {}));
-    setCatQuery("");
-    setSubmitError("");
-    setSuccess(null);
-    showAssistantAppliedHint();
-  };
-
-  const applySingleCategoryChoice = (canonical: string) => {
-    // Multi-category disambiguation. Provider picked ONE of the AI-suggested
-    // possibles — apply ONLY that canonical. Other possibles are intentionally
-    // dropped; we never write multiple categories. The chosen canonical is
-    // already server-validated as an active member of the closed set, so this
-    // path does NOT touch customCategoryKeys (it's not a pending request) and
-    // does NOT attach workTags (phase 8 scope: tags would need per-canonical
-    // mapping the resolve route doesn't provide today — punt to provider's
-    // manual chip taps under the canonical's existing tag strip).
-    if (intake.kind !== "choose-category") return;
-    const match = intake.possibleCategories.find(
-      (p) => categoryKey(p.canonical) === categoryKey(canonical)
-    );
-    if (!match) return;
-    const name = match.canonical;
-    const key = categoryKey(name);
-
-    setSelectedCategories(() => [name]);
-    setCustomCategoryKeys((prev) => prev.filter((k) => k !== key));
-    // Clear any orphan tags carried over from a prior, now-replaced canonical.
-    setSelectedWorkTags((wt) => (Object.keys(wt).length === 0 ? wt : {}));
-    setPendingWorkTags((wt) => (Object.keys(wt).length === 0 ? wt : {}));
-    setCatQuery("");
-    setSubmitError("");
-    setSuccess(null);
-    setIntake({ kind: "idle" });
-  };
-
-  const applyYellowProposal = () => {
-    // Yellow path with an AI-proposed clean category name. Routes the
-    // SERVER-CLAMPED proposed name (not the raw catQuery sentence) through the
-    // existing pendingNewCategories flow. Never mutates selectedWorkTags from
-    // the yellow path — those tags are informational only until the category is
-    // approved.
-    if (intake.kind !== "yellow") return;
-    const proposed = (intake.mainCategory?.canonical ?? "").trim();
-    if (!proposed) return;
-
-    const key = categoryKey(proposed);
-
-    const selectedKeys = toCategoryLookup(selectedCategories);
-    if (!selectedKeys.has(key)) {
-      if (selectedCategories.length >= MAX_CATEGORIES) {
-        setIntake({ kind: "idle" });
-        return;
-      }
-      setSelectedCategories((prev) => uniqueCategoryValues([...prev, proposed]));
-    }
-    setCustomCategoryKeys((prev) =>
-      prev.includes(key) ? prev : [...prev, key]
-    );
-
-    setCatQuery("");
-    setSubmitError("");
-    setSuccess(null);
-    setIntake({ kind: "idle" });
-    triggerConfettiAndModal();
-  };
-
-  const applyGreenResolution = () => {
-    if (intake.kind !== "green") return;
-    const { mainCategory, workTags } = intake;
-    if (!mainCategory.isExisting) {
-      // Server contract: green implies existing in the active set. Defensive
-      // no-op rather than creating a pending category here — that path is the
-      // existing "+ Add as new service" flow, which the user must opt into.
-      dismissIntake();
-      return;
-    }
-
-    const canonical = mainCategory.canonical;
-    const canonKey = categoryKey(canonical);
-
-    // Apply the canonical exactly like a manual canonical tap.
-    setSelectedCategories((prev) => {
-      if (hasCategoryKey(prev, canonKey)) return prev;
-      if (prev.length >= MAX_CATEGORIES) return prev;
-      return [...prev, canonical];
-    });
-    // AI-suggested green never goes through the pending-new flow.
-    setCustomCategoryKeys((prev) => prev.filter((k) => k !== canonKey));
-
-    // Bucket tags: existing aliases → selectedWorkTags (rides existing chip
-    // strip); new suggestions → pendingWorkTags (merged into payload at
-    // submit time, no new wire field).
-    const existingLabels: string[] = [];
-    const newLabels: string[] = [];
-    for (const tag of workTags) {
-      const label = String(tag.label || "").trim();
-      if (!label) continue;
-      if (tag.isExistingAlias) existingLabels.push(label);
-      else newLabels.push(label);
-    }
-
-    if (existingLabels.length > 0) {
-      setSelectedWorkTags((prev) => {
-        const current = prev[canonKey] || [];
-        const merged = [...current];
-        for (const label of existingLabels) {
-          if (!merged.includes(label)) merged.push(label);
-        }
-        if (merged.length === current.length) return prev;
-        return { ...prev, [canonKey]: merged };
-      });
-    }
-    if (newLabels.length > 0) {
-      setPendingWorkTags((prev) => {
-        const current = prev[canonKey] || [];
-        const merged = [...current];
-        for (const label of newLabels) {
-          if (!merged.includes(label)) merged.push(label);
-        }
-        if (merged.length === current.length) return prev;
-        return { ...prev, [canonKey]: merged };
-      });
-    }
-
-    setCatQuery("");
-    setSubmitError("");
-    setSuccess(null);
-    setIntake({ kind: "idle" });
-  };
 
   useEffect(() => {
     const userPhone = getUserPhone();
@@ -1608,18 +1142,7 @@ function ProviderRegisterPageInner() {
     filteredCategories.length === 0;
   const totalSelectedServices = selectedCategories.length;
   const isMaxReached = totalSelectedServices >= MAX_CATEGORIES;
-  // Phase 2B sentence guard. Active when EITHER the assistant flow or the
-  // legacy inline confirm flow is enabled, so the manual "+ Add as new
-  // service" path can never be the only path for a sentence-shaped input.
-  // Pre-Phase-2B deploys (both flags off) keep their exact current behaviour.
-  // When the guard fires we ALSO hide the "+ Add as new service" affordance —
-  // the inline hint below points the provider at the AI surface, which
-  // produces a clean Title-Case category name (yellow proposal) or routes
-  // multi-service mentions through the single-choice gate.
-  const sentenceGuardActive =
-    (workIntakeAssistantEnabled || workIntakeConfirmEnabled) &&
-    looksLikeSentence(normalizedCatQuery);
-  const canAddCustomCategory = noMatch && !sentenceGuardActive;
+  const canAddCustomCategory = noMatch;
   const canAddCustomArea =
     normalizedAreaQuery.length >= 3 &&
     !isLoadingAreas &&
@@ -1962,32 +1485,6 @@ function ProviderRegisterPageInner() {
         customAreaKeys.includes(areaKey(area))
       );
       const customCategory = pendingNewCategories[0] || "";
-      // Phase 2B: merge AI-suggested-but-not-yet-active tags into the existing
-      // workTags JSON field per canonical. No new wire field — server still
-      // ignores unknowns today; when persistence lands the new tags arrive
-      // through the same key as manually-picked ones.
-      const mergedWorkTags: Record<string, string[]> = {};
-      const tagKeys = new Set<string>([
-        ...Object.keys(selectedWorkTags),
-        ...Object.keys(pendingWorkTags),
-      ]);
-      for (const k of tagKeys) {
-        const seen = new Set<string>();
-        const merged: string[] = [];
-        for (const t of selectedWorkTags[k] || []) {
-          if (!seen.has(t)) {
-            seen.add(t);
-            merged.push(t);
-          }
-        }
-        for (const t of pendingWorkTags[k] || []) {
-          if (!seen.has(t)) {
-            seen.add(t);
-            merged.push(t);
-          }
-        }
-        if (merged.length > 0) mergedWorkTags[k] = merged;
-      }
       const payload = {
         action: "provider_register",
         phone,
@@ -2000,7 +1497,7 @@ function ProviderRegisterPageInner() {
         // MVP: ship tag picks on the wire. Backend currently ignores unknown
         // fields — when DB persistence lands the route reads this directly.
         // Edit-mode path doesn't reach this payload.
-        workTags: JSON.stringify(mergedWorkTags),
+        workTags: JSON.stringify(selectedWorkTags),
         requiresAdminApproval:
           pendingNewCategories.length > 0 || pendingNewAreas.length > 0 ? "true" : "false",
         // Provider Responsibility Pledge — version only. The server
@@ -2169,193 +1666,22 @@ function ProviderRegisterPageInner() {
                   </span>
                 </div>
                 <p className="mb-2 text-xs text-slate-500">(Choose the services you actually provide)</p>
-
-                {/* ── Provider Work Intake (Phase 1 UI shell) ──────────────
-                    Renders ONLY behind NEXT_PUBLIC_PROVIDER_WORK_INTAKE_ENABLED.
-                    Compact help header above the EXISTING category search — no
-                    separate input. The category search below doubles as the
-                    natural-language intake. Purely cosmetic in this phase: it
-                    reuses `catQuery`, is never submitted differently, and does
-                    not change the manual category selection behaviour. */}
-                {workIntakeEnabled ? (
-                  <div
-                    data-testid="kk-work-intake-section"
-                    className="mb-3 rounded-xl border border-orange-200 bg-orange-50/60 px-3 py-2.5"
-                  >
-                    {workIntakeAssistantEnabled ? (
-                      // Voice-first surface. ONE button opens the assistant
-                      // modal; the modal owns the AI conversation, the
-                      // confirmation bubbles, and the multi-category choice.
-                      // The inline kk-work-intake-trigger / kk-work-intake-
-                      // confirm / kk-bol-ke-samjhaaye toggles are intentionally
-                      // absent here — they only render in the legacy QA
-                      // bisection mode below.
-                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                        <p className="text-sm font-bold text-[#003d20]">
-                          What work do you do?
-                        </p>
-                        <button
-                          type="button"
-                          data-testid="kk-work-intake-open-assistant"
-                          onClick={() => setAssistantOpen(true)}
-                          disabled={
-                            // Edit mode pre-fills the single category slot, but
-                            // opening still makes sense there: the assistant
-                            // REPLACES that category. Only the fresh-registration
-                            // path blocks at the cap.
-                            (!isEditMode &&
-                              selectedCategories.length >= MAX_CATEGORIES) ||
-                            showSuccessCelebration
-                          }
-                          className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-[#003d20] bg-[#003d20] px-3 py-1.5 text-xs font-bold text-white shadow-sm transition hover:bg-[#002a16] disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          <span aria-hidden="true">🎤</span>
-                          Apna kaam bol ke samjhaaye
-                        </button>
-                      </div>
-                    ) : (
-                      // Legacy Phase 1 + 2B inline UI, gated behind the
-                      // (assistant-off, confirm-on) and (assistant-off,
-                      // confirm-off) deploys. Preserved verbatim so QA can
-                      // bisect rollback states without code churn.
-                      <>
-                        <div className="flex flex-wrap items-center justify-between gap-3">
-                          <p className="text-sm font-bold text-[#003d20]">
-                            What work do you do?
-                          </p>
-                          <div className="flex flex-wrap items-center gap-2">
-                            {workIntakeConfirmEnabled ? (
-                              <button
-                                type="button"
-                                data-testid="kk-work-intake-trigger"
-                                onClick={handleRunIntake}
-                                disabled={
-                                  catQuery.trim().length < 3 ||
-                                  selectedCategories.length >= MAX_CATEGORIES ||
-                                  intake.kind === "resolving"
-                                }
-                                className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-[#003d20] bg-[#003d20] px-3 py-1.5 text-xs font-bold text-white shadow-sm transition hover:bg-[#002a16] disabled:cursor-not-allowed disabled:opacity-60"
-                              >
-                                <span aria-hidden="true">✨</span>
-                                {intake.kind === "resolving"
-                                  ? "Understanding…"
-                                  : "Mera kaam samjho"}
-                              </button>
-                            ) : null}
-                            <button
-                              type="button"
-                              data-testid="kk-bol-ke-samjhaaye"
-                              aria-expanded={showBolExplanation}
-                              onClick={() => setShowBolExplanation((v) => !v)}
-                              className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-[#003d20] bg-white px-3 py-1.5 text-xs font-bold text-[#003d20] shadow-sm transition hover:bg-[#003d20] hover:text-white"
-                            >
-                              <span aria-hidden="true">💬</span>
-                              Bol ke samjhaaye
-                            </button>
-                          </div>
-                        </div>
-
-                        {workIntakeConfirmEnabled ? (
-                          <ProviderWorkIntakeConfirm
-                            intake={intake}
-                            onUse={applyGreenResolution}
-                            onDismiss={dismissIntake}
-                            onRetry={retryIntake}
-                            onUseProposal={applyYellowProposal}
-                            onChoose={applySingleCategoryChoice}
-                          />
-                        ) : null}
-
-                        {showBolExplanation ? (
-                          <div
-                            data-testid="kk-bol-explanation"
-                            className="mt-2.5 rounded-xl border border-orange-200 bg-white px-3 py-2.5 text-xs leading-5 text-slate-700"
-                          >
-                            <p>
-                              Apna kaam simple bhasha mein bataiye. Jaise aap
-                              customer ko samjhate ho, waise hi yahan likhiye.
-                              Kaun Karega aapke kaam ko sahi service aur work
-                              type mein set karne mein madad karega.
-                            </p>
-                            <button
-                              type="button"
-                              onClick={() => setShowBolExplanation(false)}
-                              className="mt-2 inline-flex items-center rounded-full bg-[#003d20] px-3 py-1 text-[11px] font-semibold text-white transition hover:bg-[#002a16]"
-                            >
-                              Theek hai
-                            </button>
-                          </div>
-                        ) : null}
-                      </>
-                    )}
-                  </div>
-                ) : null}
-
-                {/* The existing category search is the SINGLE intake input. When
-                    the flag is on and the field is empty, a dark/bold overlay
-                    renders the animated Hindi/Hinglish hint (native placeholder
-                    is too light); the overlay is pointer-events-none so taps and
-                    typing reach the input, and the native placeholder is made
-                    transparent only while the overlay shows. When the flag is
-                    off, the input renders exactly as before. */}
-                {(() => {
-                  const showIntakeOverlay =
-                    workIntakeEnabled &&
-                    catQuery === "" &&
-                    !isMaxReached &&
-                    !showSuccessCelebration;
-                  return (
-                    <div className="relative">
-                      <input
-                        type="text"
-                        value={catQuery}
-                        onChange={(event) => {
-                          const formatted = capitalizeWords(event.target.value);
-                          setCatQuery(formatted);
-                          // Phase 2B: any text edit invalidates the current
-                          // resolve. Abort in-flight + dismiss panel so a stale
-                          // green/yellow card can't reappear against new text.
-                          if (workIntakeConfirmEnabled) {
-                            intakeAbortRef.current?.abort();
-                            intakeAbortRef.current = null;
-                            setIntake((prev) =>
-                              prev.kind === "idle" ? prev : { kind: "idle" }
-                            );
-                          }
-                        }}
-                        disabled={isMaxReached || showSuccessCelebration}
-                        aria-label={
-                          workIntakeEnabled
-                            ? "Search a service or describe your work"
-                            : undefined
-                        }
-                        placeholder={
-                          isMaxReached
-                            ? "You can choose only one main service category"
-                            : "Search categories"
-                        }
-                        data-testid="kk-category-search"
-                        className={`w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 shadow-sm outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-200 ${
-                          showIntakeOverlay ? "placeholder:text-transparent" : ""
-                        }`}
-                      />
-                      {showIntakeOverlay ? (
-                        <div
-                          aria-hidden="true"
-                          data-testid="kk-work-intake-overlay"
-                          className="pointer-events-none absolute inset-0 flex items-center truncate px-4 text-sm font-semibold text-black"
-                        >
-                          {workIntakePlaceholder || "Search categories"}
-                        </div>
-                      ) : null}
-                    </div>
-                  );
-                })()}
-                {workIntakeEnabled ? (
-                  <p className="mt-2 text-[11px] text-slate-500">
-                    Search a service or describe your work in your own words.
-                  </p>
-                ) : null}
+                <input
+                  type="text"
+                  value={catQuery}
+                  onChange={(event) => {
+                    const formatted = capitalizeWords(event.target.value);
+                    setCatQuery(formatted);
+                  }}
+                  disabled={isMaxReached || showSuccessCelebration}
+                  placeholder={
+                    isMaxReached
+                      ? "You can choose only one main service category"
+                      : "Search categories"
+                  }
+                  data-testid="kk-category-search"
+                  className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 shadow-sm outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-200"
+                />
                 {/* Discoverability hint — the "+ Add as new service"
                     affordance below only surfaces after 3+ chars with no
                     match. The chip strip is empty by default (no full
@@ -2420,21 +1746,6 @@ function ProviderRegisterPageInner() {
                         + Add &ldquo;{normalizedCatQuery}&rdquo; as new
                         service
                       </button>
-                    ) : null}
-                    {sentenceGuardActive && !isMaxReached ? (
-                      <p
-                        data-testid="kk-work-intake-sentence-hint"
-                        className="basis-full text-xs text-amber-800"
-                      >
-                        Tap{" "}
-                        <span className="font-semibold">
-                          {workIntakeAssistantEnabled
-                            ? "Apna kaam bol ke samjhaaye"
-                            : "Mera kaam samjho"}
-                        </span>{" "}
-                        to find the right category — sentences cannot be added
-                        directly.
-                      </p>
                     ) : null}
                     </div>
                   ) : null}
@@ -3160,17 +2471,6 @@ function ProviderRegisterPageInner() {
         </div>
       ) : null}
       <InAppToastStack toasts={toasts} onDismiss={dismissToast} />
-      {workIntakeAssistantEnabled ? (
-        <ProviderWorkIntakeAssistant
-          open={assistantOpen}
-          onClose={() => setAssistantOpen(false)}
-          cityCode={selectedCityCode || undefined}
-          mode={isEditMode ? "edit" : "pre-submit"}
-          onApplyGreen={applyGreenFromAssistant}
-          onApplyYellowProposal={applyYellowProposalFromAssistant}
-          onApplySingleChoice={applySingleChoiceFromAssistant}
-        />
-      ) : null}
       {showSuccessCelebration ? (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/60 px-4">
           <div className="w-full max-w-md rounded-2xl border border-emerald-200 bg-white p-6 text-center shadow-2xl">
