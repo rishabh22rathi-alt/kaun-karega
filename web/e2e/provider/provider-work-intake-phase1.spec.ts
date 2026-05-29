@@ -54,6 +54,16 @@ const CONFIRM_FLAG_ON =
   String(process.env.NEXT_PUBLIC_PROVIDER_WORK_INTAKE_CONFIRM_ENABLED || "")
     .trim()
     .toLowerCase() === "true";
+// Voice-first assistant flag. When ON, the inline Phase 2B UI is REPLACED by
+// the assistant modal — the legacy testids (`kk-bol-ke-samjhaaye`,
+// `kk-work-intake-trigger`, `kk-bol-explanation`) deliberately stop rendering.
+// The flag-ON assertions in this Phase 1 spec are therefore skipped when the
+// assistant flag is on; full voice-first behaviour is covered in
+// provider-work-intake-assistant.spec.ts.
+const ASSISTANT_FLAG_ON =
+  String(process.env.NEXT_PUBLIC_PROVIDER_WORK_INTAKE_ASSISTANT_ENABLED || "")
+    .trim()
+    .toLowerCase() === "true";
 
 // Mirrors the helper in provider-register-category-and-aliases.spec.ts: the
 // register page reads the unsigned UI-hint cookie at mount; without it the page
@@ -138,8 +148,15 @@ test.describe("Provider work intake — flag OFF", () => {
 });
 
 // ── Flag ON ─────────────────────────────────────────────────────────────────
+// All assertions below pin the legacy inline Phase 1 / 2B surface. Skipped
+// when the assistant flag is on — that surface is no longer rendered and the
+// voice-first behaviour is covered by provider-work-intake-assistant.spec.ts.
 test.describe("Provider work intake — flag ON", () => {
   test.skip(!FLAG_ON, "runs only when NEXT_PUBLIC_PROVIDER_WORK_INTAKE_ENABLED is ON");
+  test.skip(
+    ASSISTANT_FLAG_ON,
+    "legacy inline surface — superseded by the assistant modal when ASSISTANT_FLAG is on"
+  );
 
   test.beforeEach(async ({ page }) => setupRegisterPage(page));
 

@@ -38,6 +38,15 @@ export type WorkIntakeResolveResponse = {
   mainCategory: WorkIntakeMainCategory | null;
   workTags: WorkIntakeWorkTag[];
   requiresAdminReview: boolean;
+  /** Server-validated set of active canonicals when the provider mentioned
+   *  multiple unrelated active categories. Always a closed-set subset; capped
+   *  at WORK_INTAKE_MAX_POSSIBLE_CATEGORIES. Only present when the response
+   *  asks the UI to disambiguate. */
+  possibleCategories?: WorkIntakeMainCategory[];
+  /** True when the UI must surface a single-category choice (≥2 active
+   *  matches). When true, `mainCategory` is null and `workTags` is empty —
+   *  the page should not preselect anything until the provider picks. */
+  needsSingleCategoryChoice?: boolean;
   echo: { text: string };
 };
 
@@ -60,6 +69,10 @@ export type WorkIntakeAiRaw = {
   confidence: number;
   safety: WorkIntakeSafety;
   workTags: string[];
+  /** Multi-category hint: when the provider mentioned several active services,
+   *  the model lists each candidate canonical here (advisory). The server is
+   *  authoritative — it filters to active members and caps the list. */
+  possibleCategories?: string[];
 };
 
 // Tunables.
@@ -72,3 +85,17 @@ export const WORK_INTAKE_MAX_TAG_LEN = 40;
 // range — covers the longest real categories (e.g. doctor / hobby classes) with
 // the most disambiguating aliases.
 export const WORK_INTAKE_MAX_ALIASES_PER_CATEGORY = 15;
+// Maximum length the server will accept for an AI-proposed (non-existing)
+// category name on yellow. The prompt asks for 1–3 Title-Case words; any
+// response over this length is treated as a misbehaving model echoing the
+// provider's sentence and is dropped to null. Defines both the route's clamp
+// and the prompt's contract — keep them in sync.
+export const WORK_INTAKE_PROPOSED_CATEGORY_MAX_LEN = 30;
+// Maximum word count for an AI-proposed (non-existing) category name. Pairs
+// with the length cap above. ">3 words" is the second sentence signal — short
+// names like "Packers & Movers" or "Pet Grooming" stay under both bounds.
+export const WORK_INTAKE_PROPOSED_CATEGORY_MAX_WORDS = 3;
+// Multi-category choice cap. The choose-category UX has to fit in the panel
+// without scrolling and a provider can only register one canonical anyway —
+// surface up to 4 strong matches, drop the rest.
+export const WORK_INTAKE_MAX_POSSIBLE_CATEGORIES = 4;

@@ -14,10 +14,14 @@ import { findDeniedTerm } from "@/lib/workIntake/safety";
 import { classifyWorkIntake } from "@/lib/workIntake/resolvePrompt";
 import {
   WORK_INTAKE_CONFIDENCE_FLOOR,
+  WORK_INTAKE_MAX_POSSIBLE_CATEGORIES,
   WORK_INTAKE_MAX_TAG_LEN,
   WORK_INTAKE_MAX_TAGS,
   WORK_INTAKE_MAX_TEXT,
+  WORK_INTAKE_PROPOSED_CATEGORY_MAX_LEN,
+  WORK_INTAKE_PROPOSED_CATEGORY_MAX_WORDS,
   type WorkIntakeAiRaw,
+  type WorkIntakeMainCategory,
   type WorkIntakeResolveResponse,
   type WorkIntakeWorkTag,
 } from "@/lib/workIntake/types";
@@ -63,6 +67,26 @@ function testHookEnabled(): boolean {
       .trim()
       .toLowerCase() === "true"
   );
+}
+
+/**
+ * Defensive clamp on the model's PROPOSED (non-existing) mainCategory name.
+ * The prompt asks for ≤3 Title-Case words and ≤30 chars; if the model ignores
+ * those bounds — most commonly by echoing the provider's raw sentence — we
+ * drop the proposal to null rather than letting it become a pending category
+ * review. Green / closed-set names are NOT routed through this; they're matched
+ * verbatim against the active set.
+ */
+function clampProposedCategory(value: string): string | null {
+  const collapsed = String(value ?? "")
+    .replace(/[\r\n]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!collapsed) return null;
+  if (collapsed.length > WORK_INTAKE_PROPOSED_CATEGORY_MAX_LEN) return null;
+  const wordCount = collapsed.split(" ").filter(Boolean).length;
+  if (wordCount > WORK_INTAKE_PROPOSED_CATEGORY_MAX_WORDS) return null;
+  return collapsed;
 }
 
 export async function POST(request: Request) {
@@ -249,6 +273,11 @@ export async function POST(request: Request) {
         workTags: Array.isArray(parsed.workTags)
           ? parsed.workTags.map((t) => String(t ?? "").trim()).filter(Boolean)
           : [],
+        possibleCategories: Array.isArray(parsed.possibleCategories)
+          ? parsed.possibleCategories
+              .map((c) => String(c ?? "").trim())
+              .filter(Boolean)
+          : [],
       };
     } else {
       raw = await classifyWorkIntake({
@@ -281,18 +310,92 @@ export async function POST(request: Request) {
     return noStore(blocked);
   }
 
+  // 8a-bis) Multi-category disambiguation. When the provider mentioned several
+  //         active services, the AI lists them in possibleCategories. The
+  //         server validates each against the active set, dedupes (case-
+  //         insensitive), and caps at WORK_INTAKE_MAX_POSSIBLE_CATEGORIES.
+  //         ≥2 valid matches → ask the UI to disambiguate; nothing gets
+  //         pre-selected. 1 valid match → hoist into mainCategory (clean
+  //         single-canonical path; treated as green so the existing confirm
+  //         UI applies it cleanly). 0 → fall through to the original flow.
+  const rawPossibles = Array.isArray(raw.possibleCategories)
+    ? raw.possibleCategories
+    : [];
+  const matchedPossibles: string[] = [];
+  const seenPossibleKeys = new Set<string>();
+  for (const name of rawPossibles) {
+    const matched = findActiveCanonical(activeNames, name);
+    if (!matched) continue;
+    const key = normalizeCategoryKey(matched);
+    if (seenPossibleKeys.has(key)) continue;
+    seenPossibleKeys.add(key);
+    matchedPossibles.push(matched);
+    if (matchedPossibles.length >= WORK_INTAKE_MAX_POSSIBLE_CATEGORIES) break;
+  }
+
+  if (matchedPossibles.length >= 2) {
+    const possibleCategories: WorkIntakeMainCategory[] = matchedPossibles.map(
+      (canonical) => ({
+        canonical,
+        isExisting: true,
+        // Per-item confidence isn't available from the AI; use the overall
+        // confidence as a coarse signal. The UI doesn't gate behaviour on this
+        // — it just renders chips — so a single value across the set is fine.
+        confidence: Math.min(1, Math.max(0, raw.confidence)),
+      })
+    );
+    const response: WorkIntakeResolveResponse = {
+      ok: true,
+      safety: "yellow",
+      blocked: false,
+      fallbackToManual: false,
+      reason: "OK",
+      mainCategory: null,
+      workTags: [],
+      requiresAdminReview: false,
+      possibleCategories,
+      needsSingleCategoryChoice: true,
+      echo,
+    };
+    return noStore(response);
+  }
+
+  // Single-match hoist. When the AI listed exactly one valid possible AND did
+  // not also set a matching mainCategory, treat the possible as the green
+  // canonical so the existing single-category UX applies cleanly. Confidence
+  // is clamped above the floor so the LOW_CONFIDENCE downgrade below doesn't
+  // kick the user back into yellow for what is effectively a closed-set hit.
+  let effectiveRaw = raw;
+  if (
+    matchedPossibles.length === 1 &&
+    !findActiveCanonical(activeNames, raw.mainCategory ?? "")
+  ) {
+    effectiveRaw = {
+      ...raw,
+      mainCategory: matchedPossibles[0],
+      isNew: false,
+      safety: "green",
+      confidence: Math.max(raw.confidence, WORK_INTAKE_CONFIDENCE_FLOOR),
+    };
+  }
+
   // 8b) Closed-set enforcement — the SERVER decides existence, not the AI.
-  const matchedCanonical = raw.mainCategory
-    ? findActiveCanonical(activeNames, raw.mainCategory)
+  const matchedCanonical = effectiveRaw.mainCategory
+    ? findActiveCanonical(activeNames, effectiveRaw.mainCategory)
     : null;
   const isExisting = matchedCanonical !== null;
+  // For non-existing proposals, clamp the AI's name to short Title-Case bounds.
+  // A model that ignores the prompt and echoes the provider's sentence gets its
+  // proposal dropped to null instead of leaking into pendingNewCategories
+  // downstream. Green names go through findActiveCanonical above and bypass
+  // this entirely.
   const canonical = isExisting
     ? matchedCanonical
-    : raw.mainCategory
-    ? raw.mainCategory.trim()
+    : effectiveRaw.mainCategory
+    ? clampProposedCategory(effectiveRaw.mainCategory)
     : null;
 
-  let safety = raw.safety; // green | yellow (red already returned)
+  let safety = effectiveRaw.safety; // green | yellow (red already returned)
   let requiresAdminReview = false;
   let reason: WorkIntakeResolveResponse["reason"] = "OK";
 
@@ -303,7 +406,11 @@ export async function POST(request: Request) {
   }
 
   // 8d) Low-confidence green → downgrade to yellow.
-  if (isExisting && safety === "green" && raw.confidence < WORK_INTAKE_CONFIDENCE_FLOOR) {
+  if (
+    isExisting &&
+    safety === "green" &&
+    effectiveRaw.confidence < WORK_INTAKE_CONFIDENCE_FLOOR
+  ) {
     safety = "yellow";
     requiresAdminReview = true;
     reason = "LOW_CONFIDENCE";
@@ -329,7 +436,7 @@ export async function POST(request: Request) {
 
   const seenTagKeys = new Set<string>();
   const workTags: WorkIntakeWorkTag[] = [];
-  for (const rawTag of raw.workTags) {
+  for (const rawTag of effectiveRaw.workTags) {
     const label = rawTag.slice(0, WORK_INTAKE_MAX_TAG_LEN).trim();
     if (!label) continue;
     const key = normalizeCategoryKey(label);
@@ -347,7 +454,7 @@ export async function POST(request: Request) {
     ? {
         canonical,
         isExisting,
-        confidence: Math.min(1, Math.max(0, raw.confidence)),
+        confidence: Math.min(1, Math.max(0, effectiveRaw.confidence)),
       }
     : null;
 

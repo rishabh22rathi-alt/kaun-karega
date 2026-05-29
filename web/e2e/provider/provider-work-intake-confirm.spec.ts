@@ -35,6 +35,14 @@ const CONFIRM_FLAG_ON =
   String(process.env.NEXT_PUBLIC_PROVIDER_WORK_INTAKE_CONFIRM_ENABLED || "")
     .trim()
     .toLowerCase() === "true";
+// Voice-first assistant flag. When ON, the inline Phase 2B trigger and
+// confirmation panel are REPLACED by the assistant modal — this spec is then
+// retired in favour of provider-work-intake-assistant.spec.ts. Kept available
+// for QA bisection under the (assistant OFF, confirm ON) deploy.
+const ASSISTANT_FLAG_ON =
+  String(process.env.NEXT_PUBLIC_PROVIDER_WORK_INTAKE_ASSISTANT_ENABLED || "")
+    .trim()
+    .toLowerCase() === "true";
 
 // Mirror Phase 1 spec helper. The register page reads the unsigned UI-hint
 // cookie at mount; without it, the page redirects to /login.
@@ -152,6 +160,10 @@ const ECHO = { text: "ignored" }; // resolve route echoes the text; tests don't 
 // ── Phase 1 flag OFF ─────────────────────────────────────────────────────────
 test.describe("Phase 2B confirm — Phase 1 flag OFF", () => {
   test.skip(FLAG_ON, "runs only when NEXT_PUBLIC_PROVIDER_WORK_INTAKE_ENABLED is OFF");
+  test.skip(
+    ASSISTANT_FLAG_ON,
+    "inline confirm UI is replaced by the assistant modal when ASSISTANT_FLAG is on"
+  );
 
   test.beforeEach(async ({ page }) => setupRegisterPage(page));
 
@@ -173,6 +185,10 @@ test.describe("Phase 2B confirm — Phase 1 ON, confirm OFF", () => {
     CONFIRM_FLAG_ON,
     "runs only when NEXT_PUBLIC_PROVIDER_WORK_INTAKE_CONFIRM_ENABLED is OFF"
   );
+  test.skip(
+    ASSISTANT_FLAG_ON,
+    "inline confirm UI is replaced by the assistant modal when ASSISTANT_FLAG is on"
+  );
 
   test.beforeEach(async ({ page }) => setupRegisterPage(page));
 
@@ -186,12 +202,30 @@ test.describe("Phase 2B confirm — Phase 1 ON, confirm OFF", () => {
     // Confirm panel never mounts:
     await expect(page.getByTestId("kk-work-intake-confirm")).toHaveCount(0);
   });
+
+  test("1b) confirm OFF preserves existing '+ Add as new service' for any 3+ char input", async ({
+    page,
+  }) => {
+    // Critical regression: the sentence guard is gated on the confirm flag.
+    // Deploys that ship Phase 1 alone must not see manual-add behaviour change.
+    await gotoPath(page, "/provider/register");
+    const search = page.getByTestId("kk-category-search");
+    await search.fill("main packing shifting loading karta hu");
+    await expect(
+      page.getByTestId("kk-work-intake-sentence-hint")
+    ).toHaveCount(0);
+    await expect(page.locator('button:has-text("+ Add")')).toBeVisible();
+  });
 });
 
 // ── Phase 1 ON, Confirm flag ON ──────────────────────────────────────────────
 test.describe("Phase 2B confirm — flags ON", () => {
   test.skip(!FLAG_ON, "runs only when Phase 1 flag is ON");
   test.skip(!CONFIRM_FLAG_ON, "runs only when confirm flag is ON");
+  test.skip(
+    ASSISTANT_FLAG_ON,
+    "inline confirm UI is replaced by the assistant modal when ASSISTANT_FLAG is on"
+  );
 
   test.beforeEach(async ({ page }) => setupRegisterPage(page));
 
@@ -372,9 +406,59 @@ test.describe("Phase 2B confirm — flags ON", () => {
     expect(pendingNew).not.toContain(QA_CATEGORY);
   });
 
-  test("8) yellow: panel renders guidance; selection state untouched", async ({
+  test("8) yellow without proposed name: 'Use this as a new service' not rendered", async ({
     page,
   }) => {
+    // Server-clamped to null when the AI returned nothing usable. Provider
+    // must fall back to manual.
+    await mockResolve(page, {
+      ok: true,
+      safety: "yellow",
+      blocked: false,
+      fallbackToManual: false,
+      reason: "OK",
+      mainCategory: null,
+      workTags: [],
+      requiresAdminReview: true,
+      echo: ECHO,
+    });
+
+    await gotoPath(page, "/provider/register");
+    await page.getByTestId("kk-category-search").fill("vague mystery work");
+    await page.getByTestId("kk-work-intake-trigger").click();
+
+    await expect(
+      page.locator('[data-testid="kk-work-intake-confirm"][data-kk-confirm-state="yellow"]')
+    ).toBeVisible();
+    await expect(
+      page.getByText("We could not find this in our list yet.")
+    ).toBeVisible();
+    // No proposal → only retry + manual CTAs.
+    await expect(
+      page.getByTestId("kk-work-intake-confirm-use-proposal")
+    ).toHaveCount(0);
+    await expect(
+      page.getByTestId("kk-work-intake-confirm-proposal")
+    ).toHaveCount(0);
+    await expect(
+      page.getByText(
+        "Please choose from the list below or add it as a new service for review."
+      )
+    ).toBeVisible();
+
+    // No canonical chip applied. The provider must still use the existing
+    // "+ Add as new service" affordance manually if they want to.
+    await expect(page.locator('button:has-text("Electrician")')).toHaveCount(0);
+
+    // Dismiss returns to idle without mutating anything.
+    await page.getByTestId("kk-work-intake-confirm-dismiss").click();
+    await expect(page.getByTestId("kk-work-intake-confirm")).toHaveCount(0);
+  });
+
+  test("8b) yellow with proposed name: 'Use this as a new service' routes the CLEAN name through pendingNewCategories", async ({
+    page,
+  }) => {
+    const captured: { body?: Record<string, unknown> } = {};
     await mockResolve(page, {
       ok: true,
       safety: "yellow",
@@ -382,38 +466,112 @@ test.describe("Phase 2B confirm — flags ON", () => {
       fallbackToManual: false,
       reason: "OK",
       mainCategory: {
-        canonical: "Pet Grooming",
+        canonical: "Packers & Movers",
         isExisting: false,
         confidence: 0.6,
       },
-      workTags: [],
+      workTags: [
+        {
+          label: "packing",
+          isExistingAlias: false,
+          canonical: "Packers & Movers",
+        },
+        {
+          label: "shifting",
+          isExistingAlias: false,
+          canonical: "Packers & Movers",
+        },
+      ],
       requiresAdminReview: true,
       echo: ECHO,
     });
+    await mockKkActions(page, {
+      get_provider_by_phone: () => jsonOk({ provider: null }),
+      get_areas: () => jsonOk({ areas: COMMON_AREAS }),
+      provider_register: ({ body }) => {
+        captured.body = body;
+        return jsonOk({
+          providerId: "PR-TEST-8B",
+          verified: "yes",
+          pendingApproval: "yes",
+          provider: { ProviderID: "PR-TEST-8B", Status: "Pending Admin Approval" },
+        });
+      },
+    });
 
     await gotoPath(page, "/provider/register");
-    await page.getByTestId("kk-category-search").fill("main pet grooming karta hu");
+    const search = page.getByTestId("kk-category-search");
+    const RAW_SENTENCE = "main packing shifting loading karta hu";
+    await search.fill(RAW_SENTENCE);
     await page.getByTestId("kk-work-intake-trigger").click();
 
     await expect(
       page.locator('[data-testid="kk-work-intake-confirm"][data-kk-confirm-state="yellow"]')
     ).toBeVisible();
     await expect(
-      page.getByText("We could not match this exactly yet.")
+      page.getByText("We could not find this in our list yet.")
     ).toBeVisible();
+    await expect(page.getByTestId("kk-work-intake-confirm-proposal")).toHaveText(
+      "Packers & Movers"
+    );
 
-    // No canonical chip applied. The provider must still use the existing
-    // "+ Add as new service" affordance manually if they want to.
-    await expect(
-      page.locator('button:has-text("Pet Grooming (")')
-    ).toHaveCount(0);
-    await expect(
-      page.locator('button:has-text("Electrician")')
-    ).toHaveCount(0);
+    await page.getByTestId("kk-work-intake-confirm-use-proposal").click();
 
-    // Dismiss returns to idle without mutating anything.
-    await page.getByTestId("kk-work-intake-confirm-dismiss").click();
+    // Clean proposed name applied — NOT the raw sentence. NEW badge appears
+    // because the proposal went through customCategoryKeys.
+    await expect(
+      page.locator('button:has-text("Packers & Movers")')
+    ).toBeVisible();
+    await expect(search).toHaveValue("");
     await expect(page.getByTestId("kk-work-intake-confirm")).toHaveCount(0);
+
+    // Submit and inspect the wire payload.
+    await page.getByPlaceholder("Enter your full name").fill("Test Provider");
+    await page.getByRole("button", { name: /^Pick Region$/ }).first().click();
+    await page.getByTestId("kk-pledge-checkbox").check();
+    await page.getByRole("button", { name: /^Submit Application$/ }).click();
+
+    await expect.poll(() => Boolean(captured.body), { timeout: 5_000 }).toBe(true);
+    const body = captured.body ?? {};
+    expect(body.action).toBe("provider_register");
+    const pendingNew = JSON.parse(
+      typeof body.pendingNewCategories === "string"
+        ? body.pendingNewCategories
+        : "[]"
+    ) as string[];
+    expect(pendingNew).toContain("Packers & Movers");
+    expect(pendingNew).not.toContain(RAW_SENTENCE);
+    // requiresAdminApproval flips to "true" because there's a pending new
+    // category in this submission.
+    expect(body.requiresAdminApproval).toBe("true");
+    // No leakage into the categories canonical list (raw sentence should
+    // not appear anywhere on the wire).
+    const categoriesPayload = JSON.parse(
+      typeof body.categories === "string" ? body.categories : "[]"
+    ) as string[];
+    expect(categoriesPayload).toContain("Packers & Movers");
+    expect(categoriesPayload).not.toContain(RAW_SENTENCE);
+  });
+
+  test("8c) sentence guard hides '+ Add as new service' for sentences, keeps it for short names", async ({
+    page,
+  }) => {
+    await gotoPath(page, "/provider/register");
+    const search = page.getByTestId("kk-category-search");
+
+    // Sentence-shaped input → guard fires.
+    await search.fill("main packing shifting loading karta hu");
+    await expect(page.getByTestId("kk-work-intake-sentence-hint")).toBeVisible();
+    await expect(
+      page.locator('button:has-text("+ Add")')
+    ).toHaveCount(0);
+
+    // Short category-like name → button reappears.
+    await search.fill("Pet Grooming");
+    await expect(page.getByTestId("kk-work-intake-sentence-hint")).toHaveCount(0);
+    await expect(
+      page.locator('button:has-text("+ Add")')
+    ).toBeVisible();
   });
 
   test("9) red: safety message renders; no category added", async ({ page }) => {
@@ -513,6 +671,114 @@ test.describe("Phase 2B confirm — flags ON", () => {
     // Wait past the mocked delay; stale response must not reopen the panel.
     await page.waitForTimeout(1_200);
     await expect(page.getByTestId("kk-work-intake-confirm")).toHaveCount(0);
+  });
+
+  test("13) multi-category: 'choose your main service' shows chips; clicking ONE applies only that canonical", async ({
+    page,
+  }) => {
+    const captured: { body?: Record<string, unknown> } = {};
+    await mockResolve(page, {
+      ok: true,
+      safety: "yellow",
+      blocked: false,
+      fallbackToManual: false,
+      reason: "OK",
+      mainCategory: null,
+      workTags: [],
+      requiresAdminReview: false,
+      possibleCategories: [
+        { canonical: "Plumber", isExisting: true, confidence: 0.8 },
+        { canonical: QA_CATEGORY, isExisting: true, confidence: 0.8 }, // "Electrician"
+        { canonical: "Carpenter", isExisting: true, confidence: 0.8 },
+      ],
+      needsSingleCategoryChoice: true,
+      echo: ECHO,
+    });
+    await mockKkActions(page, {
+      get_provider_by_phone: () => jsonOk({ provider: null }),
+      get_areas: () => jsonOk({ areas: COMMON_AREAS }),
+      provider_register: ({ body }) => {
+        captured.body = body;
+        return jsonOk({
+          providerId: "PR-TEST-13",
+          verified: "yes",
+          pendingApproval: "no",
+          provider: { ProviderID: "PR-TEST-13", Status: "Active" },
+        });
+      },
+    });
+
+    await gotoPath(page, "/provider/register");
+    const search = page.getByTestId("kk-category-search");
+    await search.fill("main plumber electrician painting sab karta hu");
+    await page.getByTestId("kk-work-intake-trigger").click();
+
+    await expect(
+      page.locator(
+        '[data-testid="kk-work-intake-confirm"][data-kk-confirm-state="choose-category"]'
+      )
+    ).toBeVisible();
+    await expect(
+      page.getByText("You mentioned more than one type of work.")
+    ).toBeVisible();
+    await expect(
+      page.getByText("Please choose your main service for now:")
+    ).toBeVisible();
+
+    // All three chips render.
+    const chips = page.getByTestId("kk-work-intake-confirm-choice");
+    await expect(chips).toHaveCount(3);
+
+    // Click Electrician. Only Electrician should land in selectedCategories.
+    await page
+      .locator(
+        '[data-testid="kk-work-intake-confirm-choice"][data-canonical="Electrician"]'
+      )
+      .click();
+
+    await expect(page.getByTestId("kk-work-intake-confirm")).toHaveCount(0);
+    await expect(search).toHaveValue("");
+    await expect(
+      page.locator('button:has-text("Electrician")')
+    ).toBeVisible();
+    // Critically: NO Plumber or Carpenter chip.
+    await expect(page.locator('button:has-text("Plumber")')).toHaveCount(0);
+    await expect(page.locator('button:has-text("Carpenter")')).toHaveCount(0);
+
+    // Drive submit and assert pendingNewCategories is empty (Electrician is an
+    // existing canonical, NOT a pending request).
+    await page.getByPlaceholder("Enter your full name").fill("Test Provider");
+    await page.getByRole("button", { name: /^Pick Region$/ }).first().click();
+    await page.getByTestId("kk-pledge-checkbox").check();
+    await page.getByRole("button", { name: /^Submit Application$/ }).click();
+
+    await expect.poll(() => Boolean(captured.body), { timeout: 5_000 }).toBe(true);
+    const body = captured.body ?? {};
+    const pendingNew = JSON.parse(
+      typeof body.pendingNewCategories === "string"
+        ? body.pendingNewCategories
+        : "[]"
+    ) as string[];
+    expect(pendingNew).toEqual([]);
+    expect(body.requiresAdminApproval).toBe("false");
+    const categoriesPayload = JSON.parse(
+      typeof body.categories === "string" ? body.categories : "[]"
+    ) as string[];
+    expect(categoriesPayload).toEqual(["Electrician"]);
+  });
+
+  test("14) sentence guard still blocks '+ Add as new service' for multi-service sentences", async ({
+    page,
+  }) => {
+    // Manual-skip path: provider types a multi-service sentence and never clicks
+    // the AI trigger. The Phase 2B sentence guard must still hide "+ Add as new
+    // service" so the raw sentence cannot become a pending category.
+    await gotoPath(page, "/provider/register");
+    await page
+      .getByTestId("kk-category-search")
+      .fill("main plumber electrician painting sab karta hu");
+    await expect(page.getByTestId("kk-work-intake-sentence-hint")).toBeVisible();
+    await expect(page.locator('button:has-text("+ Add")')).toHaveCount(0);
   });
 
   test("12) edit mode (?edit=services): trigger is absent", async ({ page }) => {

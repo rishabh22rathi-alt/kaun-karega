@@ -63,3 +63,25 @@ export function isProviderWorkIntakeConfirmEnabled(): boolean {
       .toLowerCase() === "true"
   );
 }
+
+/**
+ * CLIENT flag — Voice-first "Apna kaam bol ke samjhaaye" assistant modal.
+ *
+ * Precedence (intentional): this flag is FORCED OFF when the Phase 1 UI flag
+ * is OFF. The assistant button lives inside the Step 2 / Service Categories
+ * surface which Phase 1 owns. When this flag is ON, it REPLACES the inline
+ * Phase 2B trigger + confirmation panel — the assistant modal is the only
+ * AI work-intake surface the provider sees. When OFF, the existing inline
+ * Phase 2B UI continues to render under isProviderWorkIntakeConfirmEnabled
+ * for QA bisection and rollback.
+ *
+ * NEXT_PUBLIC_* → inlined at build time, safe to call during render.
+ */
+export function isProviderWorkIntakeAssistantEnabled(): boolean {
+  if (!isProviderWorkIntakeEnabled()) return false;
+  return (
+    String(process.env.NEXT_PUBLIC_PROVIDER_WORK_INTAKE_ASSISTANT_ENABLED || "")
+      .trim()
+      .toLowerCase() === "true"
+  );
+}

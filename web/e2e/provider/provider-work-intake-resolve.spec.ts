@@ -267,6 +267,214 @@ test.describe("work-intake resolve — AI enabled (test hook)", () => {
     });
   });
 
+  test("10) clamp: long-sentence mainCategory is dropped to null on yellow", async ({
+    page,
+  }) => {
+    // The AI was told to propose a short Title-Case name when nothing fits.
+    // If it ignores the prompt and echoes the provider's full sentence, the
+    // server clamp must drop the proposal — the response carries
+    // mainCategory=null instead of leaking the sentence as a "new category".
+    const longSentence = "main packing shifting loading karta hu";
+    const res = await page.request.post(appUrl(RESOLVE_PATH), {
+      data: { text: longSentence },
+      headers: {
+        "x-kk-categories-mock": "Welder,Electrician",
+        "x-kk-ai-mock": JSON.stringify({
+          mainCategory: longSentence,
+          isNew: true,
+          confidence: 0.6,
+          safety: "yellow",
+          workTags: ["packing", "shifting"],
+        }),
+      },
+    });
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.safety).toBe("yellow");
+    expect(body.mainCategory).toBeNull();
+    expect(body.requiresAdminReview).toBe(true);
+    expect(body.blocked).toBe(false);
+  });
+
+  test("11) clamp: too-many-words mainCategory is dropped to null on yellow", async ({
+    page,
+  }) => {
+    const res = await page.request.post(appUrl(RESOLVE_PATH), {
+      data: { text: "some niche legal service" },
+      headers: {
+        "x-kk-categories-mock": "Welder,Electrician",
+        "x-kk-ai-mock": JSON.stringify({
+          // 5 words — exceeds the 3-word cap even though length is under 30.
+          mainCategory: "Brand New Niche Service Type",
+          isNew: true,
+          confidence: 0.6,
+          safety: "yellow",
+          workTags: [],
+        }),
+      },
+    });
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(body.mainCategory).toBeNull();
+    expect(body.safety).toBe("yellow");
+  });
+
+  test("12) clamp: short clean proposal passes through on yellow", async ({
+    page,
+  }) => {
+    // 16 chars, 3 words — within both bounds. Must NOT be dropped.
+    const res = await page.request.post(appUrl(RESOLVE_PATH), {
+      data: { text: "main packing aur shifting ka kaam" },
+      headers: {
+        "x-kk-categories-mock": "Welder,Electrician",
+        "x-kk-ai-mock": JSON.stringify({
+          mainCategory: "Packers & Movers",
+          isNew: true,
+          confidence: 0.6,
+          safety: "yellow",
+          workTags: ["packing", "shifting"],
+        }),
+      },
+    });
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(body.safety).toBe("yellow");
+    expect(body.mainCategory).toMatchObject({
+      canonical: "Packers & Movers",
+      isExisting: false,
+    });
+    expect(body.requiresAdminReview).toBe(true);
+  });
+
+  test("13) multi-category: ≥2 active matches → needsSingleCategoryChoice yellow, mainCategory null", async ({
+    page,
+  }) => {
+    const res = await page.request.post(appUrl(RESOLVE_PATH), {
+      data: { text: "main plumber electrician painting sab karta hu" },
+      headers: {
+        "x-kk-categories-mock": "Plumber,Electrician,Carpenter,Welder",
+        "x-kk-ai-mock": JSON.stringify({
+          mainCategory: "",
+          isNew: false,
+          confidence: 0.7,
+          safety: "yellow",
+          workTags: ["wiring", "painting", "pipes"],
+          // Carpenter is not what the provider said; the route should still
+          // accept it because the AI's claim is closed-set validated.
+          possibleCategories: ["Plumber", "Electrician", "Carpenter"],
+        }),
+      },
+    });
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.safety).toBe("yellow");
+    expect(body.needsSingleCategoryChoice).toBe(true);
+    expect(body.mainCategory).toBeNull();
+    // Empty workTags on multi-category — never attribute tags to a canonical
+    // the provider hasn't picked yet.
+    expect(body.workTags).toEqual([]);
+    expect(body.requiresAdminReview).toBe(false);
+    expect(Array.isArray(body.possibleCategories)).toBe(true);
+    expect(body.possibleCategories).toHaveLength(3);
+    const names = (body.possibleCategories as Array<{ canonical: string }>)
+      .map((p) => p.canonical)
+      .sort();
+    expect(names).toEqual(["Carpenter", "Electrician", "Plumber"]);
+    for (const p of body.possibleCategories as Array<{ isExisting: boolean }>) {
+      expect(p.isExisting).toBe(true);
+    }
+  });
+
+  test("14) multi-category: inactive entries are filtered out", async ({
+    page,
+  }) => {
+    // AI lists 4 names; only Painter is active. Route filters → 1 match →
+    // falls through to single-canonical hoist (next test). Here we confirm the
+    // filter drops the inactive names rather than echoing them back.
+    const res = await page.request.post(appUrl(RESOLVE_PATH), {
+      data: { text: "painting cleaning house help" },
+      headers: {
+        "x-kk-categories-mock": "Painter,Plumber",
+        "x-kk-ai-mock": JSON.stringify({
+          mainCategory: "",
+          isNew: false,
+          confidence: 0.7,
+          safety: "yellow",
+          workTags: [],
+          possibleCategories: ["Painter", "Cleaning", "House Help"],
+        }),
+      },
+    });
+    const body = await res.json();
+    // 1 valid match → hoist to mainCategory, not choose-category state.
+    expect(body.needsSingleCategoryChoice).toBeFalsy();
+    expect(body.mainCategory).toMatchObject({
+      canonical: "Painter",
+      isExisting: true,
+    });
+    // Cleaning / House Help are NOT active → must not appear anywhere on the
+    // wire, must not become pending category proposals.
+    const serialised = JSON.stringify(body);
+    expect(serialised).not.toContain("Cleaning");
+    expect(serialised).not.toContain("House Help");
+  });
+
+  test("15) multi-category: cap at 4 possibleCategories", async ({ page }) => {
+    const res = await page.request.post(appUrl(RESOLVE_PATH), {
+      data: { text: "many services" },
+      headers: {
+        "x-kk-categories-mock":
+          "Plumber,Electrician,Carpenter,Painter,Welder,Hospital",
+        "x-kk-ai-mock": JSON.stringify({
+          mainCategory: "",
+          isNew: false,
+          confidence: 0.7,
+          safety: "yellow",
+          workTags: [],
+          possibleCategories: [
+            "Plumber",
+            "Electrician",
+            "Carpenter",
+            "Painter",
+            "Welder",
+            "Hospital",
+          ],
+        }),
+      },
+    });
+    const body = await res.json();
+    expect(body.needsSingleCategoryChoice).toBe(true);
+    expect(body.possibleCategories).toHaveLength(4);
+  });
+
+  test("16) multi-category: case-insensitive dedupe across AI repeats", async ({
+    page,
+  }) => {
+    const res = await page.request.post(appUrl(RESOLVE_PATH), {
+      data: { text: "dupes" },
+      headers: {
+        "x-kk-categories-mock": "Plumber,Electrician",
+        "x-kk-ai-mock": JSON.stringify({
+          mainCategory: "",
+          isNew: false,
+          confidence: 0.7,
+          safety: "yellow",
+          workTags: [],
+          possibleCategories: ["plumber", "PLUMBER", "Electrician"],
+        }),
+      },
+    });
+    const body = await res.json();
+    expect(body.needsSingleCategoryChoice).toBe(true);
+    expect(body.possibleCategories).toHaveLength(2);
+    const names = (body.possibleCategories as Array<{ canonical: string }>)
+      .map((p) => p.canonical)
+      .sort();
+    expect(names).toEqual(["Electrician", "Plumber"]);
+  });
+
   test("7) empty/whitespace input → 400 NO_INPUT", async ({ page }) => {
     const empty = await page.request.post(appUrl(RESOLVE_PATH), {
       data: { text: "" },

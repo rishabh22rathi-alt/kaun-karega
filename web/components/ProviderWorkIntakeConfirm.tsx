@@ -26,6 +26,14 @@ export type IntakeState =
       workTags: WorkIntakeWorkTag[];
       reason: WorkIntakeReason;
     }
+  | {
+      // Multi-category disambiguation. Only reachable when the resolve route
+      // returns ≥2 active matches in possibleCategories. The provider MUST
+      // pick exactly one before continuing.
+      kind: "choose-category";
+      text: string;
+      possibleCategories: WorkIntakeMainCategory[];
+    }
   | { kind: "red"; text: string }
   | { kind: "manual"; reason: WorkIntakeReason };
 
@@ -34,6 +42,15 @@ type Props = {
   onUse: () => void;
   onDismiss: () => void;
   onRetry: () => void;
+  /** Yellow-with-proposal CTA. Wired only when the parent's intake exposes a
+   *  clean AI-proposed `mainCategory.canonical`; otherwise the button is not
+   *  rendered. Routes the proposal through the existing pendingNewCategories
+   *  flow — never echoes the raw provider sentence. */
+  onUseProposal?: () => void;
+  /** Multi-category single-choice CTA. Invoked with the canonical the provider
+   *  picked from the choose-category state. The page applies just that one
+   *  canonical and discards the rest — never picks all. */
+  onChoose?: (canonical: string) => void;
 };
 
 const PANEL_BASE =
@@ -56,6 +73,8 @@ export default function ProviderWorkIntakeConfirm({
   onUse,
   onDismiss,
   onRetry,
+  onUseProposal,
+  onChoose,
 }: Props) {
   if (intake.kind === "idle") return null;
 
@@ -68,7 +87,7 @@ export default function ProviderWorkIntakeConfirm({
       className={`${PANEL_BASE} ${
         intake.kind === "green"
           ? "border-green-300 bg-green-50/70"
-          : intake.kind === "yellow"
+          : intake.kind === "yellow" || intake.kind === "choose-category"
           ? "border-amber-300 bg-amber-50/70"
           : intake.kind === "red"
           ? "border-red-300 bg-red-50/70"
@@ -128,20 +147,105 @@ export default function ProviderWorkIntakeConfirm({
       ) : null}
 
       {intake.kind === "yellow" ? (
+        (() => {
+          // Yellow-with-proposal: the AI proposed a short clean category name
+          // (server-clamped to ≤30 chars, ≤3 words). Surface it as the first
+          // CTA so the provider doesn't reach for "+ Add as new service" with
+          // their raw sentence still in the input. When no proposal exists,
+          // fall back to the original "Try different wording / Choose manually"
+          // copy unchanged. ALSO skip the proposal CTA when the AI's
+          // mainCategory turns out to be an EXISTING active canonical (yellow
+          // can carry isExisting=true via LOW_CONFIDENCE downgrade) — sending
+          // such a name through pendingNewCategories would duplicate an
+          // existing taxonomy entry.
+          const proposal = intake.mainCategory?.canonical?.trim() || "";
+          const proposalIsNew = intake.mainCategory?.isExisting === false;
+          const hasProposal =
+            proposal.length > 0 && proposalIsNew && Boolean(onUseProposal);
+          return (
+            <div className="space-y-2">
+              <p className="text-sm font-semibold text-slate-800">
+                We could not find this in our list yet.
+              </p>
+              {hasProposal ? (
+                <p className="text-sm text-slate-700">
+                  <span className="font-semibold">
+                    Suggested new service name:
+                  </span>{" "}
+                  <span data-testid="kk-work-intake-confirm-proposal">
+                    {proposal}
+                  </span>
+                </p>
+              ) : (
+                <p className="text-sm text-slate-700">
+                  Please choose from the list below or add it as a new service
+                  for review.
+                </p>
+              )}
+              <div className="flex flex-wrap gap-2 pt-1">
+                {hasProposal ? (
+                  <button
+                    type="button"
+                    data-testid="kk-work-intake-confirm-use-proposal"
+                    onClick={onUseProposal}
+                    className={BUTTON_PRIMARY}
+                  >
+                    Use this as a new service
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  data-testid="kk-work-intake-confirm-retry"
+                  onClick={onRetry}
+                  className={hasProposal ? BUTTON_SECONDARY : BUTTON_PRIMARY}
+                >
+                  Try different wording
+                </button>
+                <button
+                  type="button"
+                  data-testid="kk-work-intake-confirm-dismiss"
+                  onClick={onDismiss}
+                  className={BUTTON_SECONDARY}
+                >
+                  Choose manually
+                </button>
+              </div>
+            </div>
+          );
+        })()
+      ) : null}
+
+      {intake.kind === "choose-category" ? (
         <div className="space-y-2">
           <p className="text-sm font-semibold text-slate-800">
-            We could not match this exactly yet.
+            You mentioned more than one type of work.
           </p>
           <p className="text-sm text-slate-700">
-            Please choose from the list below or add it as a new service for
-            review.
+            Please choose your main service for now:
           </p>
+          <div
+            className="flex flex-wrap gap-2 pt-1"
+            data-testid="kk-work-intake-confirm-choices"
+          >
+            {intake.possibleCategories.map((option) => (
+              <button
+                key={option.canonical}
+                type="button"
+                data-testid="kk-work-intake-confirm-choice"
+                data-canonical={option.canonical}
+                onClick={() => onChoose?.(option.canonical)}
+                className={BUTTON_PRIMARY}
+              >
+                {option.canonical}
+              </button>
+            ))}
+          </div>
           <div className="flex flex-wrap gap-2 pt-1">
             <button
               type="button"
               data-testid="kk-work-intake-confirm-retry"
               onClick={onRetry}
-              className={BUTTON_PRIMARY}
+              className={BUTTON_SECONDARY}
             >
               Try different wording
             </button>

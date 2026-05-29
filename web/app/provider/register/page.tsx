@@ -9,12 +9,17 @@ import ProviderAliasSubmitter from "@/components/ProviderAliasSubmitter";
 import { PROVIDER_PROFILE_UPDATED_EVENT } from "@/components/sidebarEvents";
 import { useTypewriterPlaceholder } from "@/hooks/useTypewriterPlaceholder";
 import {
+  isProviderWorkIntakeAssistantEnabled,
   isProviderWorkIntakeConfirmEnabled,
   isProviderWorkIntakeEnabled,
 } from "@/lib/featureFlags";
 import ProviderWorkIntakeConfirm, {
   type IntakeState,
 } from "@/components/ProviderWorkIntakeConfirm";
+import ProviderWorkIntakeAssistant, {
+  type AssistantApplyGreen,
+  type AssistantApplyYellowProposal,
+} from "@/components/provider/ProviderWorkIntakeAssistant";
 import { fetchResolve } from "@/lib/workIntake/clientResolve";
 import {
   PROVIDER_PLEDGE_TEXT,
@@ -182,6 +187,22 @@ function toCategoryLookup(list: string[]): Set<string> {
 
 function uniqueCategoryValues(list: string[]): string[] {
   return uniqueStrings(list.map((item) => normalizeCategoryInput(item)));
+}
+
+// Heuristic sentence detector used by the Phase 2B sentence guard. A "sentence"
+// is anything that's too long OR has too many whitespace-separated tokens to
+// reasonably be a category name. Short Title-Case names ("Pet Grooming",
+// "Packers Movers", "Event Decoration") stay below both bounds; provider
+// natural-language inputs ("main packing shifting loading karta hu") cross them.
+// Pure function so the test boundary is just the constants above.
+const SENTENCE_GUARD_MAX_LEN = 30;
+const SENTENCE_GUARD_MAX_WORDS = 4;
+function looksLikeSentence(text: string): boolean {
+  const normalized = normalizeCategoryInput(text);
+  if (!normalized) return false;
+  if (normalized.length > SENTENCE_GUARD_MAX_LEN) return true;
+  const wordCount = normalized.split(/\s+/).filter(Boolean).length;
+  return wordCount > SENTENCE_GUARD_MAX_WORDS;
 }
 
 async function parseJsonSafe(response: Response): Promise<any> {
@@ -398,6 +419,27 @@ function ProviderRegisterPageInner() {
   const [pledgeAccepted, setPledgeAccepted] = useState(false);
   const [pledgeError, setPledgeError] = useState<string | null>(null);
 
+  const showAssistantAppliedHint = () => {
+    // After the assistant applies its resolution + plays the thanking
+    // voice/visual feedback, surface the post-submit reminder so the provider
+    // knows they still need to tap Submit Application. The toast auto-dismiss
+    // is slightly longer than the page's existing "Saved" toast so providers
+    // have time to read a longer Hinglish sentence.
+    const id = `aa-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    setToasts((current) => [
+      ...current,
+      {
+        id,
+        title: "Aage badhein",
+        message:
+          "Ab registration complete karne ke liye form submit karein.",
+      },
+    ]);
+    window.setTimeout(() => {
+      setToasts((current) => current.filter((t) => t.id !== id));
+    }, 4500);
+  };
+
   const showSuccessToast = (message: string) => {
     const id = `save-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     setToasts((current) => [...current, { id, title: "Saved", message }]);
@@ -431,9 +473,17 @@ function ProviderRegisterPageInner() {
   // Phase 2B — "Mera kaam samjho" confirmation flow. Forced OFF in edit mode
   // (ProviderAliasSubmitter handles the equivalent surface against an existing
   // provider row) and when the Phase 1 flag is off (the trigger lives inside
-  // the Phase 1 panel).
+  // the Phase 1 panel). Also forced OFF when the voice-first assistant flag is
+  // ON — the assistant modal replaces this inline UI as the production AI
+  // surface. The inline path stays for QA bisection when the assistant flag
+  // is off.
+  const workIntakeAssistantEnabled =
+    !isEditMode && isProviderWorkIntakeAssistantEnabled();
   const workIntakeConfirmEnabled =
-    !isEditMode && isProviderWorkIntakeConfirmEnabled();
+    !isEditMode &&
+    !workIntakeAssistantEnabled &&
+    isProviderWorkIntakeConfirmEnabled();
+  const [assistantOpen, setAssistantOpen] = useState(false);
   const [intake, setIntake] = useState<IntakeState>({ kind: "idle" });
   // Per-canonical bag of AI-suggested tags that aren't yet active aliases.
   // Folded into the existing `workTags` JSON payload at submit time so no new
@@ -513,6 +563,21 @@ function ProviderRegisterPageInner() {
         setIntake({ kind: "red", text });
         return;
       }
+      // Multi-category disambiguation takes precedence over yellow/green so
+      // that a misbehaving model that ALSO set mainCategory can't bypass the
+      // single-choice gate. The route already enforced ≥2 active matches.
+      if (
+        data.needsSingleCategoryChoice &&
+        Array.isArray(data.possibleCategories) &&
+        data.possibleCategories.length >= 2
+      ) {
+        setIntake({
+          kind: "choose-category",
+          text,
+          possibleCategories: data.possibleCategories,
+        });
+        return;
+      }
       if (data.safety === "yellow" || !data.mainCategory) {
         setIntake({
           kind: "yellow",
@@ -552,6 +617,155 @@ function ProviderRegisterPageInner() {
     // "Try different wording" — return to idle so the panel disappears; we
     // intentionally don't auto-rerun: the provider needs to type new text.
     dismissIntake();
+  };
+
+  // ── Assistant adapters (Phase 2B voice rework) ────────────────────────────
+  // These callbacks receive resolution data DIRECTLY from the assistant modal
+  // (which owns its own state machine) and route it through the exact same
+  // form-mutation paths the inline-confirm handlers use. The voice path and
+  // the inline-confirm path therefore land identical wire payloads.
+  const applyGreenFromAssistant = (data: AssistantApplyGreen) => {
+    const { mainCategory, workTags } = data;
+    if (!mainCategory.isExisting) return;
+    const canonical = mainCategory.canonical;
+    const canonKey = categoryKey(canonical);
+
+    setSelectedCategories((prev) => {
+      if (hasCategoryKey(prev, canonKey)) return prev;
+      if (prev.length >= MAX_CATEGORIES) return prev;
+      return [...prev, canonical];
+    });
+    setCustomCategoryKeys((prev) => prev.filter((k) => k !== canonKey));
+
+    const existingLabels: string[] = [];
+    const newLabels: string[] = [];
+    for (const tag of workTags) {
+      const label = String(tag.label || "").trim();
+      if (!label) continue;
+      if (tag.isExistingAlias) existingLabels.push(label);
+      else newLabels.push(label);
+    }
+    if (existingLabels.length > 0) {
+      setSelectedWorkTags((prev) => {
+        const current = prev[canonKey] || [];
+        const merged = [...current];
+        for (const label of existingLabels) {
+          if (!merged.includes(label)) merged.push(label);
+        }
+        if (merged.length === current.length) return prev;
+        return { ...prev, [canonKey]: merged };
+      });
+    }
+    if (newLabels.length > 0) {
+      setPendingWorkTags((prev) => {
+        const current = prev[canonKey] || [];
+        const merged = [...current];
+        for (const label of newLabels) {
+          if (!merged.includes(label)) merged.push(label);
+        }
+        if (merged.length === current.length) return prev;
+        return { ...prev, [canonKey]: merged };
+      });
+    }
+    setCatQuery("");
+    setSubmitError("");
+    setSuccess(null);
+    showAssistantAppliedHint();
+  };
+
+  const applyYellowProposalFromAssistant = (
+    data: AssistantApplyYellowProposal
+  ) => {
+    const proposed = (data.mainCategory.canonical ?? "").trim();
+    if (!proposed) return;
+    if (data.mainCategory.isExisting) return; // defensive — only new proposals
+    const key = categoryKey(proposed);
+    const selectedKeys = toCategoryLookup(selectedCategories);
+    if (!selectedKeys.has(key)) {
+      if (selectedCategories.length >= MAX_CATEGORIES) return;
+      setSelectedCategories((prev) => uniqueCategoryValues([...prev, proposed]));
+    }
+    setCustomCategoryKeys((prev) =>
+      prev.includes(key) ? prev : [...prev, key]
+    );
+    setCatQuery("");
+    setSubmitError("");
+    setSuccess(null);
+    triggerConfettiAndModal();
+    showAssistantAppliedHint();
+  };
+
+  const applySingleChoiceFromAssistant = (canonical: string) => {
+    const name = String(canonical || "").trim();
+    if (!name) return;
+    const key = categoryKey(name);
+    setSelectedCategories(() => [name]);
+    setCustomCategoryKeys((prev) => prev.filter((k) => k !== key));
+    setSelectedWorkTags((wt) => (Object.keys(wt).length === 0 ? wt : {}));
+    setPendingWorkTags((wt) => (Object.keys(wt).length === 0 ? wt : {}));
+    setCatQuery("");
+    setSubmitError("");
+    setSuccess(null);
+    showAssistantAppliedHint();
+  };
+
+  const applySingleCategoryChoice = (canonical: string) => {
+    // Multi-category disambiguation. Provider picked ONE of the AI-suggested
+    // possibles — apply ONLY that canonical. Other possibles are intentionally
+    // dropped; we never write multiple categories. The chosen canonical is
+    // already server-validated as an active member of the closed set, so this
+    // path does NOT touch customCategoryKeys (it's not a pending request) and
+    // does NOT attach workTags (phase 8 scope: tags would need per-canonical
+    // mapping the resolve route doesn't provide today — punt to provider's
+    // manual chip taps under the canonical's existing tag strip).
+    if (intake.kind !== "choose-category") return;
+    const match = intake.possibleCategories.find(
+      (p) => categoryKey(p.canonical) === categoryKey(canonical)
+    );
+    if (!match) return;
+    const name = match.canonical;
+    const key = categoryKey(name);
+
+    setSelectedCategories(() => [name]);
+    setCustomCategoryKeys((prev) => prev.filter((k) => k !== key));
+    // Clear any orphan tags carried over from a prior, now-replaced canonical.
+    setSelectedWorkTags((wt) => (Object.keys(wt).length === 0 ? wt : {}));
+    setPendingWorkTags((wt) => (Object.keys(wt).length === 0 ? wt : {}));
+    setCatQuery("");
+    setSubmitError("");
+    setSuccess(null);
+    setIntake({ kind: "idle" });
+  };
+
+  const applyYellowProposal = () => {
+    // Yellow path with an AI-proposed clean category name. Routes the
+    // SERVER-CLAMPED proposed name (not the raw catQuery sentence) through the
+    // existing pendingNewCategories flow. Never mutates selectedWorkTags from
+    // the yellow path — those tags are informational only until the category is
+    // approved.
+    if (intake.kind !== "yellow") return;
+    const proposed = (intake.mainCategory?.canonical ?? "").trim();
+    if (!proposed) return;
+
+    const key = categoryKey(proposed);
+
+    const selectedKeys = toCategoryLookup(selectedCategories);
+    if (!selectedKeys.has(key)) {
+      if (selectedCategories.length >= MAX_CATEGORIES) {
+        setIntake({ kind: "idle" });
+        return;
+      }
+      setSelectedCategories((prev) => uniqueCategoryValues([...prev, proposed]));
+    }
+    setCustomCategoryKeys((prev) =>
+      prev.includes(key) ? prev : [...prev, key]
+    );
+
+    setCatQuery("");
+    setSubmitError("");
+    setSuccess(null);
+    setIntake({ kind: "idle" });
+    triggerConfettiAndModal();
   };
 
   const applyGreenResolution = () => {
@@ -1366,7 +1580,18 @@ function ProviderRegisterPageInner() {
     filteredCategories.length === 0;
   const totalSelectedServices = selectedCategories.length;
   const isMaxReached = totalSelectedServices >= MAX_CATEGORIES;
-  const canAddCustomCategory = noMatch;
+  // Phase 2B sentence guard. Active when EITHER the assistant flow or the
+  // legacy inline confirm flow is enabled, so the manual "+ Add as new
+  // service" path can never be the only path for a sentence-shaped input.
+  // Pre-Phase-2B deploys (both flags off) keep their exact current behaviour.
+  // When the guard fires we ALSO hide the "+ Add as new service" affordance —
+  // the inline hint below points the provider at the AI surface, which
+  // produces a clean Title-Case category name (yellow proposal) or routes
+  // multi-service mentions through the single-choice gate.
+  const sentenceGuardActive =
+    (workIntakeAssistantEnabled || workIntakeConfirmEnabled) &&
+    looksLikeSentence(normalizedCatQuery);
+  const canAddCustomCategory = noMatch && !sentenceGuardActive;
   const canAddCustomArea =
     normalizedAreaQuery.length >= 3 &&
     !isLoadingAreas &&
@@ -1929,71 +2154,107 @@ function ProviderRegisterPageInner() {
                     data-testid="kk-work-intake-section"
                     className="mb-3 rounded-xl border border-orange-200 bg-orange-50/60 px-3 py-2.5"
                   >
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <p className="text-sm font-bold text-[#003d20]">
-                        What work do you do?
-                      </p>
-                      <div className="flex flex-wrap items-center gap-2">
-                        {workIntakeConfirmEnabled ? (
-                          <button
-                            type="button"
-                            data-testid="kk-work-intake-trigger"
-                            onClick={handleRunIntake}
-                            disabled={
-                              catQuery.trim().length < 3 ||
-                              selectedCategories.length >= MAX_CATEGORIES ||
-                              intake.kind === "resolving"
-                            }
-                            className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-[#003d20] bg-[#003d20] px-3 py-1.5 text-xs font-bold text-white shadow-sm transition hover:bg-[#002a16] disabled:cursor-not-allowed disabled:opacity-60"
-                          >
-                            <span aria-hidden="true">✨</span>
-                            {intake.kind === "resolving"
-                              ? "Understanding…"
-                              : "Mera kaam samjho"}
-                          </button>
-                        ) : null}
-                        <button
-                          type="button"
-                          data-testid="kk-bol-ke-samjhaaye"
-                          aria-expanded={showBolExplanation}
-                          onClick={() => setShowBolExplanation((v) => !v)}
-                          className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-[#003d20] bg-white px-3 py-1.5 text-xs font-bold text-[#003d20] shadow-sm transition hover:bg-[#003d20] hover:text-white"
-                        >
-                          <span aria-hidden="true">💬</span>
-                          Bol ke samjhaaye
-                        </button>
-                      </div>
-                    </div>
-
-                    {workIntakeConfirmEnabled ? (
-                      <ProviderWorkIntakeConfirm
-                        intake={intake}
-                        onUse={applyGreenResolution}
-                        onDismiss={dismissIntake}
-                        onRetry={retryIntake}
-                      />
-                    ) : null}
-
-                    {showBolExplanation ? (
-                      <div
-                        data-testid="kk-bol-explanation"
-                        className="mt-2.5 rounded-xl border border-orange-200 bg-white px-3 py-2.5 text-xs leading-5 text-slate-700"
-                      >
-                        <p>
-                          Apna kaam simple bhasha mein bataiye. Jaise aap
-                          customer ko samjhate ho, waise hi yahan likhiye. Kaun
-                          Karega aapke kaam ko sahi service aur work type mein
-                          set karne mein madad karega.
+                    {workIntakeAssistantEnabled ? (
+                      // Voice-first surface. ONE button opens the assistant
+                      // modal; the modal owns the AI conversation, the
+                      // confirmation bubbles, and the multi-category choice.
+                      // The inline kk-work-intake-trigger / kk-work-intake-
+                      // confirm / kk-bol-ke-samjhaaye toggles are intentionally
+                      // absent here — they only render in the legacy QA
+                      // bisection mode below.
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                        <p className="text-sm font-bold text-[#003d20]">
+                          What work do you do?
                         </p>
                         <button
                           type="button"
-                          onClick={() => setShowBolExplanation(false)}
-                          className="mt-2 inline-flex items-center rounded-full bg-[#003d20] px-3 py-1 text-[11px] font-semibold text-white transition hover:bg-[#002a16]"
+                          data-testid="kk-work-intake-open-assistant"
+                          onClick={() => setAssistantOpen(true)}
+                          disabled={
+                            selectedCategories.length >= MAX_CATEGORIES ||
+                            showSuccessCelebration
+                          }
+                          className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-[#003d20] bg-[#003d20] px-3 py-1.5 text-xs font-bold text-white shadow-sm transition hover:bg-[#002a16] disabled:cursor-not-allowed disabled:opacity-60"
                         >
-                          Theek hai
+                          <span aria-hidden="true">🎤</span>
+                          Apna kaam bol ke samjhaaye
                         </button>
                       </div>
-                    ) : null}
+                    ) : (
+                      // Legacy Phase 1 + 2B inline UI, gated behind the
+                      // (assistant-off, confirm-on) and (assistant-off,
+                      // confirm-off) deploys. Preserved verbatim so QA can
+                      // bisect rollback states without code churn.
+                      <>
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <p className="text-sm font-bold text-[#003d20]">
+                            What work do you do?
+                          </p>
+                          <div className="flex flex-wrap items-center gap-2">
+                            {workIntakeConfirmEnabled ? (
+                              <button
+                                type="button"
+                                data-testid="kk-work-intake-trigger"
+                                onClick={handleRunIntake}
+                                disabled={
+                                  catQuery.trim().length < 3 ||
+                                  selectedCategories.length >= MAX_CATEGORIES ||
+                                  intake.kind === "resolving"
+                                }
+                                className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-[#003d20] bg-[#003d20] px-3 py-1.5 text-xs font-bold text-white shadow-sm transition hover:bg-[#002a16] disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                <span aria-hidden="true">✨</span>
+                                {intake.kind === "resolving"
+                                  ? "Understanding…"
+                                  : "Mera kaam samjho"}
+                              </button>
+                            ) : null}
+                            <button
+                              type="button"
+                              data-testid="kk-bol-ke-samjhaaye"
+                              aria-expanded={showBolExplanation}
+                              onClick={() => setShowBolExplanation((v) => !v)}
+                              className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-[#003d20] bg-white px-3 py-1.5 text-xs font-bold text-[#003d20] shadow-sm transition hover:bg-[#003d20] hover:text-white"
+                            >
+                              <span aria-hidden="true">💬</span>
+                              Bol ke samjhaaye
+                            </button>
+                          </div>
+                        </div>
+
+                        {workIntakeConfirmEnabled ? (
+                          <ProviderWorkIntakeConfirm
+                            intake={intake}
+                            onUse={applyGreenResolution}
+                            onDismiss={dismissIntake}
+                            onRetry={retryIntake}
+                            onUseProposal={applyYellowProposal}
+                            onChoose={applySingleCategoryChoice}
+                          />
+                        ) : null}
+
+                        {showBolExplanation ? (
+                          <div
+                            data-testid="kk-bol-explanation"
+                            className="mt-2.5 rounded-xl border border-orange-200 bg-white px-3 py-2.5 text-xs leading-5 text-slate-700"
+                          >
+                            <p>
+                              Apna kaam simple bhasha mein bataiye. Jaise aap
+                              customer ko samjhate ho, waise hi yahan likhiye.
+                              Kaun Karega aapke kaam ko sahi service aur work
+                              type mein set karne mein madad karega.
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() => setShowBolExplanation(false)}
+                              className="mt-2 inline-flex items-center rounded-full bg-[#003d20] px-3 py-1 text-[11px] font-semibold text-white transition hover:bg-[#002a16]"
+                            >
+                              Theek hai
+                            </button>
+                          </div>
+                        ) : null}
+                      </>
+                    )}
                   </div>
                 ) : null}
 
@@ -2126,6 +2387,21 @@ function ProviderRegisterPageInner() {
                         + Add &ldquo;{normalizedCatQuery}&rdquo; as new
                         service
                       </button>
+                    ) : null}
+                    {sentenceGuardActive && !isMaxReached ? (
+                      <p
+                        data-testid="kk-work-intake-sentence-hint"
+                        className="basis-full text-xs text-amber-800"
+                      >
+                        Tap{" "}
+                        <span className="font-semibold">
+                          {workIntakeAssistantEnabled
+                            ? "Apna kaam bol ke samjhaaye"
+                            : "Mera kaam samjho"}
+                        </span>{" "}
+                        to find the right category — sentences cannot be added
+                        directly.
+                      </p>
                     ) : null}
                     </div>
                   ) : null}
@@ -2851,6 +3127,16 @@ function ProviderRegisterPageInner() {
         </div>
       ) : null}
       <InAppToastStack toasts={toasts} onDismiss={dismissToast} />
+      {workIntakeAssistantEnabled ? (
+        <ProviderWorkIntakeAssistant
+          open={assistantOpen}
+          onClose={() => setAssistantOpen(false)}
+          cityCode={selectedCityCode || undefined}
+          onApplyGreen={applyGreenFromAssistant}
+          onApplyYellowProposal={applyYellowProposalFromAssistant}
+          onApplySingleChoice={applySingleChoiceFromAssistant}
+        />
+      ) : null}
       {showSuccessCelebration ? (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/60 px-4">
           <div className="w-full max-w-md rounded-2xl border border-emerald-200 bg-white p-6 text-center shadow-2xl">

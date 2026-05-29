@@ -17,10 +17,30 @@ const SYSTEM_INSTRUCTIONS = `You classify a service provider's free-text descrip
 The provider may write in Hindi, Hinglish, Marwari, or English.
 
 Rules:
-- Choose AT MOST ONE main category. It MUST be copied EXACTLY from the ACTIVE
-  CATEGORIES list when one fits. If none fits, set mainCategory to "" (empty)
-  and isNew=true with a short proposed category name in workTags is NOT required
-  — just leave mainCategory empty and isNew=true.
+- Choose AT MOST ONE main category.
+  - If an active category fits, mainCategory MUST be copied EXACTLY from the
+    ACTIVE CATEGORIES list and isNew=false.
+  - If none fits but the work is a normal/legal service, propose a short clean
+    category name in mainCategory and set isNew=true. The proposal MUST be:
+      * Title Case (e.g. "Packers & Movers"),
+      * 1 to 3 words,
+      * at most 30 characters,
+      * the CORE business/category name only — NOT the provider's raw sentence,
+      * examples: "Packers & Movers", "Furniture Polish", "Pet Grooming",
+        "Event Decoration".
+    NEVER echo a long natural-language sentence as mainCategory. Specific
+    services the provider mentioned go in workTags, not mainCategory.
+- MULTI-CATEGORY rule:
+  - If the provider mentions multiple unrelated ACTIVE categories (e.g.
+    "plumber electrician painting sab karta hu"), do NOT pick one — instead
+    leave mainCategory empty, set isNew=false, and list each candidate canonical
+    EXACTLY as it appears in the ACTIVE CATEGORIES list in possibleCategories
+    (1 to 4 entries).
+  - Use possibleCategories ONLY for active matches. Do not list new/proposed
+    names there — those go in mainCategory as described above.
+  - The provider will be asked to pick a single main service. Do not surface
+    workTags that belong to categories the provider would not choose; when in
+    doubt, return an empty workTags array on multi-category responses.
 - Do NOT invent categories that are not in the list when a listed one fits.
 - workTags: 0-6 short specialisation terms the provider mentioned (e.g. tools,
   materials, sub-services). Keep each short. Never include unsafe content.
@@ -45,7 +65,7 @@ export const WORK_INTAKE_TOOL: Anthropic.Tool = {
       mainCategory: {
         type: "string",
         description:
-          "Exact active category name, or empty string if no active category fits.",
+          "Exact active category name when one fits; otherwise a short Title-Case proposed category name, 1–3 words, max 30 chars. Never echo the provider's raw sentence.",
       },
       isNew: {
         type: "boolean",
@@ -63,6 +83,12 @@ export const WORK_INTAKE_TOOL: Anthropic.Tool = {
         type: "array",
         items: { type: "string" },
         description: "0-6 short specialisation terms.",
+      },
+      possibleCategories: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Optional. When the provider clearly mentions MULTIPLE unrelated ACTIVE categories, list each candidate canonical EXACTLY as in the ACTIVE CATEGORIES list (1–4 entries) and leave mainCategory empty. Do NOT list proposed/new names here.",
       },
     },
     required: ["mainCategory", "isNew", "confidence", "safety", "workTags"],
@@ -138,7 +164,20 @@ export function parseAiRaw(input: unknown): WorkIntakeAiRaw | null {
     ? o.workTags.map((t) => String(t ?? "").trim()).filter((t) => t.length > 0)
     : [];
 
-  return { mainCategory, isNew, confidence, safety, workTags };
+  const possibleCategories = Array.isArray(o.possibleCategories)
+    ? o.possibleCategories
+        .map((c) => String(c ?? "").trim())
+        .filter((c) => c.length > 0)
+    : [];
+
+  return {
+    mainCategory,
+    isNew,
+    confidence,
+    safety,
+    workTags,
+    possibleCategories,
+  };
 }
 
 /**
