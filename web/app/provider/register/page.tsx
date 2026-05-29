@@ -8,7 +8,14 @@ import InAppToastStack, { type InAppToast } from "@/components/InAppToastStack";
 import ProviderAliasSubmitter from "@/components/ProviderAliasSubmitter";
 import { PROVIDER_PROFILE_UPDATED_EVENT } from "@/components/sidebarEvents";
 import { useTypewriterPlaceholder } from "@/hooks/useTypewriterPlaceholder";
-import { isProviderWorkIntakeEnabled } from "@/lib/featureFlags";
+import {
+  isProviderWorkIntakeConfirmEnabled,
+  isProviderWorkIntakeEnabled,
+} from "@/lib/featureFlags";
+import ProviderWorkIntakeConfirm, {
+  type IntakeState,
+} from "@/components/ProviderWorkIntakeConfirm";
+import { fetchResolve } from "@/lib/workIntake/clientResolve";
 import {
   PROVIDER_PLEDGE_TEXT,
   PROVIDER_PLEDGE_VERSION,
@@ -421,6 +428,25 @@ function ProviderRegisterPageInner() {
   // selectedWorkTags, customCategoryKeys, or handleSubmit. It is purely the UI
   // shell the AI resolve flow will plug into in a later phase.
   const workIntakeEnabled = isProviderWorkIntakeEnabled();
+  // Phase 2B — "Mera kaam samjho" confirmation flow. Forced OFF in edit mode
+  // (ProviderAliasSubmitter handles the equivalent surface against an existing
+  // provider row) and when the Phase 1 flag is off (the trigger lives inside
+  // the Phase 1 panel).
+  const workIntakeConfirmEnabled =
+    !isEditMode && isProviderWorkIntakeConfirmEnabled();
+  const [intake, setIntake] = useState<IntakeState>({ kind: "idle" });
+  // Per-canonical bag of AI-suggested tags that aren't yet active aliases.
+  // Folded into the existing `workTags` JSON payload at submit time so no new
+  // wire field is introduced. Tags whose isExistingAlias=true go into
+  // selectedWorkTags directly (same path as a manual chip tap).
+  const [pendingWorkTags, setPendingWorkTags] = useState<
+    Record<string, string[]>
+  >({});
+  // AbortController for the in-flight resolve so a stale response from a
+  // previous catQuery never overwrites the panel after the user starts typing
+  // again. Ref (not state) — we never render off this and React re-renders
+  // would churn the controller unnecessarily.
+  const intakeAbortRef = useRef<AbortController | null>(null);
   // UI-only: whether the "Bol ke samjhaaye" explanation panel is open. The
   // intake input itself reuses the existing `catQuery` state as the single
   // source of truth — no second text state.
@@ -445,6 +471,152 @@ function ProviderRegisterPageInner() {
       pauseCompleteMs: 650,
     }
   );
+
+  // ── Phase 2B — intake resolve handlers ───────────────────────────────────
+  // Cleanup: any time the page unmounts mid-resolve, abort the request so we
+  // don't fire a setState on an unmounted component.
+  useEffect(() => {
+    return () => {
+      intakeAbortRef.current?.abort();
+    };
+  }, []);
+
+  const handleRunIntake = async () => {
+    if (!workIntakeConfirmEnabled) return;
+    const text = catQuery.trim();
+    if (text.length < 3) return;
+    if (selectedCategories.length >= MAX_CATEGORIES) return;
+
+    // Cancel any prior in-flight resolve so a slow earlier request can't
+    // override the response we're about to render.
+    intakeAbortRef.current?.abort();
+    const controller = new AbortController();
+    intakeAbortRef.current = controller;
+
+    setIntake({ kind: "resolving", text });
+
+    try {
+      const data = await fetchResolve(text, selectedCityCode || undefined, {
+        signal: controller.signal,
+      });
+
+      // If a newer trigger / catQuery edit replaced our controller, drop this
+      // response — the user's already moved on.
+      if (intakeAbortRef.current !== controller) return;
+      intakeAbortRef.current = null;
+
+      if (!data.ok) {
+        setIntake({ kind: "manual", reason: data.reason });
+        return;
+      }
+      if (data.blocked || data.safety === "red") {
+        setIntake({ kind: "red", text });
+        return;
+      }
+      if (data.safety === "yellow" || !data.mainCategory) {
+        setIntake({
+          kind: "yellow",
+          text,
+          mainCategory: data.mainCategory,
+          workTags: data.workTags,
+          reason: data.reason,
+        });
+        return;
+      }
+      // safety === green AND mainCategory present. Existence is server-
+      // verified; we trust isExisting=true here as the closed-set gate.
+      setIntake({
+        kind: "green",
+        text,
+        mainCategory: data.mainCategory,
+        workTags: data.workTags,
+      });
+    } catch (err) {
+      // Caller-initiated aborts are intentional — leave state alone, the
+      // input-change effect already moved us to idle.
+      if (err && typeof err === "object" && (err as { name?: string }).name === "AbortError") {
+        return;
+      }
+      if (intakeAbortRef.current === controller) intakeAbortRef.current = null;
+      setIntake({ kind: "manual", reason: "AI_UNAVAILABLE" });
+    }
+  };
+
+  const dismissIntake = () => {
+    intakeAbortRef.current?.abort();
+    intakeAbortRef.current = null;
+    setIntake({ kind: "idle" });
+  };
+
+  const retryIntake = () => {
+    // "Try different wording" — return to idle so the panel disappears; we
+    // intentionally don't auto-rerun: the provider needs to type new text.
+    dismissIntake();
+  };
+
+  const applyGreenResolution = () => {
+    if (intake.kind !== "green") return;
+    const { mainCategory, workTags } = intake;
+    if (!mainCategory.isExisting) {
+      // Server contract: green implies existing in the active set. Defensive
+      // no-op rather than creating a pending category here — that path is the
+      // existing "+ Add as new service" flow, which the user must opt into.
+      dismissIntake();
+      return;
+    }
+
+    const canonical = mainCategory.canonical;
+    const canonKey = categoryKey(canonical);
+
+    // Apply the canonical exactly like a manual canonical tap.
+    setSelectedCategories((prev) => {
+      if (hasCategoryKey(prev, canonKey)) return prev;
+      if (prev.length >= MAX_CATEGORIES) return prev;
+      return [...prev, canonical];
+    });
+    // AI-suggested green never goes through the pending-new flow.
+    setCustomCategoryKeys((prev) => prev.filter((k) => k !== canonKey));
+
+    // Bucket tags: existing aliases → selectedWorkTags (rides existing chip
+    // strip); new suggestions → pendingWorkTags (merged into payload at
+    // submit time, no new wire field).
+    const existingLabels: string[] = [];
+    const newLabels: string[] = [];
+    for (const tag of workTags) {
+      const label = String(tag.label || "").trim();
+      if (!label) continue;
+      if (tag.isExistingAlias) existingLabels.push(label);
+      else newLabels.push(label);
+    }
+
+    if (existingLabels.length > 0) {
+      setSelectedWorkTags((prev) => {
+        const current = prev[canonKey] || [];
+        const merged = [...current];
+        for (const label of existingLabels) {
+          if (!merged.includes(label)) merged.push(label);
+        }
+        if (merged.length === current.length) return prev;
+        return { ...prev, [canonKey]: merged };
+      });
+    }
+    if (newLabels.length > 0) {
+      setPendingWorkTags((prev) => {
+        const current = prev[canonKey] || [];
+        const merged = [...current];
+        for (const label of newLabels) {
+          if (!merged.includes(label)) merged.push(label);
+        }
+        if (merged.length === current.length) return prev;
+        return { ...prev, [canonKey]: merged };
+      });
+    }
+
+    setCatQuery("");
+    setSubmitError("");
+    setSuccess(null);
+    setIntake({ kind: "idle" });
+  };
 
   useEffect(() => {
     const userPhone = getUserPhone();
@@ -1537,6 +1709,32 @@ function ProviderRegisterPageInner() {
         customAreaKeys.includes(areaKey(area))
       );
       const customCategory = pendingNewCategories[0] || "";
+      // Phase 2B: merge AI-suggested-but-not-yet-active tags into the existing
+      // workTags JSON field per canonical. No new wire field — server still
+      // ignores unknowns today; when persistence lands the new tags arrive
+      // through the same key as manually-picked ones.
+      const mergedWorkTags: Record<string, string[]> = {};
+      const tagKeys = new Set<string>([
+        ...Object.keys(selectedWorkTags),
+        ...Object.keys(pendingWorkTags),
+      ]);
+      for (const k of tagKeys) {
+        const seen = new Set<string>();
+        const merged: string[] = [];
+        for (const t of selectedWorkTags[k] || []) {
+          if (!seen.has(t)) {
+            seen.add(t);
+            merged.push(t);
+          }
+        }
+        for (const t of pendingWorkTags[k] || []) {
+          if (!seen.has(t)) {
+            seen.add(t);
+            merged.push(t);
+          }
+        }
+        if (merged.length > 0) mergedWorkTags[k] = merged;
+      }
       const payload = {
         action: "provider_register",
         phone,
@@ -1549,7 +1747,7 @@ function ProviderRegisterPageInner() {
         // MVP: ship tag picks on the wire. Backend currently ignores unknown
         // fields — when DB persistence lands the route reads this directly.
         // Edit-mode path doesn't reach this payload.
-        workTags: JSON.stringify(selectedWorkTags),
+        workTags: JSON.stringify(mergedWorkTags),
         requiresAdminApproval:
           pendingNewCategories.length > 0 || pendingNewAreas.length > 0 ? "true" : "false",
         // Provider Responsibility Pledge — version only. The server
@@ -1731,21 +1929,50 @@ function ProviderRegisterPageInner() {
                     data-testid="kk-work-intake-section"
                     className="mb-3 rounded-xl border border-orange-200 bg-orange-50/60 px-3 py-2.5"
                   >
-                    <div className="flex items-center justify-between gap-3">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
                       <p className="text-sm font-bold text-[#003d20]">
                         What work do you do?
                       </p>
-                      <button
-                        type="button"
-                        data-testid="kk-bol-ke-samjhaaye"
-                        aria-expanded={showBolExplanation}
-                        onClick={() => setShowBolExplanation((v) => !v)}
-                        className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-[#003d20] bg-white px-3 py-1.5 text-xs font-bold text-[#003d20] shadow-sm transition hover:bg-[#003d20] hover:text-white"
-                      >
-                        <span aria-hidden="true">💬</span>
-                        Bol ke samjhaaye
-                      </button>
+                      <div className="flex flex-wrap items-center gap-2">
+                        {workIntakeConfirmEnabled ? (
+                          <button
+                            type="button"
+                            data-testid="kk-work-intake-trigger"
+                            onClick={handleRunIntake}
+                            disabled={
+                              catQuery.trim().length < 3 ||
+                              selectedCategories.length >= MAX_CATEGORIES ||
+                              intake.kind === "resolving"
+                            }
+                            className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-[#003d20] bg-[#003d20] px-3 py-1.5 text-xs font-bold text-white shadow-sm transition hover:bg-[#002a16] disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            <span aria-hidden="true">✨</span>
+                            {intake.kind === "resolving"
+                              ? "Understanding…"
+                              : "Mera kaam samjho"}
+                          </button>
+                        ) : null}
+                        <button
+                          type="button"
+                          data-testid="kk-bol-ke-samjhaaye"
+                          aria-expanded={showBolExplanation}
+                          onClick={() => setShowBolExplanation((v) => !v)}
+                          className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-[#003d20] bg-white px-3 py-1.5 text-xs font-bold text-[#003d20] shadow-sm transition hover:bg-[#003d20] hover:text-white"
+                        >
+                          <span aria-hidden="true">💬</span>
+                          Bol ke samjhaaye
+                        </button>
+                      </div>
                     </div>
+
+                    {workIntakeConfirmEnabled ? (
+                      <ProviderWorkIntakeConfirm
+                        intake={intake}
+                        onUse={applyGreenResolution}
+                        onDismiss={dismissIntake}
+                        onRetry={retryIntake}
+                      />
+                    ) : null}
 
                     {showBolExplanation ? (
                       <div
@@ -1791,6 +2018,16 @@ function ProviderRegisterPageInner() {
                         onChange={(event) => {
                           const formatted = capitalizeWords(event.target.value);
                           setCatQuery(formatted);
+                          // Phase 2B: any text edit invalidates the current
+                          // resolve. Abort in-flight + dismiss panel so a stale
+                          // green/yellow card can't reappear against new text.
+                          if (workIntakeConfirmEnabled) {
+                            intakeAbortRef.current?.abort();
+                            intakeAbortRef.current = null;
+                            setIntake((prev) =>
+                              prev.kind === "idle" ? prev : { kind: "idle" }
+                            );
+                          }
                         }}
                         disabled={isMaxReached || showSuccessCelebration}
                         aria-label={

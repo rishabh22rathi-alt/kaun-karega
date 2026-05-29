@@ -42,3 +42,24 @@ export function isProviderWorkIntakeAiEnabled(): boolean {
       .toLowerCase() === "true"
   );
 }
+
+/**
+ * CLIENT flag — Phase 2B "Mera kaam samjho" confirmation trigger + panel.
+ *
+ * Precedence (intentional): this flag is FORCED OFF when the Phase 1 UI flag
+ * (isProviderWorkIntakeEnabled) is OFF. The Phase 2B trigger lives inside the
+ * Phase 1 panel and reuses its catQuery surface, so it cannot be meaningfully
+ * shown without Phase 1's UI shell. Keeping the precedence here (not at every
+ * call site) means a misconfigured deploy (confirm=on, phase1=off) silently
+ * behaves as "Phase 1 off" rather than rendering a half-broken panel.
+ *
+ * NEXT_PUBLIC_* → inlined at build time, safe to call during render.
+ */
+export function isProviderWorkIntakeConfirmEnabled(): boolean {
+  if (!isProviderWorkIntakeEnabled()) return false;
+  return (
+    String(process.env.NEXT_PUBLIC_PROVIDER_WORK_INTAKE_CONFIRM_ENABLED || "")
+      .trim()
+      .toLowerCase() === "true"
+  );
+}

@@ -47,6 +47,13 @@ const FLAG_ON =
   String(process.env.NEXT_PUBLIC_PROVIDER_WORK_INTAKE_ENABLED || "")
     .trim()
     .toLowerCase() === "true";
+// Phase 2B confirm flag — declared here so a Phase 1 spec can guarantee the
+// trigger toggles in lockstep with the new flag without owning the rest of
+// the Phase 2B suite.
+const CONFIRM_FLAG_ON =
+  String(process.env.NEXT_PUBLIC_PROVIDER_WORK_INTAKE_CONFIRM_ENABLED || "")
+    .trim()
+    .toLowerCase() === "true";
 
 // Mirrors the helper in provider-register-category-and-aliases.spec.ts: the
 // register page reads the unsigned UI-hint cookie at mount; without it the page
@@ -214,5 +221,27 @@ test.describe("Provider work intake — flag ON", () => {
     await search.click();
     await search.pressSequentially("describe my work", { delay: 15 });
     await expect(search).toHaveValue("Describe My Work");
+  });
+
+  // ── Phase 2B confirm-flag interlock ────────────────────────────────────
+  // Both branches share Phase 1's setup; we only assert the trigger's
+  // presence to keep this spec focused. The full Phase 2B behaviour lives
+  // in provider-work-intake-confirm.spec.ts.
+  test("Phase 2B trigger absent when CONFIRM flag is off", async ({ page }) => {
+    test.skip(CONFIRM_FLAG_ON, "runs only when confirm flag is OFF");
+    await gotoPath(page, "/provider/register");
+    await expect(page.getByTestId("kk-work-intake-section")).toBeVisible({
+      timeout: 5_000,
+    });
+    await expect(page.getByTestId("kk-work-intake-trigger")).toHaveCount(0);
+  });
+
+  test("Phase 2B trigger present when CONFIRM flag is on", async ({ page }) => {
+    test.skip(!CONFIRM_FLAG_ON, "runs only when confirm flag is ON");
+    await gotoPath(page, "/provider/register");
+    await expect(page.getByTestId("kk-work-intake-section")).toBeVisible({
+      timeout: 5_000,
+    });
+    await expect(page.getByTestId("kk-work-intake-trigger")).toBeVisible();
   });
 });
