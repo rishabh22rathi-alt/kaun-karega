@@ -69,8 +69,30 @@ export const WORK_INTAKE_TOOL: Anthropic.Tool = {
   },
 };
 
-function buildSystemBlocks(candidates: string[]): Anthropic.TextBlockParam[] {
-  const list = candidates.length > 0 ? candidates.join("\n") : "(none)";
+/**
+ * Render the candidate block as one line per active canonical, with any known
+ * aliases inlined as disambiguation hints. Aliases are NOT membership — the
+ * server still decides existence post-AI against the canonical list — but they
+ * help the model route phrases like "fan repair" / "cooler wiring" to
+ * Electrician instead of guessing AC Repair from surface semantics.
+ */
+export function buildSystemBlocks(
+  candidates: string[],
+  aliasesByCanonical?: Map<string, string[]> | Record<string, string[]>
+): Anthropic.TextBlockParam[] {
+  const aliasLookup =
+    aliasesByCanonical instanceof Map
+      ? aliasesByCanonical
+      : new Map<string, string[]>(
+          aliasesByCanonical ? Object.entries(aliasesByCanonical) : []
+        );
+
+  const lines = candidates.map((name) => {
+    const aliases = aliasLookup.get(name) ?? [];
+    return aliases.length > 0 ? `${name}: ${aliases.join(", ")}` : name;
+  });
+  const list = lines.length > 0 ? lines.join("\n") : "(none)";
+
   // Both blocks are stable across calls within a short window → prompt-cache
   // them so repeated resolves are cheap (the variable text goes in the user
   // turn, which is not cached).
@@ -82,7 +104,7 @@ function buildSystemBlocks(candidates: string[]): Anthropic.TextBlockParam[] {
     },
     {
       type: "text",
-      text: `ACTIVE CATEGORIES (candidate set):\n${list}`,
+      text: `ACTIVE CATEGORIES (candidate set; "Canonical: alias, alias" lines list common ways providers describe that work — pick the canonical, never an alias):\n${list}`,
       cache_control: { type: "ephemeral" },
     },
   ];
@@ -127,6 +149,7 @@ export function parseAiRaw(input: unknown): WorkIntakeAiRaw | null {
 export async function classifyWorkIntake(params: {
   text: string;
   candidates: string[];
+  aliasesByCanonical?: Map<string, string[]>;
   cityCode?: string;
 }): Promise<WorkIntakeAiRaw> {
   const client = getAnthropicClient();
@@ -136,7 +159,7 @@ export async function classifyWorkIntake(params: {
     {
       model: WORK_INTAKE_MODEL,
       max_tokens: WORK_INTAKE_MAX_TOKENS,
-      system: buildSystemBlocks(params.candidates),
+      system: buildSystemBlocks(params.candidates, params.aliasesByCanonical),
       tools: [WORK_INTAKE_TOOL],
       tool_choice: { type: "tool", name: WORK_INTAKE_TOOL_NAME },
       messages: [

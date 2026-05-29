@@ -21,8 +21,9 @@
  *
  * The enabled branch uses the route's test hook (honored only when the server
  * has PROVIDER_WORK_INTAKE_TEST_HOOK=true) to inject a deterministic AI result
- * (x-kk-ai-mock) and a deterministic active-category set (x-kk-categories-mock),
- * so no real model call or DB row is needed.
+ * (x-kk-ai-mock), a deterministic active-category set (x-kk-categories-mock),
+ * and (since the alias-augmented prompt change) a deterministic per-canonical
+ * alias map (x-kk-aliases-mock). No real model call or DB row is needed.
  */
 
 import { bootstrapProviderSession } from "../_support/auth";
@@ -178,6 +179,92 @@ test.describe("work-intake resolve — AI enabled (test hook)", () => {
     expect(body.requestId).toBeUndefined();
     // Dedupe + empty-drop applied to work tags.
     expect(body.workTags).toHaveLength(1);
+  });
+
+  test("8) aliases mock + AI routes cooler/fan → Electrician (green, alias-marked tag)", async ({
+    page,
+  }) => {
+    // Real-prod regression case: "main cooler aur fan repair karta hu" used to
+    // surface as AC Repair 0.7 because the AI saw category names only and
+    // guessed by surface semantics. With aliases inlined under each canonical,
+    // the AI has the disambiguation cue to pick Electrician. We mock the AI to
+    // return what the alias-augmented prompt should now produce, AND verify
+    // the route honours the same alias map for isExistingAlias tagging.
+    const res = await page.request.post(appUrl(RESOLVE_PATH), {
+      data: { text: "main cooler aur fan repair karta hu" },
+      headers: {
+        "x-kk-categories-mock": "Electrician,AC Repair,Plumber",
+        "x-kk-aliases-mock": JSON.stringify({
+          Electrician: ["fan repair", "cooler wiring", "switch repair"],
+          "AC Repair": ["ac gas filling", "ac installation"],
+        }),
+        "x-kk-ai-mock": JSON.stringify({
+          mainCategory: "Electrician",
+          isNew: false,
+          confidence: 0.9,
+          safety: "green",
+          workTags: ["fan repair", "cooler repair"],
+        }),
+      },
+    });
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.safety).toBe("green");
+    expect(body.mainCategory).toMatchObject({
+      canonical: "Electrician",
+      isExisting: true,
+    });
+    expect(body.requiresAdminReview).toBe(false);
+    // "fan repair" is in the alias mock → marked existing; "cooler repair" is
+    // not → marked new. Confirms the same map drives both the prompt and the
+    // post-AI alias tagging when running under the test hook.
+    const byLabel = Object.fromEntries(
+      (body.workTags as Array<{ label: string; isExistingAlias: boolean }>).map(
+        (t) => [t.label, t.isExistingAlias]
+      )
+    );
+    expect(byLabel["fan repair"]).toBe(true);
+    expect(byLabel["cooler repair"]).toBe(false);
+  });
+
+  test("9) aliases mock entries under inactive canonicals are dropped", async ({
+    page,
+  }) => {
+    // Defence-in-depth: an alias whose canonical isn't in the active set must
+    // never leak into the prompt or the isExistingAlias check. Here "AC Repair"
+    // is omitted from x-kk-categories-mock but supplied under aliases — the
+    // route must drop it, so "fan repair" remains a new (not existing) tag.
+    const res = await page.request.post(appUrl(RESOLVE_PATH), {
+      data: { text: "main fan repair karta hu" },
+      headers: {
+        "x-kk-categories-mock": "Welder",
+        "x-kk-aliases-mock": JSON.stringify({
+          "AC Repair": ["fan repair", "ac gas filling"],
+        }),
+        "x-kk-ai-mock": JSON.stringify({
+          mainCategory: "Welder",
+          isNew: false,
+          confidence: 0.9,
+          safety: "green",
+          workTags: ["fan repair"],
+        }),
+      },
+    });
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(body.mainCategory).toMatchObject({
+      canonical: "Welder",
+      isExisting: true,
+    });
+    expect(body.workTags).toHaveLength(1);
+    expect(body.workTags[0]).toMatchObject({
+      label: "fan repair",
+      // AC Repair isn't an active canonical here, so its alias map is dropped
+      // and the tag is treated as new under Welder.
+      isExistingAlias: false,
+      canonical: "Welder",
+    });
   });
 
   test("7) empty/whitespace input → 400 NO_INPUT", async ({ page }) => {

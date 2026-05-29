@@ -6,6 +6,7 @@ import { resolveCategoryAliasDetailed } from "@/lib/categoryAliases";
 import {
   findActiveCanonical,
   loadActiveAliasKeys,
+  loadActiveAliasesByCanonical,
   loadActiveCategoryNames,
   normalizeCategoryKey,
 } from "@/lib/workIntake/categoryCandidates";
@@ -30,12 +31,18 @@ export const dynamic = "force-dynamic";
 // confirm anything before it touches their selection (later phase). Gated by
 // PROVIDER_WORK_INTAKE_AI_ENABLED; falls back to manual on any failure.
 //
-// Test hook: when PROVIDER_WORK_INTAKE_TEST_HOOK === "true", two request headers
-// are honored so the deterministic server logic can be tested without a real AI
-// call or DB:
-//   - x-kk-ai-mock:        JSON WorkIntakeAiRaw (skips the Anthropic call)
-//   - x-kk-categories-mock: comma-separated active category names (skips DB +
-//                           skips alias lookup, so isExistingAlias is false)
+// Test hook: when PROVIDER_WORK_INTAKE_TEST_HOOK === "true", three request
+// headers are honored so the deterministic server logic can be tested without a
+// real AI call or DB:
+//   - x-kk-ai-mock:         JSON WorkIntakeAiRaw (skips the Anthropic call)
+//   - x-kk-categories-mock: comma-separated active category names (skips the
+//                           categories DB read). When provided WITHOUT
+//                           x-kk-aliases-mock, the alias DB read is also
+//                           skipped (legacy behaviour — isExistingAlias=false).
+//   - x-kk-aliases-mock:    JSON object { "Canonical": ["alias", ...], ... }
+//                           used both to seed the AI candidate block with
+//                           alias hints AND to mark isExistingAlias on work
+//                           tags. Only honored alongside x-kk-categories-mock.
 // The hook env is NEVER set in production, so these headers are ignored there.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -133,9 +140,34 @@ export async function POST(request: Request) {
     ? request.headers.get("x-kk-categories-mock")
     : null;
   const aiMockHeader = hookOn ? request.headers.get("x-kk-ai-mock") : null;
+  const aliasesOverrideHeader = hookOn
+    ? request.headers.get("x-kk-aliases-mock")
+    : null;
   const usingCategoriesOverride =
     typeof categoriesOverrideHeader === "string" &&
     categoriesOverrideHeader.length > 0;
+  let aliasesOverride: Record<string, string[]> | null = null;
+  if (
+    usingCategoriesOverride &&
+    typeof aliasesOverrideHeader === "string" &&
+    aliasesOverrideHeader.length > 0
+  ) {
+    try {
+      const parsed = JSON.parse(aliasesOverrideHeader) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const norm: Record<string, string[]> = {};
+        for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+          if (!Array.isArray(v)) continue;
+          norm[k] = v.map((x) => String(x ?? "").trim()).filter(Boolean);
+        }
+        aliasesOverride = norm;
+      }
+    } catch {
+      // Bad JSON in the test hook → ignore the alias mock, behave as if absent.
+      aliasesOverride = null;
+    }
+  }
+  const usingAliasesOverride = aliasesOverride !== null;
 
   // 5) Load active category candidates (closed set). DB error → manual fallback.
   let activeNames: string[];
@@ -181,6 +213,20 @@ export async function POST(request: Request) {
     // Shortcut is best-effort; fall through to the AI path.
   }
 
+  // 6b) Aliases-by-canonical for the AI candidate block. Best-effort: a DB
+  //     error here returns an empty map, so the AI just sees names (prior
+  //     behaviour) — never a hard failure. Under the test hook, the inline
+  //     override is used and the DB is skipped.
+  let aliasesByCanonical: Map<string, string[]>;
+  try {
+    aliasesByCanonical = await loadActiveAliasesByCanonical(
+      activeNames,
+      usingCategoriesOverride ? aliasesOverride ?? {} : undefined
+    );
+  } catch {
+    aliasesByCanonical = new Map();
+  }
+
   // 7) AI classification (or test-hook mock). Any failure → manual fallback.
   let raw: WorkIntakeAiRaw;
   try {
@@ -205,7 +251,12 @@ export async function POST(request: Request) {
           : [],
       };
     } else {
-      raw = await classifyWorkIntake({ text, candidates: activeNames, cityCode });
+      raw = await classifyWorkIntake({
+        text,
+        candidates: activeNames,
+        aliasesByCanonical,
+        cityCode,
+      });
     }
   } catch {
     return noStore({ ok: false, fallbackToManual: true, reason: "AI_UNAVAILABLE" });
@@ -261,12 +312,20 @@ export async function POST(request: Request) {
   if (safety === "yellow") requiresAdminReview = true;
 
   // 8e) Work tags — dedupe (normalized), cap count + length. Mark existing
-  //     aliases only when we have a real active canonical (and not under the
-  //     categories test override, which intentionally skips the alias DB read).
-  const aliasKeys =
-    isExisting && matchedCanonical && !usingCategoriesOverride
-      ? await loadActiveAliasKeys(matchedCanonical)
-      : new Set<string>();
+  //     aliases only when we have a real active canonical. Under the test hook,
+  //     the inline aliases override (if given) sources the keys; without it the
+  //     legacy categories-only override path still skips the alias DB read.
+  let aliasKeys: Set<string> = new Set<string>();
+  if (isExisting && matchedCanonical) {
+    if (usingCategoriesOverride) {
+      if (usingAliasesOverride) {
+        const list = aliasesByCanonical.get(matchedCanonical) ?? [];
+        aliasKeys = new Set(list.map((a) => normalizeCategoryKey(a)));
+      }
+    } else {
+      aliasKeys = await loadActiveAliasKeys(matchedCanonical);
+    }
+  }
 
   const seenTagKeys = new Set<string>();
   const workTags: WorkIntakeWorkTag[] = [];

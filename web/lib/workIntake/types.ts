@@ -67,3 +67,8 @@ export const WORK_INTAKE_MAX_TEXT = 500;
 export const WORK_INTAKE_CONFIDENCE_FLOOR = 0.55;
 export const WORK_INTAKE_MAX_TAGS = 6;
 export const WORK_INTAKE_MAX_TAG_LEN = 40;
+// Cap aliases per canonical when shown to the model so the system prompt stays
+// compact and prompt-cacheable. Picked at the high end of the "low double-digit"
+// range — covers the longest real categories (e.g. doctor / hobby classes) with
+// the most disambiguating aliases.
+export const WORK_INTAKE_MAX_ALIASES_PER_CATEGORY = 15;
