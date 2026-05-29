@@ -49,9 +49,12 @@ type Props = {
   /** Controls the closing voice + visual feedback. Defaults to "pre-submit":
    *  the provider still has to submit the registration form, so we show
    *  "Ab registration complete karne ke liye form submit karein." and stay on
-   *  the page. "post-submit" navigates to the dashboard (reserved for a
-   *  future flow where the assistant runs after a completed registration). */
-  mode?: "pre-submit" | "post-submit";
+   *  the page. "edit" is the existing-provider service/category update flow —
+   *  same stay-on-page behavior, but the closer points at the "Save Changes"
+   *  button (/api/provider/update) instead of the registration submit.
+   *  "post-submit" navigates to the dashboard (reserved for a future flow
+   *  where the assistant runs after a completed registration). */
+  mode?: "pre-submit" | "edit" | "post-submit";
 };
 
 // Fixed thanking message. The closing sentence differs by mode so the spoken
@@ -60,6 +63,8 @@ const THANKING_INTRO =
   "Shukriya. Humne aapka kaam samajh liya hai. Kaun Karega jald hi aapko aise logon se jodne mein madad karega, jo aapke kaam ki talash kar rahe hain.";
 const THANKING_PRE_SUBMIT_CLOSER =
   "Ab registration complete karne ke liye form submit karein.";
+const THANKING_EDIT_CLOSER =
+  "Ab badlav save karne ke liye 'Save Changes' dabayein.";
 const THANKING_POST_SUBMIT_CLOSER =
   "Chaliye, ab aapko dashboard par le chalte hain.";
 const THANKING_FALLBACK_MS = 3000;
@@ -351,6 +356,8 @@ export default function ProviderWorkIntakeAssistant({
     const closer =
       mode === "post-submit"
         ? THANKING_POST_SUBMIT_CLOSER
+        : mode === "edit"
+        ? THANKING_EDIT_CLOSER
         : THANKING_PRE_SUBMIT_CLOSER;
     const message = `${THANKING_INTRO} ${closer}`;
     setScreen({ kind: "thanking", message });

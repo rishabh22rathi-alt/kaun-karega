@@ -431,8 +431,11 @@ function ProviderRegisterPageInner() {
       {
         id,
         title: "Aage badhein",
-        message:
-          "Ab registration complete karne ke liye form submit karein.",
+        // Edit mode persists through /api/provider/update (the "Save Changes"
+        // button), not the registration submit, so the reminder differs.
+        message: isEditMode
+          ? "Ab badlav save karne ke liye 'Save Changes' dabayein."
+          : "Ab registration complete karne ke liye form submit karein.",
       },
     ]);
     window.setTimeout(() => {
@@ -470,15 +473,20 @@ function ProviderRegisterPageInner() {
   // selectedWorkTags, customCategoryKeys, or handleSubmit. It is purely the UI
   // shell the AI resolve flow will plug into in a later phase.
   const workIntakeEnabled = isProviderWorkIntakeEnabled();
-  // Phase 2B — "Mera kaam samjho" confirmation flow. Forced OFF in edit mode
-  // (ProviderAliasSubmitter handles the equivalent surface against an existing
-  // provider row) and when the Phase 1 flag is off (the trigger lives inside
-  // the Phase 1 panel). Also forced OFF when the voice-first assistant flag is
-  // ON — the assistant modal replaces this inline UI as the production AI
-  // surface. The inline path stays for QA bisection when the assistant flag
+  // Voice-first assistant. Available in BOTH new-registration and edit mode.
+  // In edit mode the assistant only REPLACES the single selected main category
+  // (the slot is pre-filled from the provider's saved profile); it never auto-
+  // writes work terms — ProviderAliasSubmitter remains the work-term authority,
+  // and /api/provider/update stays the only final write path. Gated solely on
+  // the master flag so a misconfigured deploy can't half-enable it.
+  const workIntakeAssistantEnabled = isProviderWorkIntakeAssistantEnabled();
+  // Phase 2B — "Mera kaam samjho" inline confirmation flow. Forced OFF in edit
+  // mode (ProviderAliasSubmitter handles the equivalent surface against an
+  // existing provider row) and when the Phase 1 flag is off (the trigger lives
+  // inside the Phase 1 panel). Also forced OFF when the voice-first assistant
+  // flag is ON — the assistant modal replaces this inline UI as the production
+  // AI surface. The inline path stays for QA bisection when the assistant flag
   // is off.
-  const workIntakeAssistantEnabled =
-    !isEditMode && isProviderWorkIntakeAssistantEnabled();
   const workIntakeConfirmEnabled =
     !isEditMode &&
     !workIntakeAssistantEnabled &&
@@ -631,41 +639,54 @@ function ProviderRegisterPageInner() {
     const canonKey = categoryKey(canonical);
 
     setSelectedCategories((prev) => {
+      // Edit mode = single-category REPLACE. The slot is pre-filled from the
+      // provider's saved profile, so appending would hit MAX_CATEGORIES and
+      // no-op; instead swap the one category for the assistant's pick.
+      if (isEditMode) return [canonical];
       if (hasCategoryKey(prev, canonKey)) return prev;
       if (prev.length >= MAX_CATEGORIES) return prev;
       return [...prev, canonical];
     });
     setCustomCategoryKeys((prev) => prev.filter((k) => k !== canonKey));
 
-    const existingLabels: string[] = [];
-    const newLabels: string[] = [];
-    for (const tag of workTags) {
-      const label = String(tag.label || "").trim();
-      if (!label) continue;
-      if (tag.isExistingAlias) existingLabels.push(label);
-      else newLabels.push(label);
-    }
-    if (existingLabels.length > 0) {
-      setSelectedWorkTags((prev) => {
-        const current = prev[canonKey] || [];
-        const merged = [...current];
-        for (const label of existingLabels) {
-          if (!merged.includes(label)) merged.push(label);
-        }
-        if (merged.length === current.length) return prev;
-        return { ...prev, [canonKey]: merged };
-      });
-    }
-    if (newLabels.length > 0) {
-      setPendingWorkTags((prev) => {
-        const current = prev[canonKey] || [];
-        const merged = [...current];
-        for (const label of newLabels) {
-          if (!merged.includes(label)) merged.push(label);
-        }
-        if (merged.length === current.length) return prev;
-        return { ...prev, [canonKey]: merged };
-      });
+    // Work-term persistence is INTENTIONALLY skipped in edit mode. There the
+    // work-term authority is ProviderAliasSubmitter (writes to
+    // /api/provider/work-terms + /api/provider/aliases with admin review);
+    // /api/provider/update never carries workTags, so populating these
+    // register-only states would falsely imply the tags were saved. The
+    // assistant still SHOWS its understanding in the modal — it just doesn't
+    // pretend to persist tags here.
+    if (!isEditMode) {
+      const existingLabels: string[] = [];
+      const newLabels: string[] = [];
+      for (const tag of workTags) {
+        const label = String(tag.label || "").trim();
+        if (!label) continue;
+        if (tag.isExistingAlias) existingLabels.push(label);
+        else newLabels.push(label);
+      }
+      if (existingLabels.length > 0) {
+        setSelectedWorkTags((prev) => {
+          const current = prev[canonKey] || [];
+          const merged = [...current];
+          for (const label of existingLabels) {
+            if (!merged.includes(label)) merged.push(label);
+          }
+          if (merged.length === current.length) return prev;
+          return { ...prev, [canonKey]: merged };
+        });
+      }
+      if (newLabels.length > 0) {
+        setPendingWorkTags((prev) => {
+          const current = prev[canonKey] || [];
+          const merged = [...current];
+          for (const label of newLabels) {
+            if (!merged.includes(label)) merged.push(label);
+          }
+          if (merged.length === current.length) return prev;
+          return { ...prev, [canonKey]: merged };
+        });
+      }
     }
     setCatQuery("");
     setSubmitError("");
@@ -681,7 +702,14 @@ function ProviderRegisterPageInner() {
     if (data.mainCategory.isExisting) return; // defensive — only new proposals
     const key = categoryKey(proposed);
     const selectedKeys = toCategoryLookup(selectedCategories);
-    if (!selectedKeys.has(key)) {
+    if (isEditMode) {
+      // Single-category REPLACE. The proposed name is a NEW (non-active)
+      // category, so it still rides customCategoryKeys → pendingNewCategories
+      // and is queued for admin review by /api/provider/update. No auto-
+      // approve: the server filters non-active categories out of
+      // provider_services regardless of this client state.
+      setSelectedCategories([proposed]);
+    } else if (!selectedKeys.has(key)) {
       if (selectedCategories.length >= MAX_CATEGORIES) return;
       setSelectedCategories((prev) => uniqueCategoryValues([...prev, proposed]));
     }
@@ -2171,7 +2199,12 @@ function ProviderRegisterPageInner() {
                           data-testid="kk-work-intake-open-assistant"
                           onClick={() => setAssistantOpen(true)}
                           disabled={
-                            selectedCategories.length >= MAX_CATEGORIES ||
+                            // Edit mode pre-fills the single category slot, but
+                            // opening still makes sense there: the assistant
+                            // REPLACES that category. Only the fresh-registration
+                            // path blocks at the cap.
+                            (!isEditMode &&
+                              selectedCategories.length >= MAX_CATEGORIES) ||
                             showSuccessCelebration
                           }
                           className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-[#003d20] bg-[#003d20] px-3 py-1.5 text-xs font-bold text-white shadow-sm transition hover:bg-[#002a16] disabled:cursor-not-allowed disabled:opacity-60"
@@ -3132,6 +3165,7 @@ function ProviderRegisterPageInner() {
           open={assistantOpen}
           onClose={() => setAssistantOpen(false)}
           cityCode={selectedCityCode || undefined}
+          mode={isEditMode ? "edit" : "pre-submit"}
           onApplyGreen={applyGreenFromAssistant}
           onApplyYellowProposal={applyYellowProposalFromAssistant}
           onApplySingleChoice={applySingleChoiceFromAssistant}

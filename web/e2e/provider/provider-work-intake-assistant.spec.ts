@@ -870,3 +870,140 @@ test.describe("Assistant — flags ON", () => {
     ).toBeVisible();
   });
 });
+
+// ── Assistant in EDIT mode (existing-provider service/category update) ────────
+// Edit mode reuses the same register page via ?edit=services with a hydrated
+// provider profile. The assistant must be reachable (open button enabled even
+// though the single category slot is pre-filled) and must REPLACE — never
+// append — the main category. The final write still goes through
+// /api/provider/update; the assistant only fills form state.
+test.describe("Assistant — edit mode (existing provider)", () => {
+  test.skip(!FLAG_ON, "needs Phase 1 flag ON");
+  test.skip(!ASSISTANT_FLAG_ON, "needs assistant flag ON");
+
+  // Existing saved category for the provider — deliberately DIFFERENT from
+  // QA_CATEGORY (Electrician) so a successful apply proves replacement.
+  const SAVED_CATEGORY = "Plumber";
+
+  async function setupEditPage(
+    page: Page,
+    capture: { update?: Record<string, unknown> }
+  ) {
+    await setupRegisterPage(page);
+    // Hydrate the edit-mode profile load with a real provider on SAVED_CATEGORY.
+    await mockKkActions(page, {
+      get_provider_by_phone: () =>
+        jsonOk({
+          provider: {
+            ProviderID: "PR-EDIT-1",
+            ProviderName: "Existing Provider",
+            Phone: QA_PROVIDER_PHONE,
+            Verified: "yes",
+            Services: [{ Category: SAVED_CATEGORY }],
+            Areas: [{ Area: COMMON_AREAS[0] }],
+            CityCode: CITY_ROW.city_code,
+            RegionCodes: [REGIONS[0].region_code],
+          },
+        }),
+      get_areas: () => jsonOk({ areas: COMMON_AREAS }),
+    });
+    // ProviderAliasSubmitter (mounted in edit mode) reads work-terms — keep it
+    // quiet so its fetch doesn't add noise to the run.
+    await mockJson(page, "**/api/provider/work-terms**", jsonOk({ items: [] }));
+    // The ONLY final write path for an edit. Capture the body to assert the
+    // single-category replace landed on the wire.
+    await page.route("**/api/provider/update", async (route: Route) => {
+      try {
+        capture.update = JSON.parse(route.request().postData() || "{}");
+      } catch {
+        capture.update = {};
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true }),
+      });
+    });
+  }
+
+  test("15) edit mode: assistant button is enabled with a pre-filled category and opens the modal", async ({
+    page,
+  }) => {
+    const capture: { update?: Record<string, unknown> } = {};
+    await installSpeechStub(page);
+    await setupEditPage(page, capture);
+    await gotoPath(page, "/provider/register?edit=services");
+
+    // The saved category is hydrated as a chip.
+    await expect(
+      page.locator(`button:has-text("${SAVED_CATEGORY}")`).first()
+    ).toBeVisible({ timeout: 5_000 });
+
+    // Despite the slot being full, the assistant open button is enabled in
+    // edit mode (open = replace).
+    const trigger = page.getByTestId("kk-work-intake-open-assistant");
+    await expect(trigger).toBeVisible();
+    await expect(trigger).toBeEnabled();
+    await trigger.click();
+    await expect(page.getByTestId("kk-work-intake-assistant")).toBeVisible();
+  });
+
+  test("16) edit mode green: confirming REPLACES the category (no second category) and Save Changes posts to /api/provider/update", async ({
+    page,
+  }) => {
+    const capture: { update?: Record<string, unknown> } = {};
+    await installSpeechStub(page);
+    // Green resolve to QA_CATEGORY (Electrician) — different from SAVED_CATEGORY.
+    await captureResolveCalls(page);
+    await setupEditPage(page, capture);
+    await gotoPath(page, "/provider/register?edit=services");
+    await expect(
+      page.locator(`button:has-text("${SAVED_CATEGORY}")`).first()
+    ).toBeVisible({ timeout: 5_000 });
+
+    await page.getByTestId("kk-work-intake-open-assistant").click();
+    await page.getByTestId("kk-work-intake-assistant-mic").click();
+    await emitFinal(page, "Ab main electrician ka kaam karta hu.");
+    await page.getByTestId("kk-work-intake-assistant-mic").click();
+    await page.getByTestId("kk-work-intake-assistant-next").click();
+    await page.getByTestId("kk-work-intake-assistant-mic").click();
+    await emitFinal(page, "Fan repair, wiring karta hu.");
+    await page.getByTestId("kk-work-intake-assistant-mic").click();
+    await page.getByTestId("kk-work-intake-assistant-process").click();
+
+    await expect(
+      page.getByTestId("kk-work-intake-assistant-green")
+    ).toBeVisible();
+    await page.getByTestId("kk-work-intake-assistant-confirm").click();
+
+    // Edit-specific closer points at Save Changes, NOT the registration submit.
+    await expect(
+      page.getByTestId("kk-work-intake-assistant-thanking-message")
+    ).toContainText("Ab badlav save karne ke liye 'Save Changes' dabayein");
+    await expect(page.getByTestId("kk-work-intake-assistant")).toHaveCount(0, {
+      timeout: 5_000,
+    });
+
+    // REPLACE: new category present, old one gone — exactly one category.
+    await expect(
+      page.locator(`button:has-text("${QA_CATEGORY}")`).first()
+    ).toBeVisible();
+    await expect(
+      page.locator(`button:has-text("${SAVED_CATEGORY}")`)
+    ).toHaveCount(0);
+
+    // Edit-mode reminder toast uses the Save Changes wording.
+    await expect(
+      page.getByText("Ab badlav save karne ke liye 'Save Changes' dabayein.")
+    ).toBeVisible();
+
+    // Final write still goes through /api/provider/update with the single
+    // replaced category — the assistant never wrote the DB itself.
+    await page.getByRole("button", { name: /^Save Changes$/ }).click();
+    await expect
+      .poll(() => Boolean(capture.update), { timeout: 5_000 })
+      .toBe(true);
+    const categories = (capture.update?.categories ?? []) as string[];
+    expect(categories).toEqual([QA_CATEGORY]);
+  });
+});
