@@ -10,6 +10,7 @@ import {
 import { effectivePlan } from "@/lib/payments/effectivePlan";
 import { invalidateSnapshots } from "@/lib/admin/snapshotCache";
 import { reconcileProviderCoverage } from "@/lib/admin/reconcileProviderCoverage";
+import { safeIssueInvoiceForPaidOrder } from "@/lib/payments/issueInvoice";
 
 // Cache keys invalidated after every successful captured-payment write
 // (both immediate-upgrade/renewal and scheduled_paid_lower branches).
@@ -577,6 +578,12 @@ export async function POST(request: Request) {
       );
     }
 
+    // Phase 2: GST invoice issuance. Payment-first + soft-fail — runs only
+    // after status='paid' committed, gated by KK_INVOICE_LEDGER_ENABLED, and
+    // can never break activation or trigger a Razorpay retry. Idempotent in
+    // the DB function (no duplicate invoice on webhook replay).
+    await safeIssueInvoiceForPaidOrder(orderRow.order_id);
+
     // Cache invalidation after the scheduled_paid_lower writes commit.
     // Awaited (not fire-and-forget) so the L1+L2 purges complete before
     // we return — but soft-fail so a cache outage can never trigger a
@@ -660,6 +667,12 @@ export async function POST(request: Request) {
       err instanceof Error ? err.message : err
     );
   }
+
+  // Phase 2: GST invoice issuance. Payment-first + soft-fail — runs only
+  // after status='paid' committed, gated by KK_INVOICE_LEDGER_ENABLED, and
+  // can never break activation or trigger a Razorpay retry. Idempotent in
+  // the DB function (no duplicate invoice on webhook replay).
+  await safeIssueInvoiceForPaidOrder(orderRow.order_id);
 
   // Cache invalidation after immediate-upgrade / immediate-renewal /
   // legacy NULL-mode writes commit. Same soft-fail rules as the

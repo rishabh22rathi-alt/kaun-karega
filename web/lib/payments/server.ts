@@ -82,6 +82,25 @@ export function isScheduledPlansEnabled(): boolean {
   );
 }
 
+/**
+ * Phase 2 kill switch for GST invoice issuance.
+ *
+ * When false (default): the webhook NEVER attempts invoice issuance —
+ * paid-plan activation is completely unaffected. A misconfigured deploy
+ * that forgot the var keeps invoicing off.
+ *
+ * When true: the webhook calls the issue_invoice_for_paid_order RPC
+ * AFTER payment_orders.status='paid' succeeds, soft-fail (a failure can
+ * never break activation). Read on every call so flipping in the Vercel
+ * env console takes effect without a redeploy.
+ */
+export function isInvoiceLedgerEnabled(): boolean {
+  return (
+    String(process.env.KK_INVOICE_LEDGER_ENABLED || "").trim().toLowerCase() ===
+    "true"
+  );
+}
+
 // ─── Pricing ───────────────────────────────────────────────────────────────
 
 /**
