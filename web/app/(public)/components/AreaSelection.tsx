@@ -54,6 +54,24 @@ export function normalizeAreaValue(area: string): string {
   return toTitleCase(singleSpaced);
 }
 
+// City-level phrases that must NOT be treated as a normal area. They route
+// to the virtual "Search across all Jodhpur" option instead. The bare city
+// name is also matched dynamically against the selected city.
+const CITY_LEVEL_TERMS = new Set([
+  "jodhpur",
+  "all jodhpur",
+  "whole jodhpur",
+  "full jodhpur",
+]);
+
+export function isCityLevelTerm(value: string, cityName = ""): boolean {
+  const v = value.trim().replace(/\s+/g, " ").toLowerCase();
+  if (!v) return false;
+  if (CITY_LEVEL_TERMS.has(v)) return true;
+  const city = cityName.trim().toLowerCase();
+  return Boolean(city) && v === city;
+}
+
 // Area Intelligence integration — same safety contract as before the
 // cascade rebuild: the value handed to `onSelect` (and therefore the
 // submit payload) MUST be a canonical area present in `/api/areas` for
@@ -415,25 +433,42 @@ export default function AreaSelection({
     // Default threshold for normal typing
     if (q.length < 2) return [];
 
+    // Never surface the bare city name (e.g. "Jodhpur") or any city-level
+    // phrase as a normal area — those route to "Search across all Jodhpur".
+    const notCityLevel = (label: string) =>
+      !isCityLevelTerm(label, selectedCityName);
+
     // Prefer AI suggestions when present (they handle alias → canonical
     // mapping inside the city's catalogue). Fall back to client-side
     // substring filtering of `allowedAreas` when AI is empty / loading.
     if (aiLabels.length > 0) {
-      return aiLabels.slice(0, MAX_SUGGESTIONS);
+      return aiLabels.filter(notCityLevel).slice(0, MAX_SUGGESTIONS);
     }
 
     return pool
       .filter((area) =>
         normalizeAreaValue(area).toLowerCase().includes(q)
       )
+      .filter(notCityLevel)
       .slice(0, MAX_SUGGESTIONS);
-  }, [typedArea, allowedAreas, aiLabels]);
+  }, [typedArea, allowedAreas, aiLabels, selectedCityName]);
 
-  const renderDropdown = showSuggestions && filteredSuggestions.length > 0;
+  // City-level intent: the user typed the city name or an "all/whole/full
+  // jodhpur" phrase. Only request-flow (allowAllJodhpur) offers the all-city
+  // option; elsewhere the bare city is simply suppressed from suggestions.
+  const cityLevelIntent = useMemo(() => {
+    const q = normalizeAreaValue(typedArea).toLowerCase();
+    return q.length >= 2 && isCityLevelTerm(q, selectedCityName);
+  }, [typedArea, selectedCityName]);
+  const showAllJodhpurOption = allowAllJodhpur && cityLevelIntent;
+
+  const renderDropdown =
+    showSuggestions && (filteredSuggestions.length > 0 || showAllJodhpurOption);
   const noMatchesFound =
     showSuggestions &&
     typedArea.trim().length >= 2 &&
     filteredSuggestions.length === 0 &&
+    !showAllJodhpurOption &&
     !loadingAreas;
 
   useEffect(() => {
@@ -477,6 +512,20 @@ export default function AreaSelection({
     const normalized = normalizeAreaValue(typedArea);
     if (!normalized) {
       setInputError("Area required");
+      return;
+    }
+    // City-level input ("Jodhpur", "all jodhpur", …) never resolves to a real
+    // area. Route it to all-city search where available; otherwise ask for a
+    // specific area instead of submitting the bare city as a region.
+    if (isCityLevelTerm(normalized, selectedCityName)) {
+      if (allowAllJodhpur) {
+        handleToggleAllCity(true);
+      } else {
+        setInputError(
+          `Please pick a specific area in ${selectedCityName || "the selected city"}.`
+        );
+        setShowSuggestions(true);
+      }
       return;
     }
     const matchedKnownArea = allowedAreas.find(
@@ -531,6 +580,12 @@ export default function AreaSelection({
   };
 
   const handleSuggestionSelect = (clickedLabel: string) => {
+    // Defensive: city-level labels are filtered out of the suggestion list,
+    // but if one is ever clicked, route it to all-city search.
+    if (isCityLevelTerm(clickedLabel, selectedCityName)) {
+      if (allowAllJodhpur) handleToggleAllCity(true);
+      return;
+    }
     const labelKey = clickedLabel.trim().toLowerCase();
     const aiCanonical = aiCanonicalByLabel.get(labelKey);
     const submitString = aiCanonical || clickedLabel;
@@ -695,6 +750,10 @@ export default function AreaSelection({
   const handleToggleAllCity = (next: boolean) => {
     setAllCity(next);
     if (next) {
+      // Clear any in-progress typing so re-opening the picker starts fresh.
+      setTypedArea("");
+      setShowSuggestions(false);
+      setInputError("");
       onScopeChange?.("all_jodhpur");
       onSelect("All Jodhpur");
     } else {
@@ -703,29 +762,34 @@ export default function AreaSelection({
     }
   };
 
-  const renderAllCityToggle = () => (
-    <label
-      className="mb-3 flex cursor-pointer items-center gap-2.5 rounded-xl border border-[#1B5E20]/30 bg-[#1B5E20]/5 px-3 py-2.5"
-      data-testid="all-jodhpur-toggle"
+  // Highlighted "Search across all Jodhpur" tile, surfaced near the popular
+  // region chips so the user never has to type "jodhpur" to discover it.
+  const renderAllJodhpurTile = () => (
+    <button
+      type="button"
+      onClick={() => handleToggleAllCity(true)}
+      data-testid="all-jodhpur-tile"
+      className="mt-3 flex w-full items-center justify-between gap-3 rounded-xl border-2 border-[#1B5E20] bg-[#1B5E20]/10 px-3 py-2.5 text-left transition hover:bg-[#1B5E20]/15 focus:outline-none focus:ring-2 focus:ring-[#1B5E20]/30"
     >
-      <input
-        type="checkbox"
-        checked={allCity}
-        onChange={(e) => handleToggleAllCity(e.target.checked)}
-        className="h-4 w-4 accent-[#1B5E20]"
-      />
-      <span className="text-sm font-semibold text-[#1B5E20]">
-        Search across all Jodhpur
+      <span className="flex flex-col">
+        <span className="text-sm font-bold text-[#1B5E20]">
+          Search across all Jodhpur
+        </span>
+        <span className="text-[11px] text-[#1B5E20]/80">
+          Show providers who cover the whole city
+        </span>
       </span>
-    </label>
+      <span className="shrink-0 rounded-full bg-[#1B5E20] px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">
+        City-wide
+      </span>
+    </button>
   );
 
   // When all-city is selected, replace the entire area picker with a single
-  // confirmation chip. The cascade, detect, chips, and input are all hidden.
+  // confirmation chip + an escape hatch back to specific-area selection.
   if (allowAllJodhpur && allCity) {
     return (
       <div className="w-full">
-        {renderAllCityToggle()}
         <div
           className="flex flex-col gap-1 rounded-2xl border border-[#1B5E20] bg-[#1B5E20]/10 px-3 py-2.5"
           data-testid="all-jodhpur-chip"
@@ -741,6 +805,14 @@ export default function AreaSelection({
             We&rsquo;ll show providers who cover all of Jodhpur.
           </span>
         </div>
+        <button
+          type="button"
+          onClick={() => handleToggleAllCity(false)}
+          data-testid="all-jodhpur-clear"
+          className="mt-2 text-xs font-semibold text-[#1B5E20] underline underline-offset-2 hover:text-[#0f3d15]"
+        >
+          Choose a specific area instead
+        </button>
         {errorMessage ? (
           <p className="mt-2 text-xs text-red-600">{errorMessage}</p>
         ) : null}
@@ -758,7 +830,6 @@ export default function AreaSelection({
 
   return (
     <div className="w-full">
-      {allowAllJodhpur ? renderAllCityToggle() : null}
       {showQuestionLabel ? (
         <p className="mb-2 text-sm font-semibold text-[#111827]">
           Where do you need it?
@@ -870,6 +941,11 @@ export default function AreaSelection({
         </p>
       ) : null}
 
+      {/* All-Jodhpur tile — always visible (request-flow only) so the
+          city-wide option is a first-class choice next to popular regions,
+          not something the user must type "jodhpur" to discover. */}
+      {allowAllJodhpur ? renderAllJodhpurTile() : null}
+
       {/* Quick-select chip row — capped at 3 entries:
           1. "Last used: X" (city-scoped; rendered only when the stored
              value still resolves to a canonical area in the current
@@ -979,6 +1055,23 @@ export default function AreaSelection({
             ref={dropdownRef}
             className="absolute left-0 right-0 top-full z-50 mt-2 max-h-80 overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg"
           >
+            {showAllJodhpurOption ? (
+              <button
+                type="button"
+                data-testid="all-jodhpur-suggestion"
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  handleToggleAllCity(true);
+                }}
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  handleToggleAllCity(true);
+                }}
+                className="block w-full border-b border-slate-100 bg-[#1B5E20]/5 px-3 py-2.5 text-left text-sm font-semibold text-[#1B5E20] transition hover:bg-[#1B5E20]/10"
+              >
+                Search across all Jodhpur
+              </button>
+            ) : null}
             {filteredSuggestions.map((area) => (
               <button
                 key={area}

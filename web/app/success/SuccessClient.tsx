@@ -163,6 +163,12 @@ export default function SuccessClient({
     () => Boolean(service && area),
     [service, area]
   );
+  // All-city tasks carry the virtual "All Jodhpur" area label. Used to show a
+  // tailored empty-state message instead of the generic region one.
+  const isAllCity = useMemo(
+    () => clean(area).toLowerCase() === "all jodhpur",
+    [area]
+  );
   const taskDisplayLabel = useMemo(
     () => getTaskDisplayLabel({ TaskID: taskId, DisplayID: displayId }, taskId),
     [displayId, taskId]
@@ -526,8 +532,26 @@ export default function SuccessClient({
               })}
             </div>
           ) : (
-            <p className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-center text-sm text-slate-600">
-              No provider numbers available yet. We’ll notify you when providers respond.
+            <p
+              data-testid={
+                isAllCity ? "all-jodhpur-empty" : "providers-empty"
+              }
+              className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-center text-sm text-slate-600"
+            >
+              {isAllCity ? (
+                <>
+                  <span className="block">
+                    We couldn&rsquo;t find any providers currently serving all of
+                    Jodhpur for this service.
+                  </span>
+                  <span className="mt-2 block">
+                    Choose your area to see local providers who may be available
+                    nearby.
+                  </span>
+                </>
+              ) : (
+                "No provider numbers available yet. We’ll notify you when providers respond."
+              )}
             </p>
           )}
         </div>

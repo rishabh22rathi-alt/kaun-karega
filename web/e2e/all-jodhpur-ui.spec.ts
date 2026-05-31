@@ -57,24 +57,23 @@ async function mockAreaCatalog(page: Page) {
   );
 }
 
-const allCityCheckbox = (page: Page) =>
-  page.getByTestId("all-jodhpur-toggle").locator('input[type="checkbox"]');
-
 test.describe("All Jodhpur — Phase 3 UI", () => {
-  test("1. toggle hides the area picker and shows the All Jodhpur chip", async ({
+  test("1. tile is visible by default, collapses the picker on click, and can be cleared", async ({
     page,
   }) => {
     await mockAreaCatalog(page);
     await gotoPath(page, "/request-flow?category=Electrician");
 
     // Default: normal picker is visible. Wait for ENABLED (not just visible)
-    // so the client has hydrated before we interact with the toggle.
+    // so the client has hydrated before we interact.
     await expect(page.locator("#geo-city")).toBeVisible();
     await expect(page.getByTestId("detect-my-area")).toBeEnabled();
+    // The tile is a first-class option — no typing required to discover it.
+    await expect(page.getByTestId("all-jodhpur-tile")).toBeVisible();
     await expect(page.getByTestId("all-jodhpur-chip")).toHaveCount(0);
 
-    // Toggle on → picker controls gone, chip shown.
-    await allCityCheckbox(page).check();
+    // Click tile → picker controls gone, chip shown.
+    await page.getByTestId("all-jodhpur-tile").click();
     await expect(page.getByTestId("all-jodhpur-chip")).toBeVisible();
     await expect(page.getByTestId("detect-my-area")).toHaveCount(0);
     await expect(page.locator("#geo-city")).toHaveCount(0);
@@ -82,14 +81,14 @@ test.describe("All Jodhpur — Phase 3 UI", () => {
       page.locator('input[placeholder="Type your area..."]')
     ).toHaveCount(0);
 
-    // Toggle off → picker restored, chip gone.
-    await allCityCheckbox(page).uncheck();
+    // Clear → picker restored, chip gone, tile back.
+    await page.getByTestId("all-jodhpur-clear").click();
     await expect(page.getByTestId("all-jodhpur-chip")).toHaveCount(0);
     await expect(page.locator("#geo-city")).toBeVisible();
-    await expect(page.getByTestId("detect-my-area")).toBeVisible();
+    await expect(page.getByTestId("all-jodhpur-tile")).toBeVisible();
   });
 
-  test("2. submitting with All Jodhpur posts scope='all_jodhpur' and area='All Jodhpur'", async ({
+  test("2. clicking the tile and submitting posts scope='all_jodhpur' and area='All Jodhpur'", async ({
     page,
   }) => {
     await mockAreaCatalog(page);
@@ -127,9 +126,9 @@ test.describe("All Jodhpur — Phase 3 UI", () => {
     // onClick handlers and silently no-op.
     await expect(page.getByTestId("detect-my-area")).toBeEnabled();
 
-    // Required fields: time + (all-city) area.
+    // Required fields: time + (all-city) area via the tile.
     await page.getByRole("button", { name: "Right now" }).click();
-    await allCityCheckbox(page).check();
+    await page.getByTestId("all-jodhpur-tile").click();
     await expect(page.getByTestId("all-jodhpur-chip")).toBeVisible();
 
     await page.getByRole("button", { name: "Submit Request" }).click();
@@ -230,5 +229,137 @@ test.describe("All Jodhpur — Phase 3 UI", () => {
       .getByTestId("provider-group-available_across_jodhpur-toggle")
       .click();
     await expect(page.getByText("AcrossSix", { exact: true })).toHaveCount(0);
+  });
+
+  test("4. typing 'jodhpur' offers Search across all Jodhpur (not the bare city) and submits all_jodhpur", async ({
+    page,
+  }) => {
+    await mockAreaCatalog(page);
+    // Catalog includes the bare "Jodhpur" alias + an "Outer Jodhpur" area to
+    // prove the bare city is suppressed while real areas survive.
+    await mockJson(
+      page,
+      "**/api/areas**",
+      jsonOk({
+        city_code: "JOD",
+        areas: ["Sardarpura", "Shastri Nagar", "Ratanada", "Jodhpur", "Outer Jodhpur"],
+      })
+    );
+
+    let captured: Record<string, unknown> | null = null;
+    await page.route("**/api/submit-request**", async (route) => {
+      try {
+        captured = route.request().postDataJSON() as Record<string, unknown>;
+      } catch {
+        captured = null;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true, taskId: "TK-UI-4", displayId: "4" }),
+      });
+    });
+    await mockJson(page, "**/api/find-provider**", jsonOk({ providers: [], count: 0 }));
+    await mockJson(
+      page,
+      "**/api/process-task-notifications**",
+      jsonOk({ matchedProviders: 0 })
+    );
+
+    await gotoPath(page, "/request-flow?category=Electrician");
+    await expect(page.getByTestId("detect-my-area")).toBeEnabled();
+
+    await page.locator('input[placeholder="Type your area..."]').fill("jodhpur");
+
+    // The All-Jodhpur option appears; the bare "Jodhpur" area does not.
+    await expect(page.getByTestId("all-jodhpur-suggestion")).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Jodhpur", exact: true })
+    ).toHaveCount(0);
+
+    await page.getByTestId("all-jodhpur-suggestion").click();
+    await expect(page.getByTestId("all-jodhpur-chip")).toBeVisible();
+
+    await page.getByRole("button", { name: "Right now" }).click();
+    await page.getByRole("button", { name: "Submit Request" }).click();
+
+    await expect.poll(() => captured).not.toBeNull();
+    expect(captured!.scope).toBe("all_jodhpur");
+    expect(captured!.area).toBe("All Jodhpur");
+  });
+
+  test("5. selecting a normal area (Sardarpura) submits scope='region'", async ({
+    page,
+  }) => {
+    await mockAreaCatalog(page);
+
+    let captured: Record<string, unknown> | null = null;
+    await page.route("**/api/submit-request**", async (route) => {
+      try {
+        captured = route.request().postDataJSON() as Record<string, unknown>;
+      } catch {
+        captured = null;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true, taskId: "TK-UI-5", displayId: "5" }),
+      });
+    });
+    await mockJson(page, "**/api/find-provider**", jsonOk({ providers: [], count: 0 }));
+    await mockJson(
+      page,
+      "**/api/process-task-notifications**",
+      jsonOk({ matchedProviders: 0 })
+    );
+
+    await gotoPath(page, "/request-flow?category=Electrician");
+    await expect(page.getByTestId("detect-my-area")).toBeEnabled();
+
+    // Pick a normal area via the popular-region chip.
+    await page
+      .getByRole("button", { name: "Sardarpura", exact: true })
+      .first()
+      .click();
+    await expect(page.getByText("Selected area/region")).toBeVisible();
+
+    await page.getByRole("button", { name: "Right now" }).click();
+    await page.getByRole("button", { name: "Submit Request" }).click();
+
+    await expect.poll(() => captured).not.toBeNull();
+    expect(captured!.scope).toBe("region");
+    expect(captured!.area).toBe("Sardarpura");
+  });
+
+  test("6. all-city empty result shows the helpful message, not region providers", async ({
+    page,
+  }) => {
+    await mockJson(
+      page,
+      "**/api/find-provider**",
+      jsonOk({ providers: [], count: 0, matchTier: "all_jodhpur", usedFallback: false })
+    );
+    await mockJson(
+      page,
+      "**/api/process-task-notifications**",
+      jsonOk({ matchedProviders: 0 })
+    );
+
+    await gotoPath(
+      page,
+      "/success?service=Electrician&area=All%20Jodhpur&taskId=TK-UI-6"
+    );
+
+    await expect(page.getByTestId("all-jodhpur-empty")).toBeVisible();
+    await expect(page.getByTestId("all-jodhpur-empty")).toContainText(
+      "serving all of Jodhpur"
+    );
+    await expect(page.getByTestId("all-jodhpur-empty")).toContainText(
+      "Choose your area to see local providers"
+    );
+    // No provider group sections rendered (no free/region providers shown).
+    await expect(
+      page.locator('section[data-testid^="provider-group-"]')
+    ).toHaveCount(0);
   });
 });

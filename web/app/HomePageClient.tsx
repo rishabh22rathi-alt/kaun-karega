@@ -297,6 +297,9 @@ function PageContent() {
   const [timeSlot, setTimeSlot] = useState("");
   const [area, setArea] = useState("");
   const [areaError, setAreaError] = useState("");
+  // All Jodhpur virtual scope for the Step 3 area picker. Default 'region'
+  // keeps existing behaviour; the tile flips it to 'all_jodhpur'.
+  const [scope, setScope] = useState<"region" | "all_jodhpur">("region");
   const [error, setError] = useState("");
   const [debug, setDebug] = useState("");
   const [loading, setLoading] = useState(false);
@@ -1222,6 +1225,9 @@ const submitResolvedRequest = async (resolution: CategoryResolution) => {
     const payload = {
         category: resolvedCategory,
         area: normalizedArea,
+        // All Jodhpur virtual scope. submit-request forces area/city/region
+        // server-side for all_jodhpur; default 'region' is unchanged.
+        scope,
         time,
         serviceDate: normalizedServiceDate,
         timeSlot,
@@ -1717,6 +1723,11 @@ const hasArea = area.trim() !== "";
                 }}
                 errorMessage={areaError}
                 showQuestionLabel={false}
+                allowAllJodhpur
+                onScopeChange={(nextScope) => {
+                  setScope(nextScope);
+                  setAreaError("");
+                }}
               />
             </div>
           )}
