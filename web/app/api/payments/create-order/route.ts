@@ -436,6 +436,11 @@ export async function POST(request: Request) {
     // stored in payment_orders.amount_paise.
     amount: amountPaise,
     currency: order.currency || "INR",
+    // Authenticated provider's 10-digit phone (server-resolved from the
+    // session — same number the invoice buyer snapshot uses). Echoed so
+    // the client can set Razorpay prefill.contact explicitly instead of
+    // letting Razorpay Checkout fall back to a device-cached contact.
+    provider_phone: phone10,
     // Phase A: echo the GST breakdown (paise) so the client can show a
     // base / GST / total receipt without re-deriving the math. The
     // server is the source of truth; the client's pre-order modal uses

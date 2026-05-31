@@ -415,6 +415,7 @@ export default function ProviderPlanCard({
         currency?: string;
         error?: string;
         plan_change_mode?: string;
+        provider_phone?: string;
       };
       let orderData: CreateOrderPayload | null = null;
 
@@ -497,6 +498,7 @@ export default function ProviderPlanCard({
         key_id: string;
         amount?: number;
         currency?: string;
+        provider_phone?: string;
       };
 
       // Order created — load the checkout script and open the modal.
@@ -605,6 +607,19 @@ export default function ProviderPlanCard({
         }
       };
 
+      // Explicit prefill from server-authoritative values so Razorpay
+      // Checkout never falls back to a device-cached contact/email left
+      // by a previous payer on this browser. Name is the provider's
+      // display name; contact is the authenticated provider's phone
+      // echoed by create-order (same number the invoice buyer snapshot
+      // uses). Email is intentionally omitted — there is no provider
+      // email field yet, and we must not send a stale/guessed value.
+      const prefill: { name?: string; contact?: string } = {};
+      if (providerName) prefill.name = providerName;
+      if (validatedOrder.provider_phone) {
+        prefill.contact = validatedOrder.provider_phone;
+      }
+
       const rzp = new window.Razorpay({
         key: validatedOrder.key_id,
         amount: validatedOrder.amount,
@@ -616,7 +631,7 @@ export default function ProviderPlanCard({
           targetPlan === "regions_5"
             ? "5 Regions plan — 30 days"
             : "Full Jodhpur plan — 30 days",
-        prefill: providerName ? { name: providerName } : undefined,
+        prefill: Object.keys(prefill).length > 0 ? prefill : undefined,
         theme: { color: "#003d20" },
         handler: (response: {
           razorpay_payment_id: string;

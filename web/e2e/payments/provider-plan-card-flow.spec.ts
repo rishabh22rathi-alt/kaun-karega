@@ -365,8 +365,10 @@ test.describe("ProviderPlanCard — Razorpay-first upgrade flow", () => {
         ok: true,
         order_id: "order_TEST_REGIONS5",
         key_id: "rzp_test_KEYID",
-        amount: 3100,
+        amount: 3658,
         currency: "INR",
+        // Server-resolved authenticated provider phone (drives prefill.contact).
+        provider_phone: "9509597100",
       })
     );
 
@@ -391,6 +393,16 @@ test.describe("ProviderPlanCard — Razorpay-first upgrade flow", () => {
     await expect(
       page.getByTestId("provider-plan-upgrade-all-jodhpur")
     ).toBeDisabled();
+
+    // Prefill is server-authoritative: contact = the resolved provider
+    // phone (never a device-cached value), name is set, email is omitted.
+    const options = await getRazorpayCheckoutOptions(page);
+    const prefill = options?.prefill as
+      | { name?: string; contact?: string; email?: string }
+      | undefined;
+    expect(prefill?.contact).toBe("9509597100");
+    expect(prefill?.name).toBeTruthy();
+    expect(prefill ? "email" in prefill : false).toBe(false);
   });
 
   test("happy path: create-order → handler → verify → verified-waiting with Refresh-now button", async ({
