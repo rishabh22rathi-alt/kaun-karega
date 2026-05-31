@@ -15,6 +15,11 @@ import {
 } from "@/lib/push/invalidateTokens";
 import { appendPushLog, tokenTail } from "@/lib/push/pushLogStore";
 import { filterProviderIdsByPreference } from "@/lib/notificationPreferences";
+import {
+  getEffectiveCityWideProviderIds,
+  getEffectivePlanCodeMap,
+  matchScopeForPlanCode,
+} from "@/lib/payments/cityWideProviders";
 
 export const runtime = "nodejs";
 
@@ -103,7 +108,7 @@ export async function POST(request: Request) {
     const { data: task, error: taskError } = await supabase
       .from("tasks")
       .select(
-        "task_id, display_id, category, area, selected_timeframe, work_tag, phone, status, city_code, region_code"
+        "task_id, display_id, category, area, selected_timeframe, work_tag, phone, status, city_code, region_code, scope"
       )
       .eq("task_id", taskId)
       .single();
@@ -222,112 +227,122 @@ export async function POST(request: Request) {
       .select("provider_id")
       .ilike("category", canonicalCategory)
       .limit(5000);
-
-    // 3. STRICT REGION MATCHING (PR-C).
-    //
-    // Old behaviour: ilike on provider_areas.area — broke as soon as a
-    // legacy provider had the area text spelled differently.
-    // New behaviour: exact match on (city_code, region_code) sourced
-    // from the task row. PR-B's submit-request populates task.region_code
-    // at submission time via resolveAreaToRegion. Providers whose
-    // provider_areas.region_code is still NULL are deliberately excluded
-    // until the Provider Area Resolution Center allocates them.
-    //
-    // No area-text fallback — if task.region_code is NULL (legacy task,
-    // or PR-B's resolver returned unresolved/ambiguous), the task flips
-    // to status='no_providers_matched' below and never sends WhatsApp
-    // to anyone. task.area remains the human-readable string passed to
-    // the WhatsApp template body further down.
-    const taskRegionCode = String(task.region_code || "").trim();
-    if (!taskRegionCode) {
-      await supabase
-        .from("tasks")
-        .update({ status: "no_providers_matched" })
-        .eq("task_id", taskId);
-
-      console.log("process-task-notifications: zero matches (task.region_code missing)", {
-        taskId,
-        area: task.area,
-      });
-
-      return NextResponse.json({
-        ok: true,
-        matchedProviders: 0,
-        attemptedSends: 0,
-        failedSends: 0,
-        matchTier: "category",
-        usedFallback: false,
-        reason: "task_region_code_missing",
-      });
-    }
-    // city_code defaults to JOD for any legacy task that didn't carry
-    // one — the configured default matches reality (single active city
-    // today) and avoids a hard failure on a stale row.
-    const taskCityCodeForMatch =
-      String(task.city_code || "").trim() || "JOD";
-
-    const { data: areaRows } = await supabase
-      .from("provider_areas")
-      .select("provider_id")
-      .eq("city_code", taskCityCodeForMatch)
-      .eq("region_code", taskRegionCode)
-      .limit(5000);
-
     const serviceIds = new Set(
       (serviceRows ?? []).map((r) => String(r.provider_id).trim()).filter(Boolean)
     );
-    const areaIds = new Set(
-      (areaRows ?? []).map((r) => String(r.provider_id).trim()).filter(Boolean)
-    );
-    const broadMatched = [...serviceIds].filter((id) => areaIds.has(id));
 
-    // Optional third-axis filter: providers who have claimed task.work_tag
-    // under the same canonical category in provider_work_terms. Fail-open
-    // on lookup error so a transient DB blip never starves notification
-    // fan-out.
+    // All Jodhpur virtual scope. Default 'region' keeps strict region
+    // matching verbatim. region_code stays NULL for all-city tasks, so the
+    // region gate below must be skipped for them.
+    const scope =
+      String((task as { scope?: unknown }).scope || "").trim() === "all_jodhpur"
+        ? "all_jodhpur"
+        : "region";
+    // Original alias the user typed (NULL for canonical/all-city). Hoisted
+    // to outer scope because the §6b/§6c notification + push payloads read
+    // it. Only consulted by the region work_tag filter below.
     const taskWorkTag = String(task.work_tag || "").trim();
-    let workTermIds: Set<string> | null = null;
-    if (taskWorkTag) {
-      const { data: workTermRows, error: workTermsError } = await supabase
-        .from("provider_work_terms")
-        .select("provider_id")
-        .ilike("alias", taskWorkTag)
-        .ilike("canonical_category", canonicalCategory)
-        .limit(5000);
-      if (workTermsError) {
-        console.warn(
-          "[process-task-notifications] provider_work_terms lookup failed; falling back to broad",
-          workTermsError.message || workTermsError
-        );
-      } else {
-        workTermIds = new Set(
-          (workTermRows ?? [])
-            .map((row) => String(row.provider_id || "").trim())
-            .filter(Boolean)
-        );
-      }
-    }
 
     let matchedIds: string[];
-    let matchTier: "work_tag" | "category_fallback" | "category";
-    if (taskWorkTag && workTermIds !== null) {
-      const exact = broadMatched.filter((id) => workTermIds!.has(id));
-      if (exact.length > 0) {
-        matchedIds = exact;
-        matchTier = "work_tag";
-      } else {
+    let matchTier: "work_tag" | "category_fallback" | "category" | "all_jodhpur";
+
+    if (scope === "all_jodhpur") {
+      // 3a. All-city: notify ONLY active all_jodhpur providers in the
+      // category. Free / regions_5 providers are structurally absent from
+      // the city-wide set, so Policy A is enforced. Plan lookup is scoped
+      // to the category-matched set.
+      const cityWide = await getEffectiveCityWideProviderIds([...serviceIds]);
+      matchedIds = [...serviceIds].filter((id) => cityWide.has(id));
+      matchTier = "all_jodhpur";
+    } else {
+      // 3b. STRICT REGION MATCHING (PR-C) — UNCHANGED.
+      //
+      // Exact match on (city_code, region_code) sourced from the task row.
+      // Providers whose provider_areas.region_code is NULL are excluded.
+      // No area-text fallback — region_code NULL → no_providers_matched.
+      // task.area remains the human-readable string for the WhatsApp body.
+      const taskRegionCode = String(task.region_code || "").trim();
+      if (!taskRegionCode) {
+        await supabase
+          .from("tasks")
+          .update({ status: "no_providers_matched" })
+          .eq("task_id", taskId);
+
+        console.log("process-task-notifications: zero matches (task.region_code missing)", {
+          taskId,
+          area: task.area,
+        });
+
+        return NextResponse.json({
+          ok: true,
+          matchedProviders: 0,
+          attemptedSends: 0,
+          failedSends: 0,
+          matchTier: "category",
+          usedFallback: false,
+          reason: "task_region_code_missing",
+        });
+      }
+      // city_code defaults to JOD for any legacy task that didn't carry one.
+      const taskCityCodeForMatch =
+        String(task.city_code || "").trim() || "JOD";
+
+      const { data: areaRows } = await supabase
+        .from("provider_areas")
+        .select("provider_id")
+        .eq("city_code", taskCityCodeForMatch)
+        .eq("region_code", taskRegionCode)
+        .limit(5000);
+
+      const areaIds = new Set(
+        (areaRows ?? []).map((r) => String(r.provider_id).trim()).filter(Boolean)
+      );
+      const broadMatched = [...serviceIds].filter((id) => areaIds.has(id));
+
+      // Optional third-axis filter: providers who have claimed task.work_tag
+      // under the same canonical category in provider_work_terms. Fail-open
+      // on lookup error so a transient DB blip never starves fan-out.
+      let workTermIds: Set<string> | null = null;
+      if (taskWorkTag) {
+        const { data: workTermRows, error: workTermsError } = await supabase
+          .from("provider_work_terms")
+          .select("provider_id")
+          .ilike("alias", taskWorkTag)
+          .ilike("canonical_category", canonicalCategory)
+          .limit(5000);
+        if (workTermsError) {
+          console.warn(
+            "[process-task-notifications] provider_work_terms lookup failed; falling back to broad",
+            workTermsError.message || workTermsError
+          );
+        } else {
+          workTermIds = new Set(
+            (workTermRows ?? [])
+              .map((row) => String(row.provider_id || "").trim())
+              .filter(Boolean)
+          );
+        }
+      }
+
+      if (taskWorkTag && workTermIds !== null) {
+        const exact = broadMatched.filter((id) => workTermIds!.has(id));
+        if (exact.length > 0) {
+          matchedIds = exact;
+          matchTier = "work_tag";
+        } else {
+          matchedIds = broadMatched;
+          matchTier = "category_fallback";
+          console.warn(
+            `[process-task-notifications] work_tag "${taskWorkTag}" had no providers under "${canonicalCategory}" in "${task.area}"; fell back to broad canonical — ${broadMatched.length} candidate provider(s)`
+          );
+        }
+      } else if (taskWorkTag) {
         matchedIds = broadMatched;
         matchTier = "category_fallback";
-        console.warn(
-          `[process-task-notifications] work_tag "${taskWorkTag}" had no providers under "${canonicalCategory}" in "${task.area}"; fell back to broad canonical — ${broadMatched.length} candidate provider(s)`
-        );
+      } else {
+        matchedIds = broadMatched;
+        matchTier = "category";
       }
-    } else if (taskWorkTag) {
-      matchedIds = broadMatched;
-      matchTier = "category_fallback";
-    } else {
-      matchedIds = broadMatched;
-      matchTier = "category";
     }
     const usedFallback = matchTier === "category_fallback";
 
@@ -452,15 +467,33 @@ export async function POST(request: Request) {
       }
     }
 
-    // 6. Upsert provider_task_matches
-    const matchRows = providerList.map((p) => ({
-      task_id: taskId,
-      provider_id: String(p.provider_id).trim(),
-      category: task.category,
-      area: task.area,
-      match_status: "matched",
-      notified: true,
-    }));
+    // 6. Upsert provider_task_matches.
+    // Coverage-origin label per row: all-city → all_jodhpur; region → each
+    // provider's effective plan (scoped to the matched set; absent = region).
+    const matchPlanCodes =
+      scope === "all_jodhpur"
+        ? new Map<string, string>()
+        : await getEffectivePlanCodeMap(
+            providerList
+              .map((p) => String(p.provider_id).trim())
+              .filter(Boolean)
+          );
+    const matchScopeFor = (pid: string): "region" | "all_jodhpur" =>
+      scope === "all_jodhpur"
+        ? "all_jodhpur"
+        : matchScopeForPlanCode(matchPlanCodes.get(pid));
+    const matchRows = providerList.map((p) => {
+      const pid = String(p.provider_id).trim();
+      return {
+        task_id: taskId,
+        provider_id: pid,
+        category: task.category,
+        area: task.area,
+        match_status: "matched",
+        notified: true,
+        match_scope: matchScopeFor(pid),
+      };
+    });
 
     await supabase
       .from("provider_task_matches")

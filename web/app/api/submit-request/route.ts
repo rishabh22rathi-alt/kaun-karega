@@ -54,7 +54,21 @@ export async function POST(request: Request) {
     // unknown term — both fall back to the existing broad-matching path.
     const { canonical: category, matchedAlias } =
       await resolveCategoryAliasDetailed(rawCategory);
-    const area = typeof body?.area === "string" ? body.area.trim() : "";
+    // All Jodhpur virtual scope. Default 'region' keeps every current
+    // client (none send `scope`) on the existing path verbatim.
+    const scope =
+      typeof body?.scope === "string" && body.scope.trim() === "all_jodhpur"
+        ? "all_jodhpur"
+        : "region";
+    const isAllCity = scope === "all_jodhpur";
+    // For an all-city request the area is the virtual label and the
+    // resolver + area_review_queue are skipped below. Region requests keep
+    // the user-typed area exactly as before.
+    const area = isAllCity
+      ? "All Jodhpur"
+      : typeof body?.area === "string"
+        ? body.area.trim()
+        : "";
     const selectedTimeframe =
       typeof body?.time === "string"
         ? body.time.trim()
@@ -230,22 +244,27 @@ export async function POST(request: Request) {
     // Matching is UNCHANGED in this PR — /api/find-provider and
     // /api/process-task-notifications continue to match by area text.
     // PR-C will be the cutover to strict region-based matching.
+    // All-city requests never resolve to a single region: region_code
+    // stays NULL and matching (later phase) gates on scope='all_jodhpur'
+    // instead of region_code. Region requests resolve exactly as before.
     let taskRegionCode: string | null = null;
-    try {
-      const resolution = await resolveAreaToRegion(adminSupabase, {
-        area,
-        cityCode: taskCityCode,
-      });
-      if (resolution.resolved) {
-        taskRegionCode = resolution.region_code;
+    if (!isAllCity) {
+      try {
+        const resolution = await resolveAreaToRegion(adminSupabase, {
+          area,
+          cityCode: taskCityCode,
+        });
+        if (resolution.resolved) {
+          taskRegionCode = resolution.region_code;
+        }
+      } catch (resolverError) {
+        console.warn(
+          "[submit-request] resolveAreaToRegion threw; saving region_code=NULL",
+          resolverError instanceof Error
+            ? resolverError.message
+            : resolverError
+        );
       }
-    } catch (resolverError) {
-      console.warn(
-        "[submit-request] resolveAreaToRegion threw; saving region_code=NULL",
-        resolverError instanceof Error
-          ? resolverError.message
-          : resolverError
-      );
     }
 
     const { data, error } = await supabase
@@ -270,6 +289,10 @@ export async function POST(request: Request) {
         // canonical or alias. PR-C will gate matching on this being
         // non-NULL; until then it's a captured-but-unused column.
         region_code: taskRegionCode,
+        // All Jodhpur virtual scope. 'region' (default) preserves existing
+        // matching; 'all_jodhpur' is matched only against active all_jodhpur
+        // providers in a later phase. See 20260607120000_tasks_add_scope.sql.
+        scope,
       })
       .select("display_id")
       .single();
@@ -294,7 +317,7 @@ export async function POST(request: Request) {
     // repeated unresolved submissions just tick `occurrences`.
     // Wrapped in try/catch so a queue blip never affects the response
     // — the task was already inserted successfully above.
-    if (taskRegionCode === null) {
+    if (!isAllCity && taskRegionCode === null) {
       try {
         await queueUnmappedAreaForReview({
           rawArea: area,
