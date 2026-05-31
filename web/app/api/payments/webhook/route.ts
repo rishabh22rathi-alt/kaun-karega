@@ -9,6 +9,7 @@ import {
 } from "@/lib/payments/server";
 import { effectivePlan } from "@/lib/payments/effectivePlan";
 import { invalidateSnapshots } from "@/lib/admin/snapshotCache";
+import { reconcileProviderCoverage } from "@/lib/admin/reconcileProviderCoverage";
 
 // Cache keys invalidated after every successful captured-payment write
 // (both immediate-upgrade/renewal and scheduled_paid_lower branches).
@@ -633,6 +634,30 @@ export async function POST(request: Request) {
     return NextResponse.json(
       { ok: false, error: "ORDER_PAID_UPDATE_FAILED" },
       { status: 500 }
+    );
+  }
+
+  // Reconcile provider_areas against the just-activated plan so coverage
+  // never drifts from entitlement. This is the auto-write for an immediate
+  // all_jodhpur upgrade (the webhook does not otherwise touch
+  // provider_areas) and a trim for an immediate downgrade/renewal. Strictly
+  // best-effort: a reconcile failure must never trigger a Razorpay retry on
+  // an already-paid order, so it is logged and swallowed. The admin
+  // "Rebuild Provider Coverage" button is the manual backstop.
+  try {
+    const coverage = await reconcileProviderCoverage(providerId);
+    if (!coverage.ok || coverage.errors.length > 0) {
+      console.warn("[payments/webhook] coverage reconcile reported issues", {
+        providerId,
+        scanError: coverage.scanError ?? null,
+        errors: coverage.errors,
+        warnings: coverage.warnings,
+      });
+    }
+  } catch (err) {
+    console.warn(
+      "[payments/webhook] coverage reconcile threw (non-fatal)",
+      err instanceof Error ? err.message : err
     );
   }
 

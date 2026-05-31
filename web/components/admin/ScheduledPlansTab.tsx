@@ -70,6 +70,25 @@ type RecentResponse = {
   message?: string;
 };
 
+type CoverageNote = { providerId: string; message: string };
+
+type CoverageResult = {
+  checked: number;
+  fixed: number;
+  warnings: CoverageNote[];
+  errors: CoverageNote[];
+};
+
+type CoverageResponse = {
+  ok?: boolean;
+  checked?: number;
+  fixed?: number;
+  warnings?: CoverageNote[];
+  errors?: CoverageNote[];
+  error?: string;
+  message?: string;
+};
+
 function formatDate(value: string | null): string {
   if (!value) return "—";
   const ts = Date.parse(value);
@@ -110,6 +129,13 @@ export default function ScheduledPlansTab() {
   const [running, setRunning] = useState(false);
   const [runResult, setRunResult] = useState<RunResult | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
+
+  const [coverageProviderId, setCoverageProviderId] = useState("");
+  const [coverageRunning, setCoverageRunning] = useState(false);
+  const [coverageResult, setCoverageResult] = useState<CoverageResult | null>(
+    null
+  );
+  const [coverageError, setCoverageError] = useState<string | null>(null);
 
   const fetchRecent = useCallback(async () => {
     setRecentLoading(true);
@@ -191,6 +217,48 @@ export default function ScheduledPlansTab() {
       setRunning(false);
     }
   }, [running, fetchRecent]);
+
+  const handleRebuildCoverage = useCallback(async () => {
+    if (coverageRunning) return;
+    const targetId = coverageProviderId.trim();
+    if (typeof window !== "undefined") {
+      const scope = targetId
+        ? `provider ${targetId}`
+        : "ALL providers with a plan row";
+      const ok = window.confirm(
+        `This will rebuild provider_areas coverage for ${scope} to match each plan (all_jodhpur → all regions; regions_5 → max 5; free/expired → 1). Continue?`
+      );
+      if (!ok) return;
+    }
+    setCoverageRunning(true);
+    setCoverageError(null);
+    setCoverageResult(null);
+    try {
+      const res = await fetch("/api/admin/provider-coverage/rebuild", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(targetId ? { providerId: targetId } : {}),
+      });
+      const data = (await res.json().catch(() => null)) as CoverageResponse | null;
+      if (!res.ok || !data?.ok) {
+        setCoverageError(
+          data?.message || data?.error || `Coverage rebuild failed (${res.status}).`
+        );
+        return;
+      }
+      setCoverageResult({
+        checked: Number(data.checked ?? 0),
+        fixed: Number(data.fixed ?? 0),
+        warnings: Array.isArray(data.warnings) ? data.warnings : [],
+        errors: Array.isArray(data.errors) ? data.errors : [],
+      });
+    } catch {
+      setCoverageError("Network error while rebuilding coverage.");
+    } finally {
+      setCoverageRunning(false);
+    }
+  }, [coverageRunning, coverageProviderId]);
 
   return (
     <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
@@ -354,6 +422,147 @@ export default function ScheduledPlansTab() {
                     {runResult.scanned === 0
                       ? "No due scheduled plans were found in this run."
                       : "All scanned providers activated successfully."}
+                  </p>
+                )}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <p className="text-sm font-semibold text-slate-800">
+              Rebuild Provider Coverage
+            </p>
+            <p className="mt-1 text-sm text-slate-600">
+              Repairs <code>provider_areas</code> so coverage matches each
+              provider&rsquo;s plan: all_jodhpur fills every active region,
+              regions_5 trims to 5, free/expired trims to 1. Leave the box empty
+              to scan all providers, or enter one Provider ID.
+            </p>
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <input
+                type="text"
+                value={coverageProviderId}
+                onChange={(e) => setCoverageProviderId(e.target.value)}
+                placeholder="Provider ID (optional)"
+                disabled={coverageRunning}
+                data-testid="coverage-rebuild-provider-input"
+                className="w-56 rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono text-slate-800 focus:border-[#003d20] focus:outline-none focus:ring-1 focus:ring-[#003d20] disabled:bg-slate-100"
+              />
+              <button
+                type="button"
+                onClick={handleRebuildCoverage}
+                disabled={coverageRunning}
+                data-testid="coverage-rebuild-button"
+                className="inline-flex items-center justify-center rounded-xl bg-[#003d20] px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-[#002a16] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {coverageRunning ? "Rebuilding…" : "Rebuild Provider Coverage"}
+              </button>
+            </div>
+
+            {coverageError ? (
+              <div
+                role="alert"
+                data-testid="coverage-rebuild-error"
+                className="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700"
+              >
+                {coverageError}
+              </div>
+            ) : null}
+
+            {coverageResult ? (
+              <div
+                role="status"
+                data-testid="coverage-rebuild-result"
+                className="mt-4 space-y-3"
+              >
+                <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
+                  <div className="rounded-lg border border-slate-200 bg-white p-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                      Checked
+                    </p>
+                    <p
+                      data-testid="coverage-stat-checked"
+                      className="mt-1 text-2xl font-bold text-slate-900"
+                    >
+                      {coverageResult.checked}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700">
+                      Fixed
+                    </p>
+                    <p
+                      data-testid="coverage-stat-fixed"
+                      className="mt-1 text-2xl font-bold text-emerald-800"
+                    >
+                      {coverageResult.fixed}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-amber-700">
+                      Warnings
+                    </p>
+                    <p
+                      data-testid="coverage-stat-warnings"
+                      className="mt-1 text-2xl font-bold text-amber-800"
+                    >
+                      {coverageResult.warnings.length}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-rose-200 bg-rose-50 p-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-rose-700">
+                      Errors
+                    </p>
+                    <p
+                      data-testid="coverage-stat-errors"
+                      className="mt-1 text-2xl font-bold text-rose-800"
+                    >
+                      {coverageResult.errors.length}
+                    </p>
+                  </div>
+                </div>
+
+                {coverageResult.warnings.length > 0 ||
+                coverageResult.errors.length > 0 ? (
+                  <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
+                    {coverageResult.errors.map((n, i) => (
+                      <li
+                        key={`err-${n.providerId}-${i}`}
+                        className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-3 py-2 text-xs"
+                      >
+                        <span className="inline-flex items-center rounded-full border border-rose-300 bg-rose-50 px-2 py-0.5 font-semibold uppercase tracking-wide text-rose-700">
+                          error
+                        </span>
+                        <span className="font-mono text-slate-700">
+                          {n.providerId}
+                        </span>
+                        <span className="break-all text-slate-500">
+                          {n.message}
+                        </span>
+                      </li>
+                    ))}
+                    {coverageResult.warnings.map((n, i) => (
+                      <li
+                        key={`warn-${n.providerId}-${i}`}
+                        className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-3 py-2 text-xs"
+                      >
+                        <span className="inline-flex items-center rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 font-semibold uppercase tracking-wide text-amber-700">
+                          warning
+                        </span>
+                        <span className="font-mono text-slate-700">
+                          {n.providerId}
+                        </span>
+                        <span className="break-all text-slate-500">
+                          {n.message}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-xs text-slate-500">
+                    {coverageResult.checked === 0
+                      ? "No providers with a plan row were found."
+                      : "All checked providers already had correct coverage or were repaired cleanly."}
                   </p>
                 )}
               </div>
