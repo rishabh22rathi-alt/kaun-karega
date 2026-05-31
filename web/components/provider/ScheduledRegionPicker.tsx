@@ -39,6 +39,12 @@ export type ScheduledRegionPickerProps = {
   // Friendly label for the plan being scheduled (e.g. "₹31 plan").
   // Shown in the title so the provider knows what they're picking for.
   targetPlanLabel: string;
+  // Phase A: optional GST-inclusive charge summary (e.g.
+  // "Total payable ₹36.58 (incl. 18% GST)"). Shown in the footer so the
+  // scheduled-paid-lower flow surfaces what Razorpay will charge before
+  // the provider commits region choices. The PaymentTermsModal (next
+  // step) repeats the full base/GST/total breakdown.
+  chargeSummaryLabel?: string;
   onCancel: () => void;
   // Called with the final, deduplicated, exactly-requiredCount-long
   // list of region_codes. Parent should advance to the terms modal.
@@ -87,6 +93,7 @@ export default function ScheduledRegionPicker({
   requiredCount,
   cityCode,
   targetPlanLabel,
+  chargeSummaryLabel,
   onCancel,
   onConfirm,
 }: ScheduledRegionPickerProps) {
@@ -268,15 +275,25 @@ export default function ScheduledRegionPicker({
         </div>
 
         <footer className="flex flex-col gap-2 border-t border-slate-200 bg-slate-50 px-5 py-3 sm:flex-row sm:items-center sm:justify-between">
-          <p
-            data-testid="scheduled-region-picker-count"
-            className="text-xs font-medium text-slate-600"
-          >
-            {selectedCount} / {requiredCount} selected
-            {remaining > 0
-              ? ` — pick ${remaining} more`
-              : " — ready to continue"}
-          </p>
+          <div className="flex flex-col gap-0.5">
+            <p
+              data-testid="scheduled-region-picker-count"
+              className="text-xs font-medium text-slate-600"
+            >
+              {selectedCount} / {requiredCount} selected
+              {remaining > 0
+                ? ` — pick ${remaining} more`
+                : " — ready to continue"}
+            </p>
+            {chargeSummaryLabel ? (
+              <p
+                data-testid="scheduled-region-picker-charge"
+                className="text-xs font-semibold text-[#003d20]"
+              >
+                {chargeSummaryLabel}
+              </p>
+            ) : null}
+          </div>
           <div className="flex justify-end gap-2">
             <button
               type="button"

@@ -2,8 +2,8 @@ import { NextResponse } from "next/server";
 import { getAuthSession } from "@/lib/auth";
 import { adminSupabase } from "@/lib/supabase/admin";
 import {
+  computePlanCharge,
   createRazorpayOrder,
-  getPlanAmountPaise,
   getPlanMaxRegions,
   getRazorpayCredentials,
   isPaidPlanCode,
@@ -357,7 +357,13 @@ export async function POST(request: Request) {
     validatedScheduledRegionCodes = cleaned;
   }
 
-  const amountPaise = getPlanAmountPaise(planCode);
+  // Phase A: pricing is GST-exclusive, so we charge base + 18% GST.
+  // `totalPaise` (GST-inclusive) is what Razorpay charges AND what we
+  // store in payment_orders.amount_paise, so the webhook amount-match
+  // (captured === amount_paise) and the future invoice both reconcile
+  // against the captured amount. The base remains the taxable value.
+  const charge = computePlanCharge(planCode);
+  const amountPaise = charge.totalPaise;
 
   const orderResult = await createRazorpayOrder({
     amountPaise,
@@ -426,8 +432,20 @@ export async function POST(request: Request) {
     ok: true,
     order_id: order.id,
     key_id: creds.keyId,
+    // GST-inclusive total — the amount Razorpay charges and the value
+    // stored in payment_orders.amount_paise.
     amount: amountPaise,
     currency: order.currency || "INR",
+    // Phase A: echo the GST breakdown (paise) so the client can show a
+    // base / GST / total receipt without re-deriving the math. The
+    // server is the source of truth; the client's pre-order modal uses
+    // the shared lib/payments/gst helper and these confirm it.
+    gst: {
+      base_paise: charge.basePaise,
+      gst_paise: charge.gstPaise,
+      gst_bps: charge.gstBps,
+      total_paise: charge.totalPaise,
+    },
     // Echo the server classification so the client can render
     // post-payment copy ("activation queued for {date}") without
     // re-deriving the mode. Defensive only; the client never branches

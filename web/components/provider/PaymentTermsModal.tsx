@@ -32,6 +32,16 @@ export type PaymentTermsModalProps = {
   // Pricing context shown to the user so the modal is self-explanatory
   // without the surrounding card context. e.g. "₹31" or "₹101".
   amountLabel: string;
+  // Phase A: GST-exclusive pricing. When provided, the modal shows a
+  // base / GST / total-payable receipt so the provider sees exactly
+  // what Razorpay will charge (base + 18% GST) before paying. Labels
+  // are pre-formatted rupee strings (e.g. "₹31.00", "₹5.58", "₹36.58").
+  priceBreakdown?: {
+    baseLabel: string;
+    gstLabel: string;
+    totalLabel: string;
+    gstBps: number;
+  };
   // One of "choose" (paid select / upgrade), "renew" (paid renewal),
   // "schedule" (scheduled paid lower). Selects friendly headline copy.
   intent: "choose" | "renew" | "schedule";
@@ -59,6 +69,7 @@ export default function PaymentTermsModal({
   onCancel,
   onConfirm,
   amountLabel,
+  priceBreakdown,
   intent,
   busy = false,
 }: PaymentTermsModalProps) {
@@ -123,6 +134,48 @@ export default function PaymentTermsModal({
         </header>
 
         <div className="space-y-3 px-5 py-4 text-sm text-slate-700">
+          {priceBreakdown ? (
+            // Phase A: GST-exclusive receipt. Shows base + GST = total
+            // payable so the provider sees exactly what Razorpay charges
+            // before the payment window opens.
+            <div
+              data-testid="payment-terms-price"
+              className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs"
+            >
+              <div className="flex items-center justify-between py-0.5">
+                <span className="text-slate-600">Plan price</span>
+                <span
+                  data-testid="payment-terms-base"
+                  className="font-medium text-slate-800"
+                >
+                  {priceBreakdown.baseLabel}
+                </span>
+              </div>
+              <div className="flex items-center justify-between py-0.5">
+                <span className="text-slate-600">
+                  GST ({Math.round(priceBreakdown.gstBps / 100)}%)
+                </span>
+                <span
+                  data-testid="payment-terms-gst"
+                  className="font-medium text-slate-800"
+                >
+                  {priceBreakdown.gstLabel}
+                </span>
+              </div>
+              <div className="mt-1 flex items-center justify-between border-t border-slate-200 pt-1.5">
+                <span className="font-semibold text-slate-900">
+                  Total payable
+                </span>
+                <span
+                  data-testid="payment-terms-total"
+                  className="text-sm font-bold text-[#003d20]"
+                >
+                  {priceBreakdown.totalLabel}
+                </span>
+              </div>
+            </div>
+          ) : null}
+
           <ul
             data-testid="payment-terms-bullets"
             className="space-y-2 text-xs leading-relaxed"

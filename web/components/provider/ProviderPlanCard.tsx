@@ -9,6 +9,7 @@ import {
   classifyPlanChange,
   type PlanChangeMode,
 } from "@/lib/payments/planRank";
+import { computeGstBreakdown, formatPaiseToRupees } from "@/lib/payments/gst";
 
 /**
  * Stage 4A: Current Plan card for the provider dashboard.
@@ -229,6 +230,27 @@ const PLAN_SHORT_LABEL: Record<Exclude<PlanCode, "free">, string> = {
   regions_5: "₹31 plan",
   all_jodhpur: "₹101 plan",
 };
+// Phase A: GST-exclusive BASE (taxable) amount per paid plan, in paise.
+// MUST match PLAN_PRICING in lib/payments/server.ts. Duplicated here
+// because server.ts is server-only (node:crypto); the GST arithmetic
+// itself is shared via lib/payments/gst.ts, so only these two integers
+// live in two places. The terms modal + region picker derive the
+// "base + 18% GST = total payable" receipt from these.
+const PLAN_BASE_PAISE: Record<Exclude<PlanCode, "free">, number> = {
+  regions_5: 3100,
+  all_jodhpur: 10100,
+};
+
+// Build the rupee-formatted breakdown the PaymentTermsModal shows.
+function planChargeLabels(target: Exclude<PlanCode, "free">) {
+  const b = computeGstBreakdown(PLAN_BASE_PAISE[target]);
+  return {
+    baseLabel: `₹${formatPaiseToRupees(b.basePaise)}`,
+    gstLabel: `₹${formatPaiseToRupees(b.gstPaise)}`,
+    totalLabel: `₹${formatPaiseToRupees(b.totalPaise)}`,
+    gstBps: b.gstBps,
+  };
+}
 // Required region count for the scheduled-paid-lower picker. Mirrors
 // PLAN_PRICING.{code}.maxRegions on the server. all_jodhpur is
 // city-wide and never appears here (rank 2 is the top tier — there is
@@ -1347,6 +1369,9 @@ export default function ProviderPlanCard({
         <ScheduledRegionPicker
           requiredCount={PLAN_REQUIRED_REGIONS[pendingTarget]}
           targetPlanLabel={PLAN_SHORT_LABEL[pendingTarget]}
+          chargeSummaryLabel={`Total payable ₹${formatPaiseToRupees(
+            computeGstBreakdown(PLAN_BASE_PAISE[pendingTarget]).totalPaise
+          )} (incl. 18% GST)`}
           cityCode={null}
           onCancel={handlePickerCancel}
           onConfirm={handlePickerConfirm}
@@ -1358,6 +1383,7 @@ export default function ProviderPlanCard({
       {phase === "confirming-terms" && pendingTarget ? (
         <PaymentTermsModal
           amountLabel={PLAN_PRICE_LABEL[pendingTarget]}
+          priceBreakdown={planChargeLabels(pendingTarget)}
           intent={
             pendingMode === "scheduled_paid_lower"
               ? "schedule"

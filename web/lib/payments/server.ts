@@ -21,6 +21,8 @@
 
 import crypto from "node:crypto";
 
+import { computeGstBreakdown, type GstBreakdown } from "@/lib/payments/gst";
+
 // ─── Feature flags ─────────────────────────────────────────────────────────
 
 /**
@@ -83,10 +85,16 @@ export function isScheduledPlansEnabled(): boolean {
 // ─── Pricing ───────────────────────────────────────────────────────────────
 
 /**
- * Plan price map in paise (₹1 = 100 paise). Source of truth.
+ * Plan price map in paise (₹1 = 100 paise). Source of truth for the
+ * GST-exclusive BASE (taxable) amount.
  *
  *   regions_5     → ₹31   (3100 paise)  → max_regions=5
  *   all_jodhpur   → ₹101  (10100 paise) → max_regions=99
+ *
+ * Phase A: pricing is GST-exclusive, so the amount actually charged is
+ * base + 18% GST — see computePlanCharge() below (3658 / 11918 paise).
+ * Razorpay and payment_orders.amount_paise store that GST-inclusive
+ * total; these base amounts remain the invoice taxable value.
  *
  * Free plan is the implicit fallback (no row in provider_plans) and is
  * not represented here — it cannot be paid for.
@@ -104,6 +112,24 @@ export function isPaidPlanCode(value: unknown): value is PaidPlanCode {
 
 export function getPlanAmountPaise(planCode: PaidPlanCode): number {
   return PLAN_PRICING[planCode].amountPaise;
+}
+
+/**
+ * Phase A: GST-inclusive charge for a paid plan.
+ *
+ * Pricing is GST-exclusive, so the amount Razorpay charges = base (the
+ * taxable value from PLAN_PRICING) + 18% GST. The returned `totalPaise`
+ * is BOTH the value sent to Razorpay AND the value stored in
+ * `payment_orders.amount_paise`, so the webhook amount-match
+ * (captured === amount_paise) and the future GST invoice both reconcile
+ * against the captured amount. The breakdown (cgst/sgst/gst) is carried
+ * along so the invoice can reuse the exact paise.
+ *
+ *   regions_5   → base 3100 + GST 558  = 3658 paise  (₹36.58)
+ *   all_jodhpur → base 10100 + GST 1818 = 11918 paise (₹119.18)
+ */
+export function computePlanCharge(planCode: PaidPlanCode): GstBreakdown {
+  return computeGstBreakdown(PLAN_PRICING[planCode].amountPaise);
 }
 
 export function getPlanMaxRegions(planCode: PaidPlanCode): number {
