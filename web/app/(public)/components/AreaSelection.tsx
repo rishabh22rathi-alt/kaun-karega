@@ -10,6 +10,12 @@ type AreaSelectionProps = {
   onSelect: (area: string) => void;
   errorMessage?: string;
   showQuestionLabel?: boolean;
+  // Opt-in: render the "Search across all Jodhpur" toggle. Default false so
+  // existing consumers (homepage) are unchanged. When the user turns it on,
+  // the normal area picker is replaced by a single "All Jodhpur" chip and
+  // onScopeChange('all_jodhpur') fires (onSelect receives "All Jodhpur").
+  allowAllJodhpur?: boolean;
+  onScopeChange?: (scope: "region" | "all_jodhpur") => void;
 };
 
 const MAX_SUGGESTIONS = 8;
@@ -93,6 +99,8 @@ export default function AreaSelection({
   onSelect,
   errorMessage,
   showQuestionLabel = true,
+  allowAllJodhpur = false,
+  onScopeChange,
 }: AreaSelectionProps) {
   const {
     isLoading: geoLoading,
@@ -140,6 +148,9 @@ export default function AreaSelection({
   // Original user input that differs (case/spelling) from the canonical
   // area finally selected. Shown beneath the "Selected area" chip.
   const [aliasInput, setAliasInput] = useState("");
+  // "Search across all Jodhpur" toggle (only when allowAllJodhpur). When on,
+  // the area picker is replaced by a single "All Jodhpur" chip.
+  const [allCity, setAllCity] = useState(false);
 
   const inputRef = useRef<HTMLInputElement | null>(null);
   const inputShellRef = useRef<HTMLDivElement | null>(null);
@@ -680,6 +691,63 @@ export default function AreaSelection({
     onSelect(detectedArea);
   };
 
+  // ── All-Jodhpur toggle ──────────────────────────────────────────────────
+  const handleToggleAllCity = (next: boolean) => {
+    setAllCity(next);
+    if (next) {
+      onScopeChange?.("all_jodhpur");
+      onSelect("All Jodhpur");
+    } else {
+      onScopeChange?.("region");
+      onSelect("");
+    }
+  };
+
+  const renderAllCityToggle = () => (
+    <label
+      className="mb-3 flex cursor-pointer items-center gap-2.5 rounded-xl border border-[#1B5E20]/30 bg-[#1B5E20]/5 px-3 py-2.5"
+      data-testid="all-jodhpur-toggle"
+    >
+      <input
+        type="checkbox"
+        checked={allCity}
+        onChange={(e) => handleToggleAllCity(e.target.checked)}
+        className="h-4 w-4 accent-[#1B5E20]"
+      />
+      <span className="text-sm font-semibold text-[#1B5E20]">
+        Search across all Jodhpur
+      </span>
+    </label>
+  );
+
+  // When all-city is selected, replace the entire area picker with a single
+  // confirmation chip. The cascade, detect, chips, and input are all hidden.
+  if (allowAllJodhpur && allCity) {
+    return (
+      <div className="w-full">
+        {renderAllCityToggle()}
+        <div
+          className="flex flex-col gap-1 rounded-2xl border border-[#1B5E20] bg-[#1B5E20]/10 px-3 py-2.5"
+          data-testid="all-jodhpur-chip"
+          aria-live="polite"
+        >
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-[#1B5E20]/80">
+            Selected area/region
+          </span>
+          <span className="text-sm font-bold text-[#1B5E20] sm:text-base">
+            All Jodhpur
+          </span>
+          <span className="text-xs text-[#1B5E20]/80">
+            We&rsquo;ll show providers who cover all of Jodhpur.
+          </span>
+        </div>
+        {errorMessage ? (
+          <p className="mt-2 text-xs text-red-600">{errorMessage}</p>
+        ) : null}
+      </div>
+    );
+  }
+
   // ── Render ─────────────────────────────────────────────────────────────
   const selectClass =
     "rounded-lg border border-emerald-200 bg-white px-3 py-2 text-sm font-medium text-slate-800 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 disabled:opacity-60";
@@ -690,6 +758,7 @@ export default function AreaSelection({
 
   return (
     <div className="w-full">
+      {allowAllJodhpur ? renderAllCityToggle() : null}
       {showQuestionLabel ? (
         <p className="mb-2 text-sm font-semibold text-[#111827]">
           Where do you need it?

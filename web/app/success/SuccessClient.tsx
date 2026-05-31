@@ -30,6 +30,9 @@ type ProviderItem = {
   area: string;
   rating: string;
   verified: "yes" | "no";
+  // Phase 3 coverage-origin metadata from /api/find-provider.
+  group: string;
+  matchScope: string;
 };
 
 type MatchProvidersResponse = {
@@ -37,6 +40,28 @@ type MatchProvidersResponse = {
 };
 
 const clean = (s: string) => (s || "").trim().replace(/\s+/g, " ");
+
+// Result grouping (Phase 3). Render order is fixed; the friendly headings
+// come straight from the backend `group` metadata on each provider.
+const GROUP_ORDER = [
+  "available_across_jodhpur",
+  "available_in_this_region",
+  "other_providers_in_this_area",
+] as const;
+type GroupKey = (typeof GROUP_ORDER)[number];
+const GROUP_LABEL: Record<GroupKey, string> = {
+  available_across_jodhpur: "Available Across Jodhpur",
+  available_in_this_region: "Popular providers in your area",
+  other_providers_in_this_area: "Other providers in this area",
+};
+// First N providers per group; the rest collapse behind "View more".
+const GROUP_PREVIEW_COUNT = 5;
+function groupKeyOf(value: string): GroupKey {
+  return value === "available_across_jodhpur" ||
+    value === "available_in_this_region"
+    ? value
+    : "other_providers_in_this_area";
+}
 
 function toProviderItem(item: unknown): ProviderItem | null {
   if (!item || typeof item !== "object") return null;
@@ -83,6 +108,10 @@ function toProviderItem(item: unknown): ProviderItem | null {
       : typeof ratingValue === "string"
         ? ratingValue.trim()
         : "";
+  const group =
+    (typeof record.group === "string" && record.group.trim()) || "";
+  const matchScope =
+    (typeof record.matchScope === "string" && record.matchScope.trim()) || "";
   if (!name) return null;
   return {
     name,
@@ -93,6 +122,8 @@ function toProviderItem(item: unknown): ProviderItem | null {
     area,
     rating,
     verified: normalizeVerifiedValue(record.verified),
+    group,
+    matchScope,
   };
 }
 
@@ -108,6 +139,21 @@ export default function SuccessClient({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [providers, setProviders] = useState<ProviderItem[]>([]);
+  // Per-group "View more" expansion. Keyed by GroupKey.
+  const [expandedGroups, setExpandedGroups] = useState<
+    Partial<Record<GroupKey, boolean>>
+  >({});
+
+  // Bucket the matched providers by their backend `group`. Providers with an
+  // unknown/missing group fall into "other_providers_in_this_area". For an
+  // all-city task every provider is "available_across_jodhpur", so only that
+  // section renders.
+  const providersByGroup = useMemo(() => {
+    const map = new Map<GroupKey, ProviderItem[]>();
+    for (const g of GROUP_ORDER) map.set(g, []);
+    for (const p of providers) map.get(groupKeyOf(p.group))!.push(p);
+    return map;
+  }, [providers]);
   const [notificationStatus, setNotificationStatus] = useState<
     "idle" | "queued" | "processing" | "done" | "error"
   >(taskId ? "queued" : "idle");
@@ -242,6 +288,103 @@ export default function SuccessClient({
     void fetchProviders();
   }, [fetchProviders, status]);
 
+  // Renders one slice of providers (desktop table + mobile cards). Called
+  // once per group so the markup stays identical to the pre-grouping table.
+  const renderProviderBlock = (items: ProviderItem[]) => (
+    <>
+      <div className="hidden overflow-hidden rounded-xl border border-orange-200 md:block">
+        <table className="w-full table-fixed divide-y divide-orange-200 text-left text-sm">
+          <thead className="bg-[#fb923c] text-left text-[#003d20]">
+            <tr>
+              <th className="w-[23%] whitespace-nowrap px-3 py-2 text-left align-middle text-base font-bold tracking-wide">Name</th>
+              <th className="w-[21%] whitespace-nowrap px-3 py-2 text-left align-middle text-base font-bold tracking-wide">Category</th>
+              <th className="w-[19%] whitespace-nowrap px-3 py-2 text-left align-middle text-base font-bold tracking-wide">Area</th>
+              <th className="w-[20%] whitespace-nowrap px-3 py-2 text-left align-middle text-base font-bold tracking-wide">Phone</th>
+              <th className="w-[17%] whitespace-nowrap pl-3 pr-6 py-2 text-left align-middle text-base font-bold tracking-wide">Rating</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-orange-100 bg-white text-slate-800">
+            {items.map((provider, index) => (
+              <tr
+                key={provider.providerId || `${provider.name}-${index}`}
+                className="align-middle"
+              >
+                <td className="px-3 py-2.5 font-medium leading-snug">{provider.name}</td>
+                <td className="px-3 py-2.5 leading-snug text-slate-600">{provider.category || service || "—"}</td>
+                <td className="px-3 py-2.5 leading-snug text-slate-600">{provider.area || area || "—"}</td>
+                <td className="px-3 py-2.5">
+                  <div className="flex flex-col leading-tight">
+                    {provider.phone ? (
+                      <>
+                        <a
+                          href={`tel:${provider.phone}`}
+                          className="font-bold text-[#003d20] underline decoration-[#f97316] decoration-2 underline-offset-4 transition-colors hover:text-[#002a16] hover:decoration-[#ea580c]"
+                        >
+                          {provider.phone}
+                        </a>
+                        <span className="mt-1 text-[10px] font-medium text-[#003d20]/70">Tap to call</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="font-bold text-[#003d20] font-mono">
+                          {provider.phoneMasked || "—"}
+                        </span>
+                        <span className="mt-1 text-[10px] font-medium text-[#003d20]/70">
+                          Provider will reach you on WhatsApp
+                        </span>
+                      </>
+                    )}
+                  </div>
+                </td>
+                <td className="pl-3 pr-6 py-2.5 text-slate-600">{provider.rating || "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="space-y-3 md:hidden">
+        {items.map((provider, index) => (
+          <div
+            key={provider.providerId || `${provider.name}-${index}`}
+            className="rounded-xl border border-orange-200 bg-white p-3.5 shadow-sm"
+          >
+            <p className="font-semibold text-slate-900">{provider.name}</p>
+            <p className="mt-1 text-sm text-slate-500">
+              {provider.category || service || "Category not available"} · {provider.area || area || "Area not available"}
+            </p>
+            <div className="mt-3 flex flex-col">
+              {provider.phone ? (
+                <>
+                  <a
+                    href={`tel:${provider.phone}`}
+                    className="inline-flex text-sm font-bold text-[#003d20] underline decoration-[#f97316] decoration-2 underline-offset-4 transition-colors hover:text-[#002a16] hover:decoration-[#ea580c]"
+                  >
+                    {provider.phone}
+                  </a>
+                  <span className="mt-1 text-[11px] font-medium text-[#003d20]/70">
+                    Tap to call · Hold to copy
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span className="inline-flex text-sm font-bold text-[#003d20] font-mono">
+                    {provider.phoneMasked || "—"}
+                  </span>
+                  <span className="mt-1 text-[11px] font-medium text-[#003d20]/70">
+                    Provider will reach you on WhatsApp
+                  </span>
+                </>
+              )}
+            </div>
+            <p className="mt-2 text-xs text-slate-500">
+              Rating: {provider.rating || "Rating not available"}
+            </p>
+          </div>
+        ))}
+      </div>
+    </>
+  );
 
   if (status === "under_review") {
     return (
@@ -348,99 +491,40 @@ export default function SuccessClient({
               Could not load provider numbers right now.
             </p>
           ) : providers.length > 0 ? (
-            <>
-              <div className="hidden overflow-hidden rounded-xl border border-orange-200 md:block">
-                <table className="w-full table-fixed divide-y divide-orange-200 text-left text-sm">
-                  <thead className="bg-[#fb923c] text-left text-[#003d20]">
-                    <tr>
-                      <th className="w-[23%] whitespace-nowrap px-3 py-2 text-left align-middle text-base font-bold tracking-wide">Name</th>
-                      <th className="w-[21%] whitespace-nowrap px-3 py-2 text-left align-middle text-base font-bold tracking-wide">Category</th>
-                      <th className="w-[19%] whitespace-nowrap px-3 py-2 text-left align-middle text-base font-bold tracking-wide">Area</th>
-                      <th className="w-[20%] whitespace-nowrap px-3 py-2 text-left align-middle text-base font-bold tracking-wide">Phone</th>
-                      <th className="w-[17%] whitespace-nowrap pl-3 pr-6 py-2 text-left align-middle text-base font-bold tracking-wide">Rating</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-orange-100 bg-white text-slate-800">
-                    {providers.map((provider, index) => (
-                      <tr
-                        key={provider.providerId || `${provider.name}-${index}`}
-                        className="align-middle"
+            <div className="space-y-6">
+              {GROUP_ORDER.map((groupKey) => {
+                const items = providersByGroup.get(groupKey) ?? [];
+                if (items.length === 0) return null;
+                const isExpanded = Boolean(expandedGroups[groupKey]);
+                const shown = isExpanded
+                  ? items
+                  : items.slice(0, GROUP_PREVIEW_COUNT);
+                const hiddenCount = items.length - GROUP_PREVIEW_COUNT;
+                return (
+                  <section key={groupKey} data-testid={`provider-group-${groupKey}`}>
+                    <h2 className="mb-2 text-sm font-bold text-[#003d20]">
+                      {GROUP_LABEL[groupKey]}
+                    </h2>
+                    {renderProviderBlock(shown)}
+                    {items.length > GROUP_PREVIEW_COUNT ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setExpandedGroups((prev) => ({
+                            ...prev,
+                            [groupKey]: !isExpanded,
+                          }))
+                        }
+                        data-testid={`provider-group-${groupKey}-toggle`}
+                        className="mt-2 text-xs font-semibold text-[#003d20] underline underline-offset-2 hover:text-[#002a16]"
                       >
-                        <td className="px-3 py-2.5 font-medium leading-snug">{provider.name}</td>
-                        <td className="px-3 py-2.5 leading-snug text-slate-600">{provider.category || service || "—"}</td>
-                        <td className="px-3 py-2.5 leading-snug text-slate-600">{provider.area || area || "—"}</td>
-                        <td className="px-3 py-2.5">
-                          <div className="flex flex-col leading-tight">
-                            {provider.phone ? (
-                              <>
-                                <a
-                                  href={`tel:${provider.phone}`}
-                                  className="font-bold text-[#003d20] underline decoration-[#f97316] decoration-2 underline-offset-4 transition-colors hover:text-[#002a16] hover:decoration-[#ea580c]"
-                                >
-                                  {provider.phone}
-                                </a>
-                                <span className="mt-1 text-[10px] font-medium text-[#003d20]/70">Tap to call</span>
-                              </>
-                            ) : (
-                              <>
-                                <span className="font-bold text-[#003d20] font-mono">
-                                  {provider.phoneMasked || "—"}
-                                </span>
-                                <span className="mt-1 text-[10px] font-medium text-[#003d20]/70">
-                                  Provider will reach you on WhatsApp
-                                </span>
-                              </>
-                            )}
-                          </div>
-                        </td>
-                        <td className="pl-3 pr-6 py-2.5 text-slate-600">{provider.rating || "—"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              <div className="space-y-3 md:hidden">
-                {providers.map((provider, index) => (
-                  <div
-                    key={provider.providerId || `${provider.name}-${index}`}
-                    className="rounded-xl border border-orange-200 bg-white p-3.5 shadow-sm"
-                  >
-                    <p className="font-semibold text-slate-900">{provider.name}</p>
-                    <p className="mt-1 text-sm text-slate-500">
-                      {provider.category || service || "Category not available"} · {provider.area || area || "Area not available"}
-                    </p>
-                    <div className="mt-3 flex flex-col">
-                      {provider.phone ? (
-                        <>
-                          <a
-                            href={`tel:${provider.phone}`}
-                            className="inline-flex text-sm font-bold text-[#003d20] underline decoration-[#f97316] decoration-2 underline-offset-4 transition-colors hover:text-[#002a16] hover:decoration-[#ea580c]"
-                          >
-                            {provider.phone}
-                          </a>
-                          <span className="mt-1 text-[11px] font-medium text-[#003d20]/70">
-                            Tap to call · Hold to copy
-                          </span>
-                        </>
-                      ) : (
-                        <>
-                          <span className="inline-flex text-sm font-bold text-[#003d20] font-mono">
-                            {provider.phoneMasked || "—"}
-                          </span>
-                          <span className="mt-1 text-[11px] font-medium text-[#003d20]/70">
-                            Provider will reach you on WhatsApp
-                          </span>
-                        </>
-                      )}
-                    </div>
-                    <p className="mt-2 text-xs text-slate-500">
-                      Rating: {provider.rating || "Rating not available"}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            </>
+                        {isExpanded ? "View less" : `View more (${hiddenCount} more)`}
+                      </button>
+                    ) : null}
+                  </section>
+                );
+              })}
+            </div>
           ) : (
             <p className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-center text-sm text-slate-600">
               No provider numbers available yet. We’ll notify you when providers respond.

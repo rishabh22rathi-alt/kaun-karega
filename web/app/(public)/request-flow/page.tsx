@@ -68,6 +68,8 @@ function PageContent() {
   const [timeSlot, setTimeSlot] = useState("");
   const [area, setArea] = useState("");
   const [areaError, setAreaError] = useState("");
+  // All Jodhpur virtual scope. Default 'region' = existing behaviour.
+  const [scope, setScope] = useState<"region" | "all_jodhpur">("region");
   const [details, setDetails] = useState("");
   const [error, setError] = useState<string>("");
   const [debug, setDebug] = useState<string>("");
@@ -132,6 +134,9 @@ function PageContent() {
         body: JSON.stringify({
           category,
           area: normalizedArea,
+          // All Jodhpur virtual scope. submit-request forces area/city/region
+          // for all_jodhpur server-side; default 'region' is unchanged.
+          scope,
           time,
           serviceDate: normalizedServiceDate,
           timeSlot,
@@ -143,7 +148,9 @@ function PageContent() {
       const text = await res.text();
       setDebug(`HTTP ${res.status}: ${text}`);
 
-      let json: any = null;
+      let json:
+        | { ok?: boolean; taskId?: string; displayId?: string; message?: string; error?: string }
+        | null = null;
       try {
         json = JSON.parse(text);
       } catch {}
@@ -168,8 +175,8 @@ function PageContent() {
       );
       router.refresh();
       return;
-    } catch (err: any) {
-      setError(err?.message || "Something went wrong.");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Something went wrong.");
       setIsRedirecting(false);
     } finally {
       setLoading(false);
@@ -220,6 +227,12 @@ function PageContent() {
               setAreaError("");
             }}
             errorMessage={areaError}
+            allowAllJodhpur
+            onScopeChange={(nextScope) => {
+              setScope(nextScope);
+              setAreaError("");
+              if (error) setError("");
+            }}
           />
 
           <div className="space-y-3">
