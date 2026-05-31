@@ -8,7 +8,7 @@ const recentRequestIds = new Map<string, number>();
 
 export async function POST(req: Request) {
   try {
-    let body: any;
+    let body: { phoneNumber?: unknown; requestId?: unknown } | undefined;
     try {
       body = await req.json();
     } catch (error) {
@@ -201,6 +201,7 @@ export async function POST(req: Request) {
     }
 
     if (!response.ok) {
+      // Log full provider detail server-side only — never returned to the browser.
       console.error("[WHATSAPP API ERROR]", {
         status: response.status,
         body: responseBody,
@@ -209,7 +210,6 @@ export async function POST(req: Request) {
         {
           ok: false,
           error: "WhatsApp API error",
-          details: responseBody,
           status: response.status,
         },
         { status: response.status }
@@ -220,15 +220,17 @@ export async function POST(req: Request) {
     return NextResponse.json({
       ok: true,
       message: "OTP sent successfully",
-      meta: responseBody,
       timestamp: istTimestamp,
       requestId: effectiveRequestId,
       phone: normalized,
     });
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error("[SEND WHATSAPP OTP ERROR]", err);
     return NextResponse.json(
-      { ok: false, error: err?.message || "Internal server error" },
+      {
+        ok: false,
+        error: err instanceof Error ? err.message : "Internal server error",
+      },
       { status: 500 }
     );
   }
