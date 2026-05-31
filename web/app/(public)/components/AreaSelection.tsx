@@ -72,6 +72,24 @@ export function isCityLevelTerm(value: string, cityName = ""): boolean {
   return Boolean(city) && v === city;
 }
 
+// Animated bold placeholder examples for the area input (regions/localities
+// only). Cycled with a typewriter effect when the input is idle + empty.
+const AREA_TW_HINTS = [
+  "Sardarpura",
+  "Shastri Nagar",
+  "Ratanada",
+  "Paota",
+  "Mandore",
+  "Pal Road",
+  "Basni",
+  "Kudi Bhagtasni",
+  "Chopasni",
+];
+const AREA_TW_TYPE_MS = 90;
+const AREA_TW_DELETE_MS = 45;
+const AREA_TW_PAUSE_COMPLETE_MS = 1600;
+const AREA_TW_PAUSE_BETWEEN_MS = 420;
+
 // Area Intelligence integration — same safety contract as before the
 // cascade rebuild: the value handed to `onSelect` (and therefore the
 // submit payload) MUST be a canonical area present in `/api/areas` for
@@ -169,6 +187,17 @@ export default function AreaSelection({
   // "Search across all Jodhpur" toggle (only when allowAllJodhpur). When on,
   // the area picker is replaced by a single "All Jodhpur" chip.
   const [allCity, setAllCity] = useState(false);
+  // Animated bold placeholder (typewriter overlay) for the area input.
+  const [twText, setTwText] = useState("");
+  const [twCaretOn, setTwCaretOn] = useState(true);
+  const [isHydrated, setIsHydrated] = useState(false);
+  const [areaInputFocused, setAreaInputFocused] = useState(false);
+  const [reducedMotion, setReducedMotion] = useState(false);
+  const twTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const twCaretIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const twWordIdx = useRef(0);
+  const twCharIdx = useRef(0);
+  const twPhase = useRef<"typing" | "paused" | "deleting">("typing");
 
   const inputRef = useRef<HTMLInputElement | null>(null);
   const inputShellRef = useRef<HTMLDivElement | null>(null);
@@ -387,6 +416,91 @@ export default function AreaSelection({
     return () => document.removeEventListener("mousedown", handleOutsideClick);
   }, []);
 
+  // ── Animated placeholder: hydration + reduced-motion detection ─────────
+  useEffect(() => {
+    // Client-only flags; the change-listener callback below is event-driven.
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setIsHydrated(true);
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    setReducedMotion(mq.matches);
+    /* eslint-enable react-hooks/set-state-in-effect */
+    const onChange = () => setReducedMotion(mq.matches);
+    mq.addEventListener?.("change", onChange);
+    return () => mq.removeEventListener?.("change", onChange);
+  }, []);
+
+  // ── Animated placeholder: typewriter loop ──────────────────────────────
+  // Runs ONLY when the input is idle (hydrated, not focused, empty, a city is
+  // selected) and the user has not requested reduced motion. It writes to a
+  // separate `twText` overlay state — never to `typedArea` — so it cannot
+  // interfere with typing, suggestions, or any other control.
+  useEffect(() => {
+    const shouldAnimate =
+      isHydrated &&
+      !reducedMotion &&
+      !areaInputFocused &&
+      typedArea.trim() === "" &&
+      Boolean(selectedCityCode);
+
+    const stopAll = () => {
+      if (twTimerRef.current) {
+        clearTimeout(twTimerRef.current);
+        twTimerRef.current = null;
+      }
+      if (twCaretIntervalRef.current) {
+        clearInterval(twCaretIntervalRef.current);
+        twCaretIntervalRef.current = null;
+      }
+    };
+
+    if (!shouldAnimate) {
+      stopAll();
+      /* eslint-disable-next-line react-hooks/set-state-in-effect */
+      setTwText("");
+      setTwCaretOn(true);
+      return;
+    }
+
+    twCharIdx.current = 0;
+    twPhase.current = "typing";
+    setTwText("");
+    twCaretIntervalRef.current = setInterval(
+      () => setTwCaretOn((v) => !v),
+      530
+    );
+
+    function tick() {
+      const word = AREA_TW_HINTS[twWordIdx.current % AREA_TW_HINTS.length];
+      if (twPhase.current === "typing") {
+        if (twCharIdx.current < word.length) {
+          twCharIdx.current += 1;
+          setTwText(word.slice(0, twCharIdx.current));
+          twTimerRef.current = setTimeout(tick, AREA_TW_TYPE_MS);
+        } else {
+          twPhase.current = "paused";
+          twTimerRef.current = setTimeout(tick, AREA_TW_PAUSE_COMPLETE_MS);
+        }
+      } else if (twPhase.current === "paused") {
+        twPhase.current = "deleting";
+        twTimerRef.current = setTimeout(tick, 0);
+      } else {
+        if (twCharIdx.current > 0) {
+          twCharIdx.current -= 1;
+          setTwText(word.slice(0, twCharIdx.current));
+          twTimerRef.current = setTimeout(tick, AREA_TW_DELETE_MS);
+        } else {
+          twWordIdx.current = (twWordIdx.current + 1) % AREA_TW_HINTS.length;
+          twPhase.current = "typing";
+          twTimerRef.current = setTimeout(tick, AREA_TW_PAUSE_BETWEEN_MS);
+        }
+      }
+    }
+
+    twTimerRef.current = setTimeout(tick, AREA_TW_PAUSE_BETWEEN_MS);
+    return stopAll;
+  }, [isHydrated, reducedMotion, areaInputFocused, typedArea, selectedCityCode]);
+
   useEffect(() => {
     return () => {
       if (blurTimerRef.current !== null) {
@@ -495,10 +609,12 @@ export default function AreaSelection({
       window.clearTimeout(blurTimerRef.current);
       blurTimerRef.current = null;
     }
+    setAreaInputFocused(true);
     setShowSuggestions(true);
   };
 
   const handleInputBlur = () => {
+    setAreaInputFocused(false);
     if (blurTimerRef.current !== null) {
       window.clearTimeout(blurTimerRef.current);
     }
@@ -1014,26 +1130,61 @@ export default function AreaSelection({
         ref={inputShellRef}
         className="relative mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center"
       >
-        <input
-          ref={inputRef}
-          type="text"
-          value={typedArea}
-          onChange={(e) => handleInputChange(e.target.value)}
-          onFocus={handleInputFocus}
-          onBlur={handleInputBlur}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              handleUseTypedArea();
-            }
-            if (event.key === "Escape") {
-              setShowSuggestions(false);
-            }
-          }}
-          placeholder="Type your area..."
-          disabled={geoLoading || !selectedCityCode}
-          className="w-full rounded-lg border border-emerald-200 px-3 py-2 text-sm text-slate-800 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 disabled:opacity-60 sm:w-auto sm:min-w-[220px] sm:flex-1"
-        />
+        {(() => {
+          // Show the animated overlay only when the input is idle + empty and
+          // the typewriter has text. Otherwise the (bold) native placeholder
+          // shows — including the reduced-motion fallback.
+          const showTwOverlay =
+            isHydrated &&
+            !areaInputFocused &&
+            typedArea.trim() === "" &&
+            twText !== "";
+          return (
+            <div className="relative w-full sm:flex-1 sm:min-w-[220px]">
+              <input
+                ref={inputRef}
+                type="text"
+                value={typedArea}
+                onChange={(e) => handleInputChange(e.target.value)}
+                onFocus={handleInputFocus}
+                onBlur={handleInputBlur}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    handleUseTypedArea();
+                  }
+                  if (event.key === "Escape") {
+                    setShowSuggestions(false);
+                  }
+                }}
+                placeholder={showTwOverlay ? "" : "Type your area..."}
+                disabled={geoLoading || !selectedCityCode}
+                data-testid="area-input"
+                className="w-full rounded-lg border border-emerald-200 px-3 py-2 text-sm text-slate-800 placeholder:font-bold placeholder:text-slate-500 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 disabled:opacity-60"
+              />
+              {showTwOverlay ? (
+                <div
+                  aria-hidden="true"
+                  data-testid="area-input-typewriter"
+                  className="pointer-events-none absolute inset-0 flex items-center px-3"
+                >
+                  <span className="text-sm font-bold text-slate-600">
+                    {twText}
+                    <span
+                      className="ml-px"
+                      style={{
+                        opacity: twCaretOn ? 1 : 0,
+                        transition: "opacity 50ms",
+                      }}
+                    >
+                      |
+                    </span>
+                  </span>
+                </div>
+              ) : null}
+            </div>
+          );
+        })()}
         <button
           type="button"
           onClick={handleUseTypedArea}

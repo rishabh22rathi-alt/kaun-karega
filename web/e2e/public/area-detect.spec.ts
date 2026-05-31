@@ -218,7 +218,7 @@ test.describe("AreaSelection detect my area", () => {
   test("manual area typing still works", async ({ page }) => {
     await openRequestFlow(page);
 
-    await page.locator('input[placeholder="Type your area..."]').fill("Sardarpura");
+    await page.getByTestId("area-input").fill("Sardarpura");
     await page.getByRole("button", { name: "Use this area" }).click();
 
     await expect(page.getByText("Selected area/region")).toBeVisible();

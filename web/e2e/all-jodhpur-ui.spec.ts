@@ -78,7 +78,7 @@ test.describe("All Jodhpur — Phase 3 UI", () => {
     await expect(page.getByTestId("detect-my-area")).toHaveCount(0);
     await expect(page.locator("#geo-city")).toHaveCount(0);
     await expect(
-      page.locator('input[placeholder="Type your area..."]')
+      page.getByTestId("area-input")
     ).toHaveCount(0);
 
     // Clear → picker restored, chip gone, tile back.
@@ -269,7 +269,7 @@ test.describe("All Jodhpur — Phase 3 UI", () => {
     await gotoPath(page, "/request-flow?category=Electrician");
     await expect(page.getByTestId("detect-my-area")).toBeEnabled();
 
-    await page.locator('input[placeholder="Type your area..."]').fill("jodhpur");
+    await page.getByTestId("area-input").fill("jodhpur");
 
     // The All-Jodhpur option appears; the bare "Jodhpur" area does not.
     await expect(page.getByTestId("all-jodhpur-suggestion")).toBeVisible();
@@ -361,5 +361,12 @@ test.describe("All Jodhpur — Phase 3 UI", () => {
     await expect(
       page.locator('section[data-testid^="provider-group-"]')
     ).toHaveCount(0);
+
+    // CTA returns to request-flow with the category preserved and NO scope
+    // param (so the picker starts in normal region mode, not all-city).
+    const cta = page.getByTestId("all-jodhpur-choose-area");
+    await expect(cta).toBeVisible();
+    await expect(cta).toHaveText("Choose Area Instead");
+    await expect(cta).toHaveAttribute("href", "/request-flow?category=Electrician");
   });
 });

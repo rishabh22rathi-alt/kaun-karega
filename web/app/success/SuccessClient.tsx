@@ -531,27 +531,39 @@ export default function SuccessClient({
                 );
               })}
             </div>
+          ) : isAllCity ? (
+            <div
+              data-testid="all-jodhpur-empty"
+              className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-5 text-center text-sm text-slate-600"
+            >
+              <p>
+                We couldn&rsquo;t find any providers currently serving all of
+                Jodhpur for this service.
+              </p>
+              <p className="mt-2">
+                Choose your area to see local providers who may be available
+                nearby.
+              </p>
+              {/* Return to request-flow with the category preserved. No scope
+                  param → the picker starts in normal region mode (all-city is
+                  intentionally NOT carried over). */}
+              <Link
+                href={`/request-flow${
+                  service ? `?category=${encodeURIComponent(service)}` : ""
+                }`}
+                data-testid="all-jodhpur-choose-area"
+                className="mt-4 inline-flex items-center justify-center rounded-full bg-[#003d20] px-4 py-2 text-sm font-bold text-white shadow-sm transition hover:bg-[#002a16]"
+              >
+                Choose Area Instead
+              </Link>
+            </div>
           ) : (
             <p
-              data-testid={
-                isAllCity ? "all-jodhpur-empty" : "providers-empty"
-              }
+              data-testid="providers-empty"
               className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-center text-sm text-slate-600"
             >
-              {isAllCity ? (
-                <>
-                  <span className="block">
-                    We couldn&rsquo;t find any providers currently serving all of
-                    Jodhpur for this service.
-                  </span>
-                  <span className="mt-2 block">
-                    Choose your area to see local providers who may be available
-                    nearby.
-                  </span>
-                </>
-              ) : (
-                "No provider numbers available yet. We’ll notify you when providers respond."
-              )}
+              No provider numbers available yet. We&rsquo;ll notify you when
+              providers respond.
             </p>
           )}
         </div>
