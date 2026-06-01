@@ -1,6 +1,8 @@
 "use client";
 
-import { useAdminPush } from "@/lib/push/useAdminPush";
+import { CheckCircle2 } from "lucide-react";
+
+import { useAdminPush, type AdminPushPermission } from "@/lib/push/useAdminPush";
 
 /**
  * Phase B — Admin Push Alerts panel.
@@ -16,6 +18,67 @@ import { useAdminPush } from "@/lib/push/useAdminPush";
 /** Pure gate — the panel shows only when the flag is exactly "true". */
 export function shouldShowAdminPushShell(flag: string | undefined): boolean {
   return flag === "true";
+}
+
+export type AdminPushStatusTone = "neutral" | "success" | "error";
+
+/**
+ * Pure status derivation — drives the visible message AND its tone so the
+ * enabled state reads as a clear success (not the same muted gray as the
+ * "please enable" prompt). Order matters: capability problems first, then
+ * the enabled confirmation, then a blocked-permission hint.
+ */
+export function adminPushStatus(state: {
+  supported: boolean;
+  configured: boolean;
+  registered: boolean;
+  permission: AdminPushPermission;
+}): { text: string; tone: AdminPushStatusTone } {
+  if (!state.supported) {
+    return {
+      text: "Push notifications aren't supported in this browser.",
+      tone: "error",
+    };
+  }
+  if (!state.configured) {
+    return {
+      text: "Push isn't configured on this deployment yet.",
+      tone: "error",
+    };
+  }
+  if (state.registered) {
+    return { text: "Push alerts enabled on this device.", tone: "success" };
+  }
+  if (state.permission === "denied") {
+    return {
+      text: "Notifications are blocked. Allow them in your browser settings, then try again.",
+      tone: "error",
+    };
+  }
+  return {
+    text: "Enable push alerts to receive admin notifications on this device.",
+    tone: "neutral",
+  };
+}
+
+/** Send Test Push is available the moment this device is registered. */
+export function adminPushTestDisabled(state: {
+  registered: boolean;
+  testLoading: boolean;
+}): boolean {
+  return !state.registered || state.testLoading;
+}
+
+/** Enable is offered until registered (and only when usable / not busy). */
+export function adminPushEnableDisabled(state: {
+  supported: boolean;
+  configured: boolean;
+  loading: boolean;
+  registered: boolean;
+}): boolean {
+  return (
+    !state.supported || !state.configured || state.loading || state.registered
+  );
 }
 
 export default function AdminPushControls() {
@@ -40,20 +103,21 @@ function AdminPushPanel() {
     sendTest,
   } = useAdminPush();
 
-  const enableDisabled = !supported || !configured || loading || registered;
-  const testDisabled = !registered || testLoading;
+  const enableDisabled = adminPushEnableDisabled({
+    supported,
+    configured,
+    loading,
+    registered,
+  });
+  const testDisabled = adminPushTestDisabled({ registered, testLoading });
+  const status = adminPushStatus({ supported, configured, registered, permission });
 
-  let status = "Enable push alerts to receive admin notifications on this device.";
-  if (!supported) {
-    status = "Push notifications aren't supported in this browser.";
-  } else if (!configured) {
-    status = "Push isn't configured on this deployment yet.";
-  } else if (registered) {
-    status = "Push alerts are enabled on this device.";
-  } else if (permission === "denied") {
-    status =
-      "Notifications are blocked. Allow them in your browser settings, then try again.";
-  }
+  const statusClass =
+    status.tone === "success"
+      ? "mt-1 flex items-center gap-1.5 text-sm font-medium text-emerald-700"
+      : status.tone === "error"
+        ? "mt-1 text-sm text-rose-600"
+        : "mt-1 text-sm text-slate-500";
 
   return (
     <section
@@ -61,8 +125,15 @@ function AdminPushPanel() {
       className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"
     >
       <h2 className="text-base font-semibold text-[#003d20]">Admin Push Alerts</h2>
-      <p data-testid="admin-push-status" className="mt-1 text-sm text-slate-500">
-        {status}
+      <p
+        data-testid="admin-push-status"
+        data-tone={status.tone}
+        className={statusClass}
+      >
+        {status.tone === "success" ? (
+          <CheckCircle2 aria-hidden className="h-4 w-4 shrink-0" />
+        ) : null}
+        {status.text}
       </p>
 
       {error ? (

@@ -24,6 +24,41 @@ export type AdminPushPermission = NotificationPermission | "unsupported";
 // an effect (avoids the react-hooks/set-state-in-effect rule).
 const emptySubscribe = () => () => {};
 
+// Client-local "this device was registered" flag. A page reload cannot
+// re-read the FCM token (and we deliberately add no GET route), so we
+// remember a successful registration here to keep the enabled state — and
+// the Send Test Push button — across reloads. Best-effort only: if the
+// server-side token was later revoked, the test send simply reports that
+// nothing was delivered (handled by describeTestPushResult).
+const REGISTERED_KEY = "kk.adminPush.registered";
+
+function readPersistedRegistered(): boolean {
+  try {
+    return (
+      typeof window !== "undefined" &&
+      window.localStorage.getItem(REGISTERED_KEY) === "1"
+    );
+  } catch {
+    return false;
+  }
+}
+
+function persistRegistered(): void {
+  try {
+    window.localStorage.setItem(REGISTERED_KEY, "1");
+  } catch {
+    // Private mode / disabled storage — non-fatal; in-session state still set.
+  }
+}
+
+// Cross-tab sync only (the `storage` event never fires in the writing tab);
+// same-tab updates come from setRegisteredState re-rendering the hook.
+function subscribeStorage(cb: () => void): () => void {
+  if (typeof window === "undefined") return () => {};
+  window.addEventListener("storage", cb);
+  return () => window.removeEventListener("storage", cb);
+}
+
 function detectSupported(): boolean {
   return (
     typeof window !== "undefined" &&
@@ -72,7 +107,16 @@ export function useAdminPush() {
     ? window.Notification.permission
     : "unsupported";
 
-  const [registered, setRegistered] = useState(false);
+  // SSR/first-paint snapshot is false; after hydration the client snapshot
+  // reflects a prior successful registration on this device.
+  const persistedRegistered = useSyncExternalStore(
+    subscribeStorage,
+    readPersistedRegistered,
+    () => false
+  );
+  const [registeredState, setRegisteredState] = useState(false);
+  const registered = registeredState || persistedRegistered;
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -113,7 +157,8 @@ export function useAdminPush() {
     });
 
     if (outcome.status === "registered") {
-      setRegistered(true);
+      setRegisteredState(true);
+      persistRegistered();
     } else if (outcome.status === "denied") {
       setError(
         "Notifications are blocked. Allow them in your browser settings, then try again."

@@ -191,6 +191,61 @@ export function buildAdminNotification(
 }
 
 /**
+ * Phase B Step 7 — the ONLY admin events wired to PWA push right now, with
+ * their PII-free push copy. Adding an event here (and only here) opts it in;
+ * everything else stays notification-centre-only. Copy intentionally omits
+ * provider name / phone / amount — the in-app notification carries detail.
+ */
+const ADMIN_PUSH_EVENTS: Record<string, { title: string; body: string }> = {
+  provider_paid_plan_subscribed: {
+    title: "New plan subscribed",
+    body: "A provider purchased a paid plan.",
+  },
+  payment_failed: {
+    title: "Payment failed",
+    body: "A provider payment failed and may need review.",
+  },
+  invoice_pdf_failed: {
+    title: "Invoice PDF failed",
+    body: "An invoice PDF could not be generated.",
+  },
+};
+
+/** Push copy for a pushable event, or null if the event is centre-only. */
+export function adminPushForEvent(
+  eventType: string
+): { title: string; body: string } | null {
+  return ADMIN_PUSH_EVENTS[eventType] ?? null;
+}
+
+/**
+ * Push fires only when (a) the event is opted-in AND (b) the notification
+ * was freshly INSERTED — never on a deduped webhook retry and never on a
+ * failed insert. This single predicate enforces requirements 1/3/4.
+ */
+export function shouldSendAdminPush(
+  eventType: string,
+  result: NotifyAdminsResult
+): boolean {
+  return (
+    result.ok &&
+    result.inserted === true &&
+    adminPushForEvent(eventType) !== null
+  );
+}
+
+/** What the push port receives — derived purely from the notification row. */
+export type AdminPushDispatch = {
+  eventType: string;
+  title: string;
+  body: string;
+  deepLink: string;
+  relatedId: string | null;
+};
+
+export type AdminPushPort = (dispatch: AdminPushDispatch) => Promise<void>;
+
+/**
  * Pure orchestration: check-first dedupe → insert → classify. NEVER
  * throws — a thrown/erroring port resolves to { ok:false } (or deduped
  * for a 23505 unique-violation backstop). The server wrapper passes
@@ -231,4 +286,42 @@ export async function runAdminNotify(
     });
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
+}
+
+/**
+ * Phase B Step 7 — runAdminNotify + best-effort admin push, in one pure,
+ * testable step. The notification-centre insert is the source of truth and
+ * its result is ALWAYS what we return: the push is fired (only on a fresh
+ * insert of an opted-in event) AFTER the insert, and any push failure is
+ * swallowed here so it can never alter the returned result or throw into
+ * the caller. The server wrapper injects a real `sendPush`; tests inject a
+ * spy / a rejecting fake.
+ */
+export async function runAdminNotifyWithPush(
+  input: AdminNotificationInput,
+  ports: AdminNotifyPorts,
+  sendPush: AdminPushPort
+): Promise<NotifyAdminsResult> {
+  const result = await runAdminNotify(input, ports);
+
+  if (shouldSendAdminPush(input.type, result)) {
+    const copy = adminPushForEvent(input.type)!;
+    try {
+      await sendPush({
+        eventType: input.type,
+        title: copy.title,
+        body: copy.body,
+        // deepLink mirrors the admin_notifications.action_url (req 7).
+        deepLink: input.actionUrl ?? "",
+        relatedId: input.relatedId,
+      });
+    } catch (err) {
+      console.warn("[notifyAdmins] admin push threw (non-fatal)", {
+        type: input.type,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  return result;
 }

@@ -69,6 +69,34 @@ export async function getActiveTokensForPhone(
     .filter((row): row is ActiveDeviceRow => row !== null);
 }
 
+// Phase B Step 7: every active admin WEB device (across all admins). Used
+// by the admin business-alert fan-out so a paid-plan / payment-failed /
+// invoice-PDF-failed event nudges admins on their PWA. Strictly
+// actor_type='admin' AND platform='web' AND active=true — native/provider/
+// user tokens are never targeted. Never throws: a Supabase error is logged
+// and surfaces as [], which makes the caller's soft-fail trivial (req 10:
+// "no admin web token → do nothing safely").
+export async function getActiveAdminWebTokens(): Promise<ActiveDeviceRow[]> {
+  const { data, error } = await adminSupabase
+    .from("native_push_devices")
+    .select("fcm_token, phone, provider_id, actor_type")
+    .eq("active", true)
+    .eq("actor_type", "admin")
+    .eq("platform", "web");
+
+  if (error) {
+    console.error("[push/recipients] admin web token lookup failed", {
+      code: error.code,
+      message: error.message,
+    });
+    return [];
+  }
+
+  return (data ?? [])
+    .map(mapRow)
+    .filter((row): row is ActiveDeviceRow => row !== null);
+}
+
 // Resolve active provider-actor tokens by provider_id. Used by the
 // matched-job push fan-out (Phase 4B) so we never accidentally target
 // user/admin actor tokens that happen to share a phone with a provider.

@@ -21,6 +21,11 @@ export type PushLogEventType =
   // future Phase 3.2 activation worker call appendPushLog with the
   // literal without a cast.
   | "plan_activated"
+  // Phase B Step 7: admin business-alert fan-out. The DB
+  // push_logs.event_type CHECK already admits 'admin_alert'
+  // (20260518120000_notification_preferences.sql) — this TS entry lets the
+  // admin-alert sender call appendPushLog with the literal without a cast.
+  | "admin_alert"
   | "test";
 
 export type PushLogStatus = "sent" | "failed" | "invalid_token" | "skipped";

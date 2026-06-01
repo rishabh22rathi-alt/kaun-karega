@@ -22,6 +22,11 @@ export type PushEventType =
   // push_logs.event_type CHECK already admits 'plan_activated' from
   // the Phase 1 widening migration.
   | "plan_activated"
+  // Phase B Step 7: high-priority admin business alerts fanned out to admin
+  // WEB devices (provider_paid_plan_subscribed / payment_failed /
+  // invoice_pdf_failed). The push_logs.event_type CHECK already admits
+  // 'admin_alert' (20260518120000_notification_preferences.sql).
+  | "admin_alert"
   | "test";
 
 export type PushDataPayload = {
@@ -55,6 +60,33 @@ export function adminTestPayload(): PushDataPayload {
     deepLink: "/admin/alerts",
     eventType: "test",
     sentAt: new Date().toISOString(),
+  };
+}
+
+// Phase B Step 7: admin business-alert push (admin WEB devices only). The
+// title/body are intentionally PII-free (no provider name / phone / amount)
+// — the in-app notification centre carries the detail; the push is just a
+// nudge. deepLink mirrors the admin_notifications.action_url so a tap lands
+// on the same admin screen. businessEvent preserves which event fired (the
+// FCM eventType itself is the generic 'admin_alert' so sw.js + push_logs
+// stay uniform). All values MUST be strings (FCM data is Map<string,string>).
+export type AdminAlertPayloadInput = {
+  eventType: string;
+  title: string;
+  body: string;
+  deepLink: string;
+  relatedId?: string | null;
+};
+
+export function adminAlertPayload(input: AdminAlertPayloadInput): PushDataPayload {
+  return {
+    title: String(input.title ?? "").trim(),
+    body: String(input.body ?? "").trim(),
+    deepLink: String(input.deepLink ?? "").trim(),
+    eventType: "admin_alert",
+    sentAt: new Date().toISOString(),
+    businessEvent: String(input.eventType ?? "").trim(),
+    relatedId: String(input.relatedId ?? "").trim(),
   };
 }
 
