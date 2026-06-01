@@ -9,6 +9,7 @@ import {
   MessageSquareWarning,
   ShieldCheck,
   Settings,
+  Receipt,
   LogOut,
   LogIn,
 } from "lucide-react";
@@ -357,6 +358,22 @@ export default function MenuSheet({
               >
                 <Settings className="h-4 w-4 text-[#003d20]" />
                 <span>Notification Settings</span>
+              </Link>
+            ) : null}
+
+            {/* Provider-only "My Invoices" — gated by the same confirmed-
+                provider condition as the provider Notification Settings
+                row, so it never shows for guests, regular users, or admins.
+                Placed between Notification Settings and Report an Issue. */}
+            {showProviderNotificationSettings ? (
+              <Link
+                href="/provider/invoices"
+                onClick={onClose}
+                data-testid="menu-my-invoices"
+                className="flex items-center gap-3 rounded-lg px-3 py-3 text-sm font-semibold text-[#003d20] transition hover:bg-slate-100"
+              >
+                <Receipt className="h-4 w-4 text-[#003d20]" />
+                <span>My Invoices</span>
               </Link>
             ) : null}
 

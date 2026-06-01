@@ -18,6 +18,7 @@ import {
   ListTodo,
   Briefcase,
   Bell,
+  Receipt,
   Lock,
 } from "lucide-react";
 import {
@@ -864,6 +865,11 @@ export default function Sidebar() {
                           label: "Notifications",
                           href: "/provider/notifications",
                           icon: Bell,
+                        })}
+                        {renderNavLink({
+                          label: "My Invoices",
+                          href: "/provider/invoices",
+                          icon: Receipt,
                         })}
                       </>
                     ) : null}
