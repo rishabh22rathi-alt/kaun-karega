@@ -33,6 +33,19 @@ const MUTED: [number, number, number] = [71, 85, 105];
 
 const MARGIN_X = 40;
 
+// Compact legal / T&C footer rendered above the Authorised Signatory
+// block. Straight apostrophes only (Helvetica/WinAnsi safe — no ₹/smart
+// quotes). Kept short so the invoice stays a single page.
+const INVOICE_TERMS: string[] = [
+  "Payment once made is non-refundable.",
+  "Kaun Karega is a digital business listing and service discovery platform. Subscription/listing fees are charged for platform visibility and service listing only.",
+  "Kaun Karega does not guarantee customer leads, enquiries, jobs, earnings, conversions, business growth, or service engagement.",
+  "Kaun Karega is not a party to any agreement, transaction, dispute, quality issue, delay, damage, loss, injury, or claim arising between users and service providers.",
+  "To the maximum extent permitted under applicable law, Kaun Karega's liability, if any, shall be limited to the amount paid against the relevant invoice.",
+  "This invoice is system-generated and does not require a physical signature.",
+  "Subject to Jodhpur, Rajasthan jurisdiction only.",
+];
+
 /** "Rs. 1,234.56" — no ₹ glyph (Phase 3A decision). */
 function money(paise: number): string {
   return `Rs. ${formatPaiseToRupees(paise)}`;
@@ -107,12 +120,18 @@ export function renderInvoicePdf(
 
   doc.setFontSize(15);
   doc.text(invoice.seller_trade_name, rightX, y, { align: "right" });
-  y += 16;
+  y += 12;
+  // Brand tagline directly below the KAUN KAREGA title, smaller font,
+  // same green branding.
   doc.setFont("helvetica", "normal");
+  doc.setFontSize(8);
+  doc.setTextColor(...BRAND);
+  doc.text("Digital Business Listing Platform", rightX, y, { align: "right" });
+  y += 12;
   doc.setFontSize(9);
   doc.setTextColor(...MUTED);
   doc.text(invoice.seller_legal_name, rightX, y, { align: "right" });
-  y += 20;
+  y += 18;
 
   doc.setDrawColor(...BRAND);
   doc.setLineWidth(1);
@@ -255,11 +274,33 @@ export function renderInvoicePdf(
       }
     },
   });
-  y = finalY(doc, y) + 28;
+  y = finalY(doc, y) + 16;
+  const pageHeight = doc.internal.pageSize.getHeight();
+
+  // ── Terms & Conditions (compact legal footer) ─────────────────────
+  // Reserve room for the T&C block + the signature footer below it.
+  if (y > pageHeight - 170) {
+    doc.addPage();
+    y = 60;
+  }
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(8);
+  doc.setTextColor(...BRAND);
+  doc.text("Terms & Conditions:", MARGIN_X, y);
+  y += 11;
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(6.5);
+  doc.setTextColor(...MUTED);
+  const termsWidth = pageWidth - MARGIN_X * 2;
+  INVOICE_TERMS.forEach((clause, i) => {
+    const lines = doc.splitTextToSize(`${i + 1}. ${clause}`, termsWidth);
+    doc.text(lines, MARGIN_X, y);
+    y += lines.length * 7.5 + 1.5;
+  });
+  y += 14;
 
   // ── Footer ────────────────────────────────────────────────────────
-  const pageHeight = doc.internal.pageSize.getHeight();
-  if (y > pageHeight - 90) {
+  if (y > pageHeight - 70) {
     doc.addPage();
     y = 60;
   }

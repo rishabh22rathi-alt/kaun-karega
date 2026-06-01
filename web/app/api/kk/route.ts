@@ -16,6 +16,7 @@ import {
 import { findDuplicateNameProviders } from "@/lib/providerNameNormalize";
 import { PROVIDER_PLEDGE_VERSION, isPledgeAccepted } from "@/lib/disclaimer";
 import { invalidateSnapshots } from "@/lib/admin/snapshotCache";
+import { notifyAdmins } from "@/lib/notifications/notifyAdmins";
 import {
   getAdminNotificationLogsFromSupabase,
   getAdminNotificationSummaryFromSupabase,
@@ -2203,6 +2204,14 @@ export async function POST(request: NextRequest) {
           err instanceof Error ? err.message : err
         );
       }
+
+      // Phase A: in-app admin alert (soft-fail, deduped on provider_id;
+      // never throws — registration response is unaffected).
+      await notifyAdmins("new_provider_registered", {
+        provider_id: providerId,
+        provider_name: name,
+        phone,
+      });
 
       return withNoCache(
         NextResponse.json({

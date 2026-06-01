@@ -1,6 +1,7 @@
 "use client";
 
 import AdminAlertsFeed from "@/components/alerts/AdminAlertsFeed";
+import AdminPushControls from "@/components/admin/AdminPushControls";
 
 // Admin alerts feed page. Consumes GET /api/admin/notifications and
 // POST /api/admin/notifications/mark-read — same endpoints
@@ -12,7 +13,8 @@ import AdminAlertsFeed from "@/components/alerts/AdminAlertsFeed";
 
 export default function AdminAlertsPage() {
   return (
-    <div className="mx-auto w-full max-w-3xl py-2">
+    <div className="mx-auto w-full max-w-3xl space-y-4 py-2">
+      <AdminPushControls />
       <AdminAlertsFeed />
     </div>
   );

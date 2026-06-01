@@ -11,6 +11,7 @@ import { effectivePlan } from "@/lib/payments/effectivePlan";
 import { invalidateSnapshots } from "@/lib/admin/snapshotCache";
 import { reconcileProviderCoverage } from "@/lib/admin/reconcileProviderCoverage";
 import { safeIssueInvoiceForPaidOrder } from "@/lib/payments/issueInvoice";
+import { notifyAdmins } from "@/lib/notifications/notifyAdmins";
 
 // Cache keys invalidated after every successful captured-payment write
 // (both immediate-upgrade/renewal and scheduled_paid_lower branches).
@@ -260,6 +261,12 @@ export async function POST(request: Request) {
         { status: 500 }
       );
     }
+    // Phase A: in-app admin alert (soft-fail, deduped on order_id).
+    await notifyAdmins("payment_failed", {
+      payment_order_id: orderRow.order_id,
+      provider_id: orderRow.provider_id,
+      plan_code: orderRow.plan_code,
+    });
     return NextResponse.json({ ok: true });
   }
 
@@ -584,6 +591,15 @@ export async function POST(request: Request) {
     // the DB function (no duplicate invoice on webhook replay).
     await safeIssueInvoiceForPaidOrder(orderRow.order_id);
 
+    // Phase A: in-app admin alert (soft-fail, deduped on order_id; a
+    // webhook retry never creates a second alert; never throws).
+    await notifyAdmins("provider_paid_plan_subscribed", {
+      payment_order_id: orderRow.order_id,
+      provider_id: orderRow.provider_id,
+      plan_code: orderRow.plan_code,
+      amount_paise: orderRow.amount_paise,
+    });
+
     // Cache invalidation after the scheduled_paid_lower writes commit.
     // Awaited (not fire-and-forget) so the L1+L2 purges complete before
     // we return — but soft-fail so a cache outage can never trigger a
@@ -673,6 +689,15 @@ export async function POST(request: Request) {
   // can never break activation or trigger a Razorpay retry. Idempotent in
   // the DB function (no duplicate invoice on webhook replay).
   await safeIssueInvoiceForPaidOrder(orderRow.order_id);
+
+  // Phase A: in-app admin alert (soft-fail, deduped on order_id; a
+  // webhook retry never creates a second alert; never throws).
+  await notifyAdmins("provider_paid_plan_subscribed", {
+    payment_order_id: orderRow.order_id,
+    provider_id: orderRow.provider_id,
+    plan_code: orderRow.plan_code,
+    amount_paise: orderRow.amount_paise,
+  });
 
   // Cache invalidation after immediate-upgrade / immediate-renewal /
   // legacy NULL-mode writes commit. Same soft-fail rules as the

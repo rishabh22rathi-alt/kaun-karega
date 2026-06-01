@@ -140,13 +140,17 @@ function liveItems(): InvoiceItemRecord[] {
 }
 
 test.describe("Phase 3A — invoice PDF renderer (smoke)", () => {
-  test("renders a non-trivial PDF for an intra-state invoice", () => {
+  test("renders a non-trivial single-page PDF for an intra-state invoice", () => {
     const bytes = renderInvoicePdf(liveInvoice(), liveItems());
     expect(bytes).toBeInstanceOf(Uint8Array);
     // Valid PDF header "%PDF".
     expect(Array.from(bytes.slice(0, 4))).toEqual([0x25, 0x50, 0x44, 0x46]);
     // A real one-page invoice is comfortably over 1 KB.
     expect(bytes.byteLength).toBeGreaterThan(1000);
+    // Stays ONE page even with the brand tagline + T&C footer (one
+    // /MediaBox per page in jsPDF output).
+    const pdf = Buffer.from(bytes).toString("latin1");
+    expect((pdf.match(/\/MediaBox/g) || []).length).toBe(1);
   });
 
   test("renders for an unregistered buyer and an inter-state invoice", () => {

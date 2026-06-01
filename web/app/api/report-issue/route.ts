@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getAuthSession } from "@/lib/auth";
 import { getProviderByPhoneFromSupabase } from "@/lib/admin/adminProviderReads";
 import { submitIssueReportToSupabase } from "@/lib/admin/adminIssueReports";
+import { notifyAdmins } from "@/lib/notifications/notifyAdmins";
 
 async function getReporterRoleAndName(phone: string) {
   try {
@@ -63,6 +64,14 @@ export async function POST(request: Request) {
     if (!result.ok) {
       return NextResponse.json({ ok: false, error: result.error }, { status: 500 });
     }
+
+    // Phase A: in-app admin alert (soft-fail, deduped on issue id; never
+    // throws — issue submission response is unaffected).
+    await notifyAdmins("issue_report_submitted", {
+      issue_report_id: String(result.issueId ?? ""),
+      issue_no: result.issueNo,
+      reporter_role: reporterRole,
+    });
 
     return NextResponse.json({
       ok: true,

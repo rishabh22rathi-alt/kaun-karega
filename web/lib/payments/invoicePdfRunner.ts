@@ -27,6 +27,7 @@
 import { adminSupabase } from "@/lib/supabase/admin";
 import { isInvoiceLedgerEnabled } from "@/lib/payments/server";
 import { renderInvoicePdf } from "@/lib/payments/invoicePdf";
+import { notifyAdmins } from "@/lib/notifications/notifyAdmins";
 import {
   PDF_BATCH_LIMIT,
   PDF_BUCKET,
@@ -125,6 +126,14 @@ async function markFailed(
     eventType: "pdf_render_failed",
     actor,
     detail: { error_code: code, error_message: message ?? null },
+  });
+  // Phase A: in-app admin alert (soft-fail, deduped on invoice_id; never
+  // throws — cannot affect PDF generation flow).
+  await notifyAdmins("invoice_pdf_failed", {
+    invoice_id: String(invoice.id),
+    invoice_number: invoice.invoice_number,
+    error_code: code,
+    error_message: message,
   });
   return {
     outcome: "failed",

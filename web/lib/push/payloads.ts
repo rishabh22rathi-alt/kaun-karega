@@ -45,6 +45,19 @@ export function testPayload(): PushDataPayload {
   };
 }
 
+// Phase B Step 6: admin WEB test push. deepLink lands on /admin/alerts so
+// the service-worker notificationclick opens the alerts feed. Data-only
+// (FCM `data` is Map<string,string>) — sw.js renders the notification.
+export function adminTestPayload(): PushDataPayload {
+  return {
+    title: "Kaun Karega Admin Alert",
+    body: "Test push notification received.",
+    deepLink: "/admin/alerts",
+    eventType: "test",
+    sentAt: new Date().toISOString(),
+  };
+}
+
 // Title-case for the push body only. Categories/areas elsewhere in the app
 // (WhatsApp template, bell, DB) keep their raw casing — we don't want a
 // helper in this file to change behavior outside of native push.

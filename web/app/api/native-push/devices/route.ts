@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { checkAdminByPhone } from "@/lib/adminAuth";
 import { getAuthSession } from "@/lib/auth";
 import { adminSupabase } from "@/lib/supabase/admin";
+import { normalizeDevicePlatform } from "@/lib/push/devicePlatform";
 
 export const runtime = "nodejs";
 
@@ -112,7 +113,9 @@ export async function POST(request: Request) {
   }
 
   const now = new Date().toISOString();
-  const platform = body.platform === "android" ? "android" : "android";
+  // 'web' (admin browser flow) or 'android' (native app default). actor_type
+  // is still resolved server-side below — the client cannot forge it.
+  const platform = normalizeDevicePlatform(body.platform);
   const appVersion = trimOptionalString(body.appVersion, 80);
   const deviceModel = trimOptionalString(body.deviceModel, 120);
   const androidSdk = normalizeAndroidSdk(body.androidSdk);
