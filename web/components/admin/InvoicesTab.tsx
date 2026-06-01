@@ -54,12 +54,55 @@ type ListResponse = {
 
 type GenerateResponse = {
   ok?: boolean;
+  enabled?: boolean;
   rendered?: number;
   skipped?: number;
   failed?: number;
+  failures?: Array<{ error_code?: string; error_message?: string | null }>;
   error?: string;
   message?: string;
 };
+
+// Banner shown after a generate / bulk / regenerate action.
+type ActionMsg = { kind: "success" | "error" | "info"; text: string };
+
+/**
+ * Turn a successful (ok:true) generate response into an admin-facing
+ * message. The route returns 200 even when nothing was rendered, so the
+ * UI MUST inspect the body — otherwise an `enabled:false` (server flag
+ * off) or a skipped/failed outcome looks like a silent no-op.
+ */
+function describePdfActionResult(data: GenerateResponse): ActionMsg {
+  if (data.enabled === false) {
+    return {
+      kind: "error",
+      text: "Invoice PDF generation is disabled by server flag.",
+    };
+  }
+  const rendered = Number(data.rendered ?? 0);
+  const failed = Number(data.failed ?? 0);
+  const skipped = Number(data.skipped ?? 0);
+  if (failed > 0) {
+    const codes = (data.failures ?? [])
+      .map((f) => f.error_code || f.error_message || "")
+      .filter(Boolean)
+      .join(", ");
+    const base = `PDF generation failed for ${failed} invoice${
+      failed === 1 ? "" : "s"
+    }.`;
+    return { kind: "error", text: codes ? `${base} (${codes})` : base };
+  }
+  if (rendered > 0) {
+    return {
+      kind: "success",
+      text:
+        rendered === 1
+          ? "PDF generated successfully."
+          : `Generated ${rendered} PDFs successfully.`,
+    };
+  }
+  return { kind: "info", text: `No PDF generated (skipped ${skipped}).` };
+}
 
 const PLAN_LABEL: Record<string, string> = {
   regions_5: "5 Regions",
@@ -126,12 +169,7 @@ export default function InvoicesTab({ defaultOpen = false }: Props) {
 
   const [busyId, setBusyId] = useState<number | null>(null);
   const [bulkRunning, setBulkRunning] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [bulkResult, setBulkResult] = useState<{
-    rendered: number;
-    skipped: number;
-    failed: number;
-  } | null>(null);
+  const [actionMsg, setActionMsg] = useState<ActionMsg | null>(null);
 
   const fetchInvoices = useCallback(async () => {
     setLoading(true);
@@ -175,7 +213,7 @@ export default function InvoicesTab({ defaultOpen = false }: Props) {
         if (!ok) return;
       }
       setBusyId(invoice.id);
-      setActionError(null);
+      setActionMsg(null);
       try {
         const res = await fetch("/api/admin/invoices/pdf", {
           method: "POST",
@@ -185,15 +223,23 @@ export default function InvoicesTab({ defaultOpen = false }: Props) {
         });
         const data = (await res.json().catch(() => null)) as GenerateResponse | null;
         if (!res.ok || !data?.ok) {
-          setActionError(
-            data?.message ||
+          setActionMsg({
+            kind: "error",
+            text:
+              data?.message ||
               data?.error ||
-              `PDF generation failed (${res.status}).`
-          );
+              `PDF generation failed (${res.status}).`,
+          });
           return;
         }
+        // Surface the actual outcome (enabled:false / rendered / failed)
+        // so a 200 no-op is never mistaken for success.
+        setActionMsg(describePdfActionResult(data));
       } catch {
-        setActionError("Network error while generating the PDF.");
+        setActionMsg({
+          kind: "error",
+          text: "Network error while generating the PDF.",
+        });
       } finally {
         setBusyId(null);
         // Always re-fetch so the row's pdf_status reflects the outcome.
@@ -212,8 +258,7 @@ export default function InvoicesTab({ defaultOpen = false }: Props) {
       if (!ok) return;
     }
     setBulkRunning(true);
-    setActionError(null);
-    setBulkResult(null);
+    setActionMsg(null);
     try {
       const res = await fetch("/api/admin/invoices/pdf", {
         method: "POST",
@@ -223,18 +268,18 @@ export default function InvoicesTab({ defaultOpen = false }: Props) {
       });
       const data = (await res.json().catch(() => null)) as GenerateResponse | null;
       if (!res.ok || !data?.ok) {
-        setActionError(
-          data?.message || data?.error || `Bulk generation failed (${res.status}).`
-        );
+        setActionMsg({
+          kind: "error",
+          text:
+            data?.message ||
+            data?.error ||
+            `Bulk generation failed (${res.status}).`,
+        });
         return;
       }
-      setBulkResult({
-        rendered: Number(data.rendered ?? 0),
-        skipped: Number(data.skipped ?? 0),
-        failed: Number(data.failed ?? 0),
-      });
+      setActionMsg(describePdfActionResult(data));
     } catch {
-      setActionError("Network error while generating PDFs.");
+      setActionMsg({ kind: "error", text: "Network error while generating PDFs." });
     } finally {
       setBulkRunning(false);
       void fetchInvoices();
@@ -301,24 +346,20 @@ export default function InvoicesTab({ defaultOpen = false }: Props) {
             </span>
           </div>
 
-          {bulkResult ? (
+          {actionMsg ? (
             <div
-              role="status"
-              data-testid="invoices-bulk-result"
-              className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700"
+              role={actionMsg.kind === "error" ? "alert" : "status"}
+              data-testid="invoices-action-message"
+              data-kind={actionMsg.kind}
+              className={
+                actionMsg.kind === "error"
+                  ? "rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700"
+                  : actionMsg.kind === "success"
+                    ? "rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800"
+                    : "rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700"
+              }
             >
-              Generated {bulkResult.rendered} · skipped {bulkResult.skipped} ·
-              failed {bulkResult.failed}.
-            </div>
-          ) : null}
-
-          {actionError ? (
-            <div
-              role="alert"
-              data-testid="invoices-action-error"
-              className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700"
-            >
-              {actionError}
+              {actionMsg.text}
             </div>
           ) : null}
 

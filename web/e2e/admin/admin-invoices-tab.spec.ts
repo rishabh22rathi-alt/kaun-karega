@@ -134,11 +134,18 @@ async function mockInvoiceList(
 
 async function mockInvoiceGenerate(
   page: import("@playwright/test").Page,
-  onCall?: (body: string | null) => void
+  onCall?: (body: string | null) => void,
+  response: Record<string, unknown> = {
+    enabled: true,
+    rendered: 1,
+    skipped: 0,
+    failed: 0,
+    failures: [],
+  }
 ): Promise<void> {
   await mockJson(page, "**/api/admin/invoices/pdf", ({ request }) => {
     onCall?.(request.postData());
-    return jsonOk({ rendered: 1, skipped: 0, failed: 0, failures: [] });
+    return jsonOk(response);
   });
 }
 
@@ -236,6 +243,93 @@ test.describe("Admin GST Invoices tab", () => {
     await expect.poll(() => body).not.toBeNull();
     const parsed = JSON.parse(body ?? "{}") as { invoice_id?: number };
     expect(parsed.invoice_id).toBe(2);
+
+    diag.assertClean();
+  });
+
+  test("shows success message when a PDF is rendered", async ({ page, diag }) => {
+    await bootstrapAdminSession(page);
+    await mockAdminChrome(page);
+    await mockAdminDashboardApis(page);
+    await mockInvoiceList(page, [PENDING]);
+    await mockInvoiceGenerate(page, undefined, {
+      enabled: true,
+      rendered: 1,
+      skipped: 0,
+      failed: 0,
+      failures: [],
+    });
+
+    await gotoPath(page, "/admin/dashboard?tab=invoices");
+    await expect(page.getByTestId("invoices-list")).toBeVisible();
+
+    page.on("dialog", (d) => void d.accept());
+    await page.getByTestId("invoice-generate-2").click();
+
+    const msg = page.getByTestId("invoices-action-message");
+    await expect(msg).toBeVisible();
+    await expect(msg).toContainText("PDF generated successfully.");
+    await expect(msg).toHaveAttribute("data-kind", "success");
+
+    diag.assertClean();
+  });
+
+  test("shows disabled-flag message when server returns enabled:false", async ({
+    page,
+    diag,
+  }) => {
+    await bootstrapAdminSession(page);
+    await mockAdminChrome(page);
+    await mockAdminDashboardApis(page);
+    await mockInvoiceList(page, [PENDING]);
+    await mockInvoiceGenerate(page, undefined, {
+      enabled: false,
+      rendered: 0,
+      skipped: 0,
+      failed: 0,
+      failures: [],
+    });
+
+    await gotoPath(page, "/admin/dashboard?tab=invoices");
+    await expect(page.getByTestId("invoices-list")).toBeVisible();
+
+    page.on("dialog", (d) => void d.accept());
+    await page.getByTestId("invoice-generate-2").click();
+
+    const msg = page.getByTestId("invoices-action-message");
+    await expect(msg).toBeVisible();
+    await expect(msg).toContainText(
+      "Invoice PDF generation is disabled by server flag."
+    );
+    await expect(msg).toHaveAttribute("data-kind", "error");
+
+    diag.assertClean();
+  });
+
+  test("shows failure details when generation fails", async ({ page, diag }) => {
+    await bootstrapAdminSession(page);
+    await mockAdminChrome(page);
+    await mockAdminDashboardApis(page);
+    await mockInvoiceList(page, [PENDING]);
+    await mockInvoiceGenerate(page, undefined, {
+      enabled: true,
+      rendered: 0,
+      skipped: 0,
+      failed: 1,
+      failures: [{ error_code: "RENDER_FAILED", error_message: "boom" }],
+    });
+
+    await gotoPath(page, "/admin/dashboard?tab=invoices");
+    await expect(page.getByTestId("invoices-list")).toBeVisible();
+
+    page.on("dialog", (d) => void d.accept());
+    await page.getByTestId("invoice-generate-2").click();
+
+    const msg = page.getByTestId("invoices-action-message");
+    await expect(msg).toBeVisible();
+    await expect(msg).toContainText("PDF generation failed");
+    await expect(msg).toContainText("RENDER_FAILED");
+    await expect(msg).toHaveAttribute("data-kind", "error");
 
     diag.assertClean();
   });
