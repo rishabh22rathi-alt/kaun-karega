@@ -10,6 +10,7 @@ import UsersTab from "@/components/admin/UsersTab";
 import KaamTab from "@/components/admin/KaamTab";
 import SystemHealthTab from "@/components/admin/SystemHealthTab";
 import ScheduledPlansTab from "@/components/admin/ScheduledPlansTab";
+import InvoicesTab from "@/components/admin/InvoicesTab";
 import ProviderPlanGrowthTab from "@/components/admin/ProviderPlanGrowthTab";
 import PaymentSupportTab from "@/components/admin/PaymentSupportTab";
 import ReportsTab from "@/components/admin/ReportsTab";
@@ -83,6 +84,7 @@ function DashboardBody() {
       <ProviderPlanGrowthTab />
       <PaymentSupportTab />
       <ScheduledPlansTab />
+      <InvoicesTab defaultOpen={activeTab === "invoices"} />
       <ReportsTab />
       <CategoryTab
         unread={unread.category}

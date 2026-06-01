@@ -12,6 +12,7 @@ import {
   MessageSquare,
   MessageSquareWarning,
   PanelLeftClose,
+  Receipt,
   X,
 } from "lucide-react";
 
@@ -87,6 +88,12 @@ const navItems: NavItem[] = [
     href: "/admin/dashboard?tab=notifications",
     tabKey: "notifications",
     icon: <BarChart3 className="h-5 w-5" aria-hidden="true" />,
+  },
+  {
+    label: "Invoices",
+    href: "/admin/dashboard?tab=invoices",
+    tabKey: "invoices",
+    icon: <Receipt className="h-5 w-5" aria-hidden="true" />,
   },
   {
     label: "Announcements",
