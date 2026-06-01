@@ -4,20 +4,28 @@ import { requireAdminSession } from "@/lib/adminAuth";
 import { adminSupabase } from "@/lib/supabase/admin";
 import {
   PDF_BUCKET,
-  SIGNED_URL_TTL_SECONDS,
+  pdfContentDisposition,
 } from "@/lib/payments/invoicePdfCore";
 
 /**
- * Phase 3A — Admin invoice PDF download.
+ * Phase 3A — Admin invoice PDF view / download.
  *
  *   GET /api/admin/invoices/[id]/download — requireAdminSession.
  *
- * If the invoice PDF is generated, mint a short-lived (60 s) signed URL
- * for the private 'invoices' bucket and 302-redirect to it. The bucket is
- * never public; links are minted on demand. If the PDF is not yet
- * generated, return 409 so the caller can trigger generation first.
+ * Streams the PDF bytes straight from the private 'invoices' bucket with
+ * an explicit Content-Disposition. We do NOT 302-redirect to a Supabase
+ * signed URL: that depended on the browser following a cross-origin
+ * redirect to the storage host (and on SUPABASE_URL being the public
+ * origin), which proved unreliable. Streaming server-side is
+ * deterministic, keeps the bucket private (no URL is ever exposed), and
+ * leaves auth/ownership unchanged.
  *
- * No provider-facing download here — provider self-serve is a later phase.
+ * ?disposition=inline (default)  → Content-Disposition: inline ("View").
+ * ?disposition=attachment        → Content-Disposition: attachment
+ *                                   ("Download" saves the file).
+ *
+ * Error JSON: UNAUTHORIZED · INVALID_INVOICE_ID · LOOKUP_FAILED ·
+ *   INVOICE_NOT_FOUND · PDF_NOT_READY · PDF_PATH_MISSING · PDF_FETCH_FAILED.
  */
 
 export const runtime = "nodejs";
@@ -44,6 +52,9 @@ export async function GET(request: Request, context: RouteContext) {
     );
   }
 
+  // inline (default) → view in browser; attachment → force download.
+  const disposition = new URL(request.url).searchParams.get("disposition");
+
   const { data, error } = await adminSupabase
     .from("invoices")
     .select("pdf_status, pdf_storage_path")
@@ -64,7 +75,7 @@ export async function GET(request: Request, context: RouteContext) {
   }
 
   const row = data as { pdf_status: string; pdf_storage_path: string | null };
-  if (row.pdf_status !== "generated" || !row.pdf_storage_path) {
+  if (row.pdf_status !== "generated") {
     return NextResponse.json(
       {
         ok: false,
@@ -75,21 +86,42 @@ export async function GET(request: Request, context: RouteContext) {
       { status: 409 }
     );
   }
-
-  const signed = await adminSupabase.storage
-    .from(PDF_BUCKET)
-    .createSignedUrl(row.pdf_storage_path, SIGNED_URL_TTL_SECONDS);
-
-  if (signed.error || !signed.data?.signedUrl) {
+  if (!row.pdf_storage_path) {
     return NextResponse.json(
       {
         ok: false,
-        error: "SIGN_FAILED",
-        message: signed.error?.message ?? "Could not mint signed URL.",
+        error: "PDF_PATH_MISSING",
+        message: "Invoice is marked generated but has no stored PDF path.",
       },
-      { status: 500 }
+      { status: 409 }
     );
   }
 
-  return NextResponse.redirect(signed.data.signedUrl, 302);
+  const filename = row.pdf_storage_path.split("/").pop() || "invoice.pdf";
+  const download = await adminSupabase.storage
+    .from(PDF_BUCKET)
+    .download(row.pdf_storage_path);
+
+  if (download.error || !download.data) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "PDF_FETCH_FAILED",
+        message: download.error?.message ?? "Could not read the PDF from storage.",
+      },
+      { status: 502 }
+    );
+  }
+
+  const bytes = new Uint8Array(await download.data.arrayBuffer());
+  return new NextResponse(bytes, {
+    status: 200,
+    headers: {
+      "Content-Type": "application/pdf",
+      "Content-Disposition": pdfContentDisposition(disposition, filename),
+      "Content-Length": String(bytes.byteLength),
+      // Private financial document — never cache in shared caches.
+      "Cache-Control": "private, no-store, max-age=0",
+    },
+  });
 }

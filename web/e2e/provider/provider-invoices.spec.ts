@@ -205,20 +205,31 @@ test.describe("Provider My Invoices", () => {
     await expect(page.getByText("KK/FY2026-27/000001")).toBeVisible();
     await expect(page.getByText("KK/FY2026-27/000002")).toBeVisible();
 
-    // Req 6: generated → active Download anchor to the per-invoice route.
+    // Req 6: generated → View (inline, new tab) + Download (attachment).
+    const view = page.getByTestId(`provider-invoice-view-${GENERATED.id}`);
+    await expect(view).toBeVisible();
+    await expect(view).toHaveAttribute(
+      "href",
+      `/api/provider/invoices/${GENERATED.id}/download?disposition=inline`
+    );
+    await expect(view).toHaveAttribute("target", "_blank");
+
     const download = page.getByTestId(`provider-invoice-download-${GENERATED.id}`);
     await expect(download).toBeVisible();
     await expect(download).toHaveAttribute(
       "href",
-      `/api/provider/invoices/${GENERATED.id}/download`
+      `/api/provider/invoices/${GENERATED.id}/download?disposition=attachment`
     );
 
-    // Req 7: pending → status chip, NO download anchor.
+    // Req 7: pending → status chip, NO download/view anchors.
     await expect(
       page.getByTestId(`provider-invoice-status-${PENDING.id}`)
     ).toBeVisible();
     await expect(
       page.getByTestId(`provider-invoice-download-${PENDING.id}`)
+    ).toHaveCount(0);
+    await expect(
+      page.getByTestId(`provider-invoice-view-${PENDING.id}`)
     ).toHaveCount(0);
 
     // Total renders as Rs. amount.

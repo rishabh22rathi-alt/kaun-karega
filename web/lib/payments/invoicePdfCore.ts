@@ -152,3 +152,29 @@ export function nextAttempts(current: number | null | undefined): number {
   const n = Number(current);
   return (Number.isFinite(n) && n > 0 ? Math.floor(n) : 0) + 1;
 }
+
+/**
+ * Build the Content-Disposition header for serving an invoice PDF.
+ *
+ * Only `disposition=attachment` forces a download; anything else
+ * (including the default and `inline`) views inline.
+ *
+ *   attachment → `attachment; filename="<name>"`  → browser saves the file
+ *   inline     → `inline`                          → browser renders the PDF
+ *
+ * The inline header is deliberately the BARE `inline` with NO `filename`
+ * parameter: a quoted `filename="...pdf"` on an inline disposition is the
+ * well-known trigger that makes some browsers (Chrome/Edge on Windows)
+ * fall back to a Save dialog instead of rendering. `attachment` keeps the
+ * filename so the saved file is named correctly.
+ */
+export function pdfContentDisposition(
+  disposition: string | null | undefined,
+  filename: string
+): string {
+  if (disposition === "attachment") {
+    const safe = (filename || "invoice.pdf").replace(/["\\\r\n]/g, "");
+    return `attachment; filename="${safe}"`;
+  }
+  return "inline";
+}

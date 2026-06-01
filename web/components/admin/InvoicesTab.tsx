@@ -425,8 +425,17 @@ export default function InvoicesTab({ defaultOpen = false }: Props) {
                         {isGenerated ? (
                           <div className="flex items-center gap-2">
                             <a
+                              data-testid={`invoice-view-${inv.id}`}
+                              href={`/api/admin/invoices/${inv.id}/download?disposition=inline`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center justify-center rounded-lg border border-[#003d20] bg-white px-3 py-2 text-xs font-semibold text-[#003d20] transition hover:bg-[#003d20]/5"
+                            >
+                              View
+                            </a>
+                            <a
                               data-testid={`invoice-download-${inv.id}`}
-                              href={`/api/admin/invoices/${inv.id}/download`}
+                              href={`/api/admin/invoices/${inv.id}/download?disposition=attachment`}
                               className="inline-flex items-center justify-center rounded-lg bg-[#003d20] px-3 py-2 text-xs font-semibold text-white transition hover:bg-[#002a16]"
                             >
                               Download

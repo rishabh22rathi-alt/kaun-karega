@@ -16,6 +16,7 @@ import {
   invoiceStoragePath,
   isRegeneration,
   nextAttempts,
+  pdfContentDisposition,
   shouldSkipAsGenerated,
   type InvoiceItemRecord,
   type InvoiceRecord,
@@ -55,6 +56,30 @@ test.describe("Phase 3A — invoice PDF core", () => {
     expect(nextAttempts(null)).toBe(1);
     expect(nextAttempts(undefined)).toBe(1);
     expect(nextAttempts(-5)).toBe(1);
+  });
+
+  test("content-disposition: inline view is bare 'inline' (no filename)", () => {
+    // The filename param on an inline disposition is what makes some
+    // browsers download instead of render — so View must be bare inline.
+    expect(pdfContentDisposition("inline", "KK-FY2026-27-000001.pdf")).toBe(
+      "inline"
+    );
+    expect(pdfContentDisposition(null, "KK-FY2026-27-000001.pdf")).toBe("inline");
+    expect(pdfContentDisposition(undefined, "x.pdf")).toBe("inline");
+    expect(pdfContentDisposition("anything-else", "x.pdf")).toBe("inline");
+  });
+
+  test("content-disposition: attachment keeps the filename", () => {
+    expect(
+      pdfContentDisposition("attachment", "KK-FY2026-27-000001.pdf")
+    ).toBe('attachment; filename="KK-FY2026-27-000001.pdf"');
+    // Header-injection / quote safety.
+    expect(pdfContentDisposition("attachment", 'a"b\r\n.pdf')).toBe(
+      'attachment; filename="ab.pdf"'
+    );
+    expect(pdfContentDisposition("attachment", "")).toBe(
+      'attachment; filename="invoice.pdf"'
+    );
   });
 });
 

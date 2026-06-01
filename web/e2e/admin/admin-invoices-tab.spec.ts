@@ -190,7 +190,7 @@ test.describe("Admin GST Invoices tab", () => {
     diag.assertClean();
   });
 
-  test("generated row shows Download, pending shows Generate, failed shows error + Regenerate", async ({
+  test("generated row shows View + Download, pending shows Generate, failed shows error + Regenerate", async ({
     page,
     diag,
   }) => {
@@ -203,12 +203,20 @@ test.describe("Admin GST Invoices tab", () => {
     await gotoPath(page, "/admin/dashboard?tab=invoices");
     await expect(page.getByTestId("invoices-list")).toBeVisible();
 
-    // Req 4: generated → Download with correct href.
+    // Req 4: generated → View (inline, new tab) + Download (attachment).
+    const view = page.getByTestId("invoice-view-1");
+    await expect(view).toBeVisible();
+    await expect(view).toHaveAttribute(
+      "href",
+      "/api/admin/invoices/1/download?disposition=inline"
+    );
+    await expect(view).toHaveAttribute("target", "_blank");
+
     const download = page.getByTestId("invoice-download-1");
     await expect(download).toBeVisible();
     await expect(download).toHaveAttribute(
       "href",
-      "/api/admin/invoices/1/download"
+      "/api/admin/invoices/1/download?disposition=attachment"
     );
 
     // Req 5: pending → Generate PDF button, no download anchor.

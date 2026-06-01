@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Receipt, Download, Clock } from "lucide-react";
+import { Receipt, Download, Clock, ExternalLink } from "lucide-react";
 
 import { useSessionGuard } from "@/lib/useSessionGuard";
 import { formatPaiseToRupees } from "@/lib/payments/gst";
@@ -141,14 +141,26 @@ export default function ProviderInvoicesPage() {
                       </p>
                     </div>
                     {isGenerated ? (
-                      <a
-                        data-testid={`provider-invoice-download-${inv.id}`}
-                        href={`/api/provider/invoices/${inv.id}/download`}
-                        className="inline-flex items-center gap-2 rounded-lg bg-[#003d20] px-3 py-2 text-xs font-semibold text-white transition hover:bg-[#00542b]"
-                      >
-                        <Download className="h-4 w-4" />
-                        Download
-                      </a>
+                      <div className="flex items-center gap-2">
+                        <a
+                          data-testid={`provider-invoice-view-${inv.id}`}
+                          href={`/api/provider/invoices/${inv.id}/download?disposition=inline`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-2 rounded-lg border border-[#003d20] bg-white px-3 py-2 text-xs font-semibold text-[#003d20] transition hover:bg-[#003d20]/5"
+                        >
+                          <ExternalLink className="h-4 w-4" />
+                          View
+                        </a>
+                        <a
+                          data-testid={`provider-invoice-download-${inv.id}`}
+                          href={`/api/provider/invoices/${inv.id}/download?disposition=attachment`}
+                          className="inline-flex items-center gap-2 rounded-lg bg-[#003d20] px-3 py-2 text-xs font-semibold text-white transition hover:bg-[#00542b]"
+                        >
+                          <Download className="h-4 w-4" />
+                          Download
+                        </a>
+                      </div>
                     ) : (
                       <span
                         data-testid={`provider-invoice-status-${inv.id}`}
