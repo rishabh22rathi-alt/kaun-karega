@@ -82,14 +82,46 @@ function normalizeUrl(url: string): string {
 }
 
 /**
+ * Baked-in known PRODUCTION endpoints. Writes are ALWAYS blocked against
+ * these — regardless of KK_TARGET or KK_ALLOW_LIVE_SEED. This is the last
+ * line of defense: even a mis-set KK_TARGET=staging while still pointed at
+ * the prod URL cannot seed/reset. Add new prod/regional URLs here.
+ */
+export const KNOWN_PRODUCTION_URLS: readonly string[] = [
+  "https://ovloeohrjmhrisjhykwj.supabase.co",
+];
+
+/**
+ * True if `url` is a production endpoint — either a baked-in known URL or the
+ * operator-supplied KK_PROD_SUPABASE_URL.
+ */
+export function isKnownProductionUrl(url: string): boolean {
+  const n = normalizeUrl(url);
+  if (!n) return false;
+  if (KNOWN_PRODUCTION_URLS.some((p) => normalizeUrl(p) === n)) return true;
+  const prodUrl = getEnv("KK_PROD_SUPABASE_URL");
+  return Boolean(prodUrl && normalizeUrl(prodUrl) === n);
+}
+
+/**
  * Throws unless it is safe to WRITE KKTEST rows to the active database.
  *
  * Requires ALL of:
+ *   0. The active SUPABASE_URL is NOT a known production endpoint
+ *      (baked-in list or KK_PROD_SUPABASE_URL) — checked first, unconditional.
  *   1. KK_ALLOW_LIVE_SEED === "1"  (explicit opt-in)
  *   2. KK_TARGET ∈ {local, staging, qa, test}  (never "production"/empty)
- *   3. If KK_PROD_SUPABASE_URL is set, the active URL must NOT equal it.
  */
 export function assertWritesAllowed(): void {
+  // Rule 0 (highest priority): never seed/reset a production URL, full stop.
+  const active = activeSupabaseUrl();
+  if (isKnownProductionUrl(active)) {
+    throw new Error(
+      `KKTEST seed/reset PERMANENTLY blocked: active SUPABASE_URL (${
+        active || "<unset>"
+      }) is a known production endpoint. Point at a staging/local database.`
+    );
+  }
   if (getEnv("KK_ALLOW_LIVE_SEED") !== "1") {
     throw new Error(
       "KKTEST seed/reset blocked: set KK_ALLOW_LIVE_SEED=1 to allow writes (never on production)."
@@ -101,13 +133,6 @@ export function assertWritesAllowed(): void {
       `KKTEST seed/reset blocked: KK_TARGET must be one of local|staging|qa|test (got "${
         target || "<unset>"
       }"). Production writes are never permitted.`
-    );
-  }
-  const prodUrl = getEnv("KK_PROD_SUPABASE_URL");
-  const active = activeSupabaseUrl();
-  if (prodUrl && active && normalizeUrl(prodUrl) === normalizeUrl(active)) {
-    throw new Error(
-      "KKTEST seed/reset blocked: active SUPABASE_URL matches KK_PROD_SUPABASE_URL."
     );
   }
 }
