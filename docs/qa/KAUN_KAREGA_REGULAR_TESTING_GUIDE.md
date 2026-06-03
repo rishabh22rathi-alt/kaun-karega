@@ -5,6 +5,14 @@
 > follow §2 step-by-step, run the packs in the order in §9, diagnose failures
 > with §11, and produce the report in §13.
 
+> ⚠️ **Validation status (pending): live seed/reset/data/health have NOT yet been
+> run against a real database.** Staging DB runtime validation is pending because
+> the Supabase staging DB connection/auth was not completed. The framework is
+> type-checked and lint-clean, and the prod write-guard is verified, but the
+> seeder/reset and integrity SQL are not yet proven against a live schema.
+> **Do not seed/reset production.** Use only a local or staging database for
+> seed/reset (the baked-in guard hard-blocks the production URL regardless).
+
 ---
 
 ## 1. Purpose
