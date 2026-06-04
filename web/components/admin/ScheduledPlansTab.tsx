@@ -89,6 +89,27 @@ type CoverageResponse = {
   message?: string;
 };
 
+type ExpiredFailure = { provider_id: string; message: string };
+
+type ExpiredResult = {
+  scanned: number;
+  reconciled: number;
+  fixed: number;
+  failed: number;
+  failures: ExpiredFailure[];
+};
+
+type ExpiredResponse = {
+  ok?: boolean;
+  scanned?: number;
+  reconciled?: number;
+  fixed?: number;
+  failed?: number;
+  failures?: ExpiredFailure[];
+  error?: string;
+  message?: string;
+};
+
 function formatDate(value: string | null): string {
   if (!value) return "—";
   const ts = Date.parse(value);
@@ -136,6 +157,10 @@ export default function ScheduledPlansTab() {
     null
   );
   const [coverageError, setCoverageError] = useState<string | null>(null);
+
+  const [expiredRunning, setExpiredRunning] = useState(false);
+  const [expiredResult, setExpiredResult] = useState<ExpiredResult | null>(null);
+  const [expiredError, setExpiredError] = useState<string | null>(null);
 
   const fetchRecent = useCallback(async () => {
     setRecentLoading(true);
@@ -259,6 +284,46 @@ export default function ScheduledPlansTab() {
       setCoverageRunning(false);
     }
   }, [coverageRunning, coverageProviderId]);
+
+  const handleReconcileExpired = useCallback(async () => {
+    if (expiredRunning) return;
+    if (typeof window !== "undefined") {
+      const ok = window.confirm(
+        "This will trim provider_areas for every provider whose paid plan has EXPIRED down to the free cap (1 region), so expired providers stop receiving premium matches. Active providers are not touched. Continue?"
+      );
+      if (!ok) return;
+    }
+    setExpiredRunning(true);
+    setExpiredError(null);
+    setExpiredResult(null);
+    try {
+      const res = await fetch("/api/admin/provider-coverage/reconcile-expired", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+      });
+      const data = (await res.json().catch(() => null)) as ExpiredResponse | null;
+      if (!res.ok || !data?.ok) {
+        setExpiredError(
+          data?.message ||
+            data?.error ||
+            `Expired coverage reconcile failed (${res.status}).`
+        );
+        return;
+      }
+      setExpiredResult({
+        scanned: Number(data.scanned ?? 0),
+        reconciled: Number(data.reconciled ?? 0),
+        fixed: Number(data.fixed ?? 0),
+        failed: Number(data.failed ?? 0),
+        failures: Array.isArray(data.failures) ? data.failures : [],
+      });
+    } catch {
+      setExpiredError("Network error while reconciling expired coverage.");
+    } finally {
+      setExpiredRunning(false);
+    }
+  }, [expiredRunning]);
 
   return (
     <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
@@ -563,6 +628,127 @@ export default function ScheduledPlansTab() {
                     {coverageResult.checked === 0
                       ? "No providers with a plan row were found."
                       : "All checked providers already had correct coverage or were repaired cleanly."}
+                  </p>
+                )}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <p className="text-sm font-semibold text-slate-800">
+              Reconcile Expired Provider Coverage
+            </p>
+            <p className="mt-1 text-sm text-slate-600">
+              Scans every provider whose paid plan has <strong>expired</strong>{" "}
+              and trims <code>provider_areas</code> to the free cap (1 region),
+              so expired providers stop receiving premium (regions_5 /
+              all_jodhpur) matches. Active providers are never touched. Safe to
+              re-run.
+            </p>
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={handleReconcileExpired}
+                disabled={expiredRunning}
+                data-testid="reconcile-expired-button"
+                className="inline-flex items-center justify-center rounded-xl bg-[#003d20] px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-[#002a16] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {expiredRunning
+                  ? "Reconciling…"
+                  : "Reconcile expired provider coverage"}
+              </button>
+              <p className="text-xs text-slate-500">
+                One click = one batch (max 500 expired providers).
+              </p>
+            </div>
+
+            {expiredError ? (
+              <div
+                role="alert"
+                data-testid="reconcile-expired-error"
+                className="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700"
+              >
+                {expiredError}
+              </div>
+            ) : null}
+
+            {expiredResult ? (
+              <div
+                role="status"
+                data-testid="reconcile-expired-result"
+                className="mt-4 space-y-3"
+              >
+                <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
+                  <div className="rounded-lg border border-slate-200 bg-white p-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                      Scanned
+                    </p>
+                    <p
+                      data-testid="reconcile-expired-stat-scanned"
+                      className="mt-1 text-2xl font-bold text-slate-900"
+                    >
+                      {expiredResult.scanned}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700">
+                      Fixed
+                    </p>
+                    <p
+                      data-testid="reconcile-expired-stat-fixed"
+                      className="mt-1 text-2xl font-bold text-emerald-800"
+                    >
+                      {expiredResult.fixed}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-slate-200 bg-white p-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                      Reconciled
+                    </p>
+                    <p
+                      data-testid="reconcile-expired-stat-reconciled"
+                      className="mt-1 text-2xl font-bold text-slate-900"
+                    >
+                      {expiredResult.reconciled}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-rose-200 bg-rose-50 p-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-rose-700">
+                      Failed
+                    </p>
+                    <p
+                      data-testid="reconcile-expired-stat-failed"
+                      className="mt-1 text-2xl font-bold text-rose-800"
+                    >
+                      {expiredResult.failed}
+                    </p>
+                  </div>
+                </div>
+
+                {expiredResult.failures.length > 0 ? (
+                  <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
+                    {expiredResult.failures.map((n, i) => (
+                      <li
+                        key={`exp-fail-${n.provider_id}-${i}`}
+                        className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-3 py-2 text-xs"
+                      >
+                        <span className="inline-flex items-center rounded-full border border-rose-300 bg-rose-50 px-2 py-0.5 font-semibold uppercase tracking-wide text-rose-700">
+                          failed
+                        </span>
+                        <span className="font-mono text-slate-700">
+                          {n.provider_id}
+                        </span>
+                        <span className="break-all text-slate-500">
+                          {n.message}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-xs text-slate-500">
+                    {expiredResult.scanned === 0
+                      ? "No expired-plan providers found."
+                      : "All expired providers reconciled cleanly."}
                   </p>
                 )}
               </div>

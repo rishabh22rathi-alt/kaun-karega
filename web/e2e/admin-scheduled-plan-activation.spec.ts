@@ -256,3 +256,128 @@ test.describe("Admin: Scheduled Plan Activation tab (localhost)", () => {
     expect(body?.error).toBe("UNAUTHORIZED");
   });
 });
+
+/**
+ * Localhost verification — Admin Dashboard "Reconcile Expired Provider
+ * Coverage" button (Launch Blocker 3 admin surface).
+ *
+ * Lives in the same ScheduledPlansTab accordion. Mocks:
+ *   GET  /api/admin/provider-plans/activate-scheduled — recent rows (so the
+ *        tab opens cleanly; not under test here)
+ *   POST /api/admin/provider-coverage/reconcile-expired — the sweep result
+ *
+ * No real database / Supabase is touched. Selectors use the
+ * reconcile-expired-* data-testid attributes baked into ScheduledPlansTab.tsx.
+ */
+const RECENT_PATTERN = "**/api/admin/provider-plans/activate-scheduled";
+const RECONCILE_PATTERN = "**/api/admin/provider-coverage/reconcile-expired";
+
+test.describe("Admin: Reconcile Expired Provider Coverage button (localhost)", () => {
+  test("F. button is visible to an admin inside the tab", async ({ page }) => {
+    await bootstrapAdminSession(page);
+    await mockAdminDashboardApis(page);
+    await mockJson(page, RECENT_PATTERN, ({ request }) =>
+      request.method() === "GET"
+        ? { status: 200, body: { ok: true, recent: [] } }
+        : {
+            status: 200,
+            body: { ok: true, scanned: 0, activated: 0, skipped: 0, failed: 0, failures: [] },
+          }
+    );
+
+    await gotoPath(page, "/admin/dashboard");
+    await openAccordion(page);
+
+    const button = page.getByTestId("reconcile-expired-button");
+    await expect(button).toBeVisible();
+    await expect(button).toHaveText(/Reconcile expired provider coverage/i);
+  });
+
+  test("G. clicking POSTs to the reconcile-expired route and shows success state", async ({
+    page,
+  }) => {
+    await bootstrapAdminSession(page);
+    await mockAdminDashboardApis(page);
+    await mockJson(page, RECENT_PATTERN, ({ request }) =>
+      request.method() === "GET"
+        ? { status: 200, body: { ok: true, recent: [] } }
+        : {
+            status: 200,
+            body: { ok: true, scanned: 0, activated: 0, skipped: 0, failed: 0, failures: [] },
+          }
+    );
+    // Success response from the expired-coverage sweep.
+    await mockJson(page, RECONCILE_PATTERN, {
+      status: 200,
+      body: { ok: true, scanned: 3, reconciled: 3, fixed: 2, failed: 0, failures: [] },
+    });
+
+    await gotoPath(page, "/admin/dashboard");
+    await openAccordion(page);
+
+    // Assert the click actually fires a POST to the exact route.
+    const postPromise = page.waitForRequest(
+      (req) =>
+        req.method() === "POST" &&
+        req.url().includes("/api/admin/provider-coverage/reconcile-expired")
+    );
+
+    autoAcceptOneConfirm(page);
+    await page.getByTestId("reconcile-expired-button").click();
+
+    const postReq = await postPromise;
+    expect(postReq.method()).toBe("POST");
+
+    // Success panel + stats render; no error banner.
+    await expect(
+      page.getByTestId("reconcile-expired-result")
+    ).toBeVisible({ timeout: 5_000 });
+    await expect(
+      page.getByTestId("reconcile-expired-stat-scanned")
+    ).toHaveText("3");
+    await expect(
+      page.getByTestId("reconcile-expired-stat-fixed")
+    ).toHaveText("2");
+    await expect(
+      page.getByTestId("reconcile-expired-stat-failed")
+    ).toHaveText("0");
+    await expect(
+      page.getByTestId("reconcile-expired-error")
+    ).toHaveCount(0);
+  });
+
+  test("H. API error renders the failure state, not the result panel", async ({
+    page,
+  }) => {
+    await bootstrapAdminSession(page);
+    await mockAdminDashboardApis(page);
+    await mockJson(page, RECENT_PATTERN, ({ request }) =>
+      request.method() === "GET"
+        ? { status: 200, body: { ok: true, recent: [] } }
+        : {
+            status: 200,
+            body: { ok: true, scanned: 0, activated: 0, skipped: 0, failed: 0, failures: [] },
+          }
+    );
+    // Server-side scan failure → ok:false with a 500.
+    await mockJson(page, RECONCILE_PATTERN, {
+      status: 500,
+      body: { ok: false, error: "SCAN_FAILED", message: "expired-row scan failed" },
+    });
+
+    await gotoPath(page, "/admin/dashboard");
+    await openAccordion(page);
+
+    autoAcceptOneConfirm(page);
+    await page.getByTestId("reconcile-expired-button").click();
+
+    const errorBanner = page.getByTestId("reconcile-expired-error");
+    await expect(errorBanner).toBeVisible({ timeout: 5_000 });
+    await expect(errorBanner).toContainText("expired-row scan failed");
+
+    // Success result panel must NOT render on failure.
+    await expect(
+      page.getByTestId("reconcile-expired-result")
+    ).toHaveCount(0);
+  });
+});
