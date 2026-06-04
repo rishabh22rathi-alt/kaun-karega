@@ -22,6 +22,8 @@
     "test:kk:health": "playwright test -c pw-kk.config.ts --project=health",
     "test:kk:release": "playwright test -c pw-kk.config.ts --project=release",
     "test:kk:list": "playwright test -c pw-kk.config.ts --list",
+    "test:kk:auth": "playwright test -c pw-kk.config.ts e2e/auth/otp-guard.spec.ts e2e/auth/otp-paste.spec.ts e2e/auth/single-active-session.spec.ts",
+    "test:kk:auth:full": "playwright test -c pw-kk.config.ts e2e/auth",
     "test:kk:all": "playwright test -c pw-kk.config.ts --project=smoke --project=security --project=user --project=provider --project=matching --project=chat --project=notify --project=revenue --project=admin --project=data --project=release",
     "test:e2e:audit": "npm run test:kk:all",
     "test:e2e:audit:headed": "npm run test:kk:all -- --headed",

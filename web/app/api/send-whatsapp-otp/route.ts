@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { adminSupabase } from "@/lib/supabase/admin";
+import { guardSend } from "@/lib/otp/throttle";
 
 export const runtime = "nodejs";
 
@@ -43,6 +44,19 @@ export async function POST(req: Request) {
       return NextResponse.json(
         { ok: false, error: "Enter a valid 10-digit Indian mobile number" },
         { status: 400 }
+      );
+    }
+
+    // OTP send rate-limit guard. No-op unless KK_OTP_SEND_GUARD_ENABLED.
+    // Fail-open: if the throttle RPC errors, guardSend() returns allowed.
+    const sendGuard = await guardSend(normalized);
+    if (!sendGuard.allowed) {
+      return NextResponse.json(
+        { ok: false, error: "RATE_LIMITED", retryAfter: sendGuard.retryAfterSeconds },
+        {
+          status: 429,
+          headers: { "Retry-After": String(sendGuard.retryAfterSeconds) },
+        }
       );
     }
 

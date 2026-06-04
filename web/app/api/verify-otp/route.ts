@@ -3,11 +3,17 @@ import { adminSupabase } from "@/lib/supabase/admin";
 import { setAuthSessionCookie } from "@/lib/auth";
 import { checkAdminByPhone } from "@/lib/adminAuth";
 import { bumpSessionVersion } from "@/lib/sessionVersion";
+import { guardVerifyLock, noteVerifyFailure, clearVerify } from "@/lib/otp/throttle";
 
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
-  let body: any;
+  let body: {
+    phoneNumber?: unknown;
+    phone?: unknown;
+    otp?: unknown;
+    requestId?: unknown;
+  };
   try {
     body = await request.json();
   } catch {
@@ -36,6 +42,16 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: false, error: "Invalid OTP" }, { status: 400 });
   }
 
+  // OTP verify lockout guard. No-op unless KK_OTP_VERIFY_GUARD_ENABLED.
+  // Fail-open: if the lock RPC errors, guardVerifyLock() reports not-locked.
+  const lock = await guardVerifyLock(normalizedPhone);
+  if (lock.locked) {
+    return NextResponse.json(
+      { ok: false, error: "OTP_LOCKED", retryAfter: lock.retryAfterSeconds },
+      { status: 429, headers: { "Retry-After": String(lock.retryAfterSeconds) } }
+    );
+  }
+
   let verifiedPhone: string;
 
   if (requestId) {
@@ -51,6 +67,7 @@ export async function POST(request: Request) {
     }
 
     if (!rows || rows.length === 0) {
+      await noteVerifyFailure(normalizedPhone);
       return NextResponse.json({ ok: false, error: "Invalid or expired OTP" }, { status: 400 });
     }
 
@@ -73,6 +90,7 @@ export async function POST(request: Request) {
     }
 
     if (!rows || rows.length === 0) {
+      await noteVerifyFailure(normalizedPhone);
       return NextResponse.json({ ok: false, error: "Invalid or expired OTP" }, { status: 400 });
     }
 
@@ -89,6 +107,10 @@ export async function POST(request: Request) {
 
     verifiedPhone = rows[0].phone;
   }
+
+  // OTP verified — clear any failure counter / lock for this phone.
+  // No-op unless KK_OTP_VERIFY_GUARD_ENABLED; soft-fail.
+  await clearVerify(normalizedPhone);
 
   // Upsert profile — non-fatal if it fails, but still report it
   const { error: upsertError } = await adminSupabase.from("profiles").upsert(

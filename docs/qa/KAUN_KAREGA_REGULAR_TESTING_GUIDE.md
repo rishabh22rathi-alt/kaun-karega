@@ -108,6 +108,17 @@ Values are read from real `process.env` first, then `web/.env.local`.
    KKTEST rows. A real product bug found by a test is reported, not patched as
    part of the test run.
 5. **Never push** without explicit operator approval.
+6. **Auth/OTP change gate (MANDATORY).** Any change that touches authentication
+   or OTP — `app/api/send-whatsapp-otp`, `app/api/verify-otp`,
+   `app/api/send-otp`, `app/api/auth/**`, `lib/auth.ts`, `lib/otp/**`,
+   `lib/sessionVersion.ts` — MUST run **`npm run test:kk:auth`** (deterministic
+   OTP/auth gate — green-by-default, no seeded backend) **and**
+   **`npm run test:kk:smoke`** before merge, and record both results in the PR.
+   Use **`npm run test:kk:auth:full`** (full `e2e/auth/**`) when a seeded/staging
+   backend is available for broader coverage. OTP guards are gated by
+   `KK_OTP_SEND_GUARD_ENABLED` / `KK_OTP_VERIFY_GUARD_ENABLED` (both default
+   OFF, fail-open) — never enable a guard flag in prod without first running
+   this gate against a non-prod database.
 
 ---
 
@@ -256,6 +267,10 @@ npm run test:kk:health     # PROD-SAFE read-only diagnostics
 
 # Discovery
 npm run test:kk:list       # list discovered tests, runs nothing
+
+# Auth/OTP regression (run on ANY auth/OTP change — see §5 rule 6)
+npm run test:kk:auth       # deterministic gate: otp-guard + otp-paste + single-active-session (green-by-default, no seeded backend)
+npm run test:kk:auth:full  # full e2e/auth/** (incl. dashboard specs that need a seeded/live backend)
 ```
 
 Backward-compat aliases (retired the broken config): `test:e2e:audit`,
