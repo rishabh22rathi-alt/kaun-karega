@@ -68,11 +68,30 @@ test.describe("admin push — event selection (PII-free copy)", () => {
     }
   });
 
+  test("payment-safety events push with PII-free copy", () => {
+    expect(adminPushForEvent("payment_amount_mismatch")).toEqual({
+      title: "Payment needs review",
+      body: "A payment amount did not match and was not activated.",
+    });
+    expect(adminPushForEvent("invoice_issue_failed")).toEqual({
+      title: "Invoice issuance failed",
+      body: "A paid order has no invoice yet.",
+    });
+    for (const e of ["payment_amount_mismatch", "invoice_issue_failed"]) {
+      const copy = adminPushForEvent(e)!;
+      const text = `${copy.title} ${copy.body}`;
+      expect(text).not.toMatch(/\d{6,}/);
+      expect(text.toLowerCase()).not.toContain("rs.");
+    }
+  });
+
   test("push copy carries no PII (no phone / amount / name)", () => {
     for (const e of [
       "provider_paid_plan_subscribed",
       "payment_failed",
       "invoice_pdf_failed",
+      "payment_amount_mismatch",
+      "invoice_issue_failed",
     ]) {
       const copy = adminPushForEvent(e)!;
       const text = `${copy.title} ${copy.body}`;

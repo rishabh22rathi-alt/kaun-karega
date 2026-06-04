@@ -11,6 +11,7 @@ import { effectivePlan } from "@/lib/payments/effectivePlan";
 import { invalidateSnapshots } from "@/lib/admin/snapshotCache";
 import { reconcileProviderCoverage } from "@/lib/admin/reconcileProviderCoverage";
 import { safeIssueInvoiceForPaidOrder } from "@/lib/payments/issueInvoice";
+import { validateCapturedAmount } from "@/lib/payments/validateCapturedAmount";
 import { notifyAdmins } from "@/lib/notifications/notifyAdmins";
 
 // Cache keys invalidated after every successful captured-payment write
@@ -280,15 +281,34 @@ export async function POST(request: Request) {
   // created the order for. Mismatch is suspicious but not fatal —
   // audit it and refuse to upgrade. We do not advance status either,
   // so the order stays in 'created' for manual review.
-  const capturedAmount =
-    typeof paymentEntity?.amount === "number" ? paymentEntity.amount : null;
-  if (capturedAmount !== null && capturedAmount !== orderRow.amount_paise) {
-    console.error("[payments/webhook] amount mismatch", {
+  const amountCheck = validateCapturedAmount(
+    paymentEntity?.amount,
+    orderRow.amount_paise
+  );
+  if (!amountCheck.valid) {
+    // A missing/non-numeric captured amount OR a value that differs from the
+    // order is anomalous and NOT transient — refuse activation, leave the
+    // order in 'created' for manual review, alert admins (soft-fail, deduped
+    // on order_id), and ack with 200 so Razorpay does not retry forever.
+    console.error("[payments/webhook] captured amount rejected — not activating", {
       orderId: orderRow.order_id,
-      expectedPaise: orderRow.amount_paise,
-      capturedPaise: capturedAmount,
+      reason: amountCheck.reason,
+      expectedPaise: amountCheck.expectedPaise,
+      capturedPaise: amountCheck.capturedPaise,
     });
-    return NextResponse.json({ ok: true, amountMismatch: true });
+    await notifyAdmins("payment_amount_mismatch", {
+      payment_order_id: orderRow.order_id,
+      provider_id: orderRow.provider_id,
+      plan_code: orderRow.plan_code,
+      expected_paise: amountCheck.expectedPaise,
+      captured_paise: amountCheck.capturedPaise,
+      reason: amountCheck.reason,
+    });
+    return NextResponse.json({
+      ok: true,
+      amountRejected: true,
+      reason: amountCheck.reason,
+    });
   }
 
   if (!isPaidPlanCode(orderPlanCode)) {
@@ -589,7 +609,18 @@ export async function POST(request: Request) {
     // after status='paid' committed, gated by KK_INVOICE_LEDGER_ENABLED, and
     // can never break activation or trigger a Razorpay retry. Idempotent in
     // the DB function (no duplicate invoice on webhook replay).
-    await safeIssueInvoiceForPaidOrder(orderRow.order_id);
+    const invoiceOutcome = await safeIssueInvoiceForPaidOrder(orderRow.order_id);
+    if (invoiceOutcome.attempted && !invoiceOutcome.ok) {
+      // Plan is already active; the invoice is recoverable via backfill.
+      // Surface the gap so a missing invoice is never silent (soft-fail,
+      // deduped on order_id; never throws, never blocks the 200).
+      await notifyAdmins("invoice_issue_failed", {
+        payment_order_id: orderRow.order_id,
+        provider_id: orderRow.provider_id,
+        plan_code: orderRow.plan_code,
+        outcome: invoiceOutcome.outcome ?? null,
+      });
+    }
 
     // Phase A: in-app admin alert (soft-fail, deduped on order_id; a
     // webhook retry never creates a second alert; never throws).
@@ -688,7 +719,18 @@ export async function POST(request: Request) {
   // after status='paid' committed, gated by KK_INVOICE_LEDGER_ENABLED, and
   // can never break activation or trigger a Razorpay retry. Idempotent in
   // the DB function (no duplicate invoice on webhook replay).
-  await safeIssueInvoiceForPaidOrder(orderRow.order_id);
+  const invoiceOutcome = await safeIssueInvoiceForPaidOrder(orderRow.order_id);
+  if (invoiceOutcome.attempted && !invoiceOutcome.ok) {
+    // Plan is already active; the invoice is recoverable via backfill.
+    // Surface the gap so a missing invoice is never silent (soft-fail,
+    // deduped on order_id; never throws, never blocks the 200).
+    await notifyAdmins("invoice_issue_failed", {
+      payment_order_id: orderRow.order_id,
+      provider_id: orderRow.provider_id,
+      plan_code: orderRow.plan_code,
+      outcome: invoiceOutcome.outcome ?? null,
+    });
+  }
 
   // Phase A: in-app admin alert (soft-fail, deduped on order_id; a
   // webhook retry never creates a second alert; never throws).

@@ -21,7 +21,9 @@ export type AdminSeverity = "info" | "warning" | "critical";
 export type AdminEventType =
   | "provider_paid_plan_subscribed"
   | "payment_failed"
+  | "payment_amount_mismatch"
   | "invoice_pdf_failed"
+  | "invoice_issue_failed"
   | "new_provider_registered"
   | "task_zero_match"
   | "issue_report_submitted";
@@ -129,6 +131,27 @@ export function buildAdminNotification(
         actionUrl: "/admin/dashboard?tab=payments",
       };
 
+    case "payment_amount_mismatch": {
+      const captured = payload.captured_paise;
+      const detail =
+        captured === null || captured === undefined || captured === ""
+          ? "no captured amount was provided"
+          : `captured Rs. ${rupeesFromPaise(captured)} vs expected Rs. ${rupeesFromPaise(
+              payload.expected_paise
+            )}`;
+      return {
+        type: eventType,
+        title: "Payment amount mismatch — not activated",
+        message: `Order ${str(
+          payload.payment_order_id
+        )} was NOT activated: ${detail}. Manual review required.`,
+        severity: "critical",
+        source: "payments",
+        relatedId: str(payload.payment_order_id) || null,
+        actionUrl: "/admin/dashboard?tab=payments",
+      };
+    }
+
     case "invoice_pdf_failed": {
       const num = str(payload.invoice_number) || str(payload.invoice_id);
       const code = str(payload.error_code);
@@ -141,6 +164,21 @@ export function buildAdminNotification(
         severity: "critical",
         source: "invoices",
         relatedId: str(payload.invoice_id) || null,
+        actionUrl: "/admin/dashboard?tab=invoices",
+      };
+    }
+
+    case "invoice_issue_failed": {
+      const oc = str(payload.outcome);
+      return {
+        type: eventType,
+        title: "Invoice issuance failed",
+        message: `Invoice was not issued for paid order ${str(
+          payload.payment_order_id
+        )}${oc ? ` (${oc})` : ""}. The plan is active; run invoice backfill.`,
+        severity: "critical",
+        source: "invoices",
+        relatedId: str(payload.payment_order_id) || null,
         actionUrl: "/admin/dashboard?tab=invoices",
       };
     }
@@ -208,6 +246,14 @@ const ADMIN_PUSH_EVENTS: Record<string, { title: string; body: string }> = {
   invoice_pdf_failed: {
     title: "Invoice PDF failed",
     body: "An invoice PDF could not be generated.",
+  },
+  payment_amount_mismatch: {
+    title: "Payment needs review",
+    body: "A payment amount did not match and was not activated.",
+  },
+  invoice_issue_failed: {
+    title: "Invoice issuance failed",
+    body: "A paid order has no invoice yet.",
   },
 };
 

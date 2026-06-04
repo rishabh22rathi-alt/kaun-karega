@@ -86,6 +86,52 @@ test.describe("Phase A — buildAdminNotification", () => {
     expect(n!.actionUrl).toBe("/admin/dashboard?tab=reports");
   });
 
+  test("payment_amount_mismatch (mismatch): critical, related_id = order, amounts in message", () => {
+    const n = buildAdminNotification("payment_amount_mismatch", {
+      payment_order_id: "order_77",
+      provider_id: "PR-9",
+      plan_code: "regions_5",
+      expected_paise: 3658,
+      captured_paise: 100,
+      reason: "mismatch",
+    });
+    expect(n!.severity).toBe("critical");
+    expect(n!.source).toBe("payments");
+    expect(n!.relatedId).toBe("order_77");
+    expect(n!.actionUrl).toBe("/admin/dashboard?tab=payments");
+    expect(n!.message).toContain("order_77");
+    expect(n!.message).toContain("Rs. 36.58"); // expected
+    expect(n!.message).toContain("Rs. 1.00"); // captured
+    expect(n!.message).toContain("NOT activated");
+  });
+
+  test("payment_amount_mismatch (missing amount): message notes no captured amount", () => {
+    const n = buildAdminNotification("payment_amount_mismatch", {
+      payment_order_id: "order_78",
+      captured_paise: null,
+      reason: "missing_amount",
+    });
+    expect(n!.severity).toBe("critical");
+    expect(n!.relatedId).toBe("order_78");
+    expect(n!.message.toLowerCase()).toContain("no captured amount");
+  });
+
+  test("invoice_issue_failed: critical, related_id = order, outcome + backfill hint", () => {
+    const n = buildAdminNotification("invoice_issue_failed", {
+      payment_order_id: "order_99",
+      provider_id: "PR-1",
+      plan_code: "all_jodhpur",
+      outcome: "failed",
+    });
+    expect(n!.severity).toBe("critical");
+    expect(n!.source).toBe("invoices");
+    expect(n!.relatedId).toBe("order_99");
+    expect(n!.actionUrl).toBe("/admin/dashboard?tab=invoices");
+    expect(n!.message).toContain("order_99");
+    expect(n!.message).toContain("failed");
+    expect(n!.message.toLowerCase()).toContain("backfill");
+  });
+
   test("unknown event type → null", () => {
     expect(buildAdminNotification("nope", {})).toBeNull();
   });

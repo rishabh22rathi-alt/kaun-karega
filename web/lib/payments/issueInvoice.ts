@@ -1,6 +1,9 @@
 import { adminSupabase } from "@/lib/supabase/admin";
 import { isInvoiceLedgerEnabled } from "@/lib/payments/server";
-import { runInvoiceIssuance } from "@/lib/payments/issueInvoiceCore";
+import {
+  runInvoiceIssuance,
+  type IssueOutcome,
+} from "@/lib/payments/issueInvoiceCore";
 
 /**
  * Phase 2: GST invoice issuance hook for the Razorpay webhook.
@@ -14,8 +17,10 @@ import { runInvoiceIssuance } from "@/lib/payments/issueInvoiceCore";
  *
  * No PDF is generated here (the function leaves pdf_status='pending').
  */
-export async function safeIssueInvoiceForPaidOrder(orderId: string): Promise<void> {
-  await runInvoiceIssuance(orderId, {
+export async function safeIssueInvoiceForPaidOrder(
+  orderId: string
+): Promise<IssueOutcome> {
+  return runInvoiceIssuance(orderId, {
     enabled: isInvoiceLedgerEnabled(),
     rpc: async (id) => {
       const { data, error } = await adminSupabase.rpc(
