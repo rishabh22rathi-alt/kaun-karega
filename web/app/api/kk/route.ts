@@ -207,6 +207,12 @@ const REQUIRES_SESSION_ACTIONS = new Set([
   "get_my_needs",
   "mark_need_complete",
   "close_need",
+  // Provider self-registration — the new provider row's phone must come
+  // from the OTP-verified signed session, never from body.phone. Closes
+  // the prior trust-on-submit gap where any body phone was accepted
+  // without verification. The /provider/register form already only sends
+  // the session phone, so this is a no-op for the real UI.
+  "provider_register",
 ]);
 
 function parseArrayLike(value: unknown): unknown[] {
@@ -1725,7 +1731,25 @@ export async function POST(request: NextRequest) {
       return withNoCache(NextResponse.json(result, { status: result.ok ? 200 : 500 }));
     }
     if (action === "provider_register") {
-      const phone = typeof body.phone === "string" ? body.phone.trim() : "";
+      // Friction Phase 1 hardening. provider_register is now in
+      // REQUIRES_SESSION_ACTIONS, so chatIdentity is guaranteed non-null
+      // here and carries the OTP-verified 10-digit session phone. That
+      // session phone is the SOLE trusted phone for this registration.
+      // A body `phone` is honored only when it matches the session; a
+      // mismatch is rejected. Unauthenticated requests were already
+      // rejected with 401 by the session gate at the top of POST.
+      const sessionPhone = chatIdentity!.sessionPhone;
+      const bodyPhoneRaw =
+        typeof body.phone === "string" ? body.phone.trim() : "";
+      if (bodyPhoneRaw && normalizePhone10(bodyPhoneRaw) !== sessionPhone) {
+        return withNoCache(
+          NextResponse.json(
+            { ok: false, error: "PHONE_SESSION_MISMATCH" },
+            { status: 403 }
+          )
+        );
+      }
+      const phone = sessionPhone;
       const name = typeof body.name === "string" ? body.name.trim() : "";
       const categories = Array.isArray(body.categories) ? body.categories : [];
       const areas = Array.isArray(body.areas) ? body.areas : [];
