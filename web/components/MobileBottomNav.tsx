@@ -12,7 +12,6 @@ import {
   LayoutDashboard,
   Briefcase,
   LogIn,
-  PlusSquare,
 } from "lucide-react";
 import { getAuthSession, type AuthSession } from "@/lib/auth";
 import {
@@ -298,19 +297,20 @@ export default function MobileBottomNav() {
     }
 
     // Guest
+    // Provider acquisition is the priority pre-login; Post and Alerts
+    // had no value before login (both were just /login redirects), so
+    // they're replaced by a single "Provider" entry. The href routes
+    // THROUGH login (not directly to /provider/register) so the OTP
+    // funnel returns the guest to registration — the register page's
+    // own guard does not preserve a return path on its /login redirect.
     if (!session?.phone) {
       return [
         homeTab,
         { label: "Login", href: "/login", icon: LogIn },
         {
-          label: "Post",
-          href: "/login?next=/post-task",
-          icon: PlusSquare,
-        },
-        {
-          label: "Alerts",
-          href: "/login?next=/dashboard/alerts",
-          icon: Bell,
+          label: "Provider",
+          href: "/login?next=/provider/register",
+          icon: Briefcase,
         },
         menuTab,
       ];
@@ -396,7 +396,14 @@ export default function MobileBottomNav() {
         className="fixed inset-x-0 bottom-0 z-50 border-t border-[#00542b] bg-[#003d20] shadow-[0_-8px_24px_rgba(0,61,32,0.35)] md:hidden"
         style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
       >
-        <ul className="grid h-16 grid-cols-5">
+        {/* Column count tracks the rendered item count: the guest nav is
+            4 items (grid-cols-4); the 2-item loading skeleton and the
+            5-item user/provider navs stay grid-cols-5 exactly as before. */}
+        <ul
+          className={`grid h-16 ${
+            tabs.length === 4 ? "grid-cols-4" : "grid-cols-5"
+          }`}
+        >
           {tabs.map((tab) => {
             const Icon = tab.icon;
             const isMenu = tab.label === "Menu";
