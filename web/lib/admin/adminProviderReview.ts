@@ -79,7 +79,10 @@ export type ProvidersUnderReviewResult = {
 };
 
 type CategoryRequestRow = {
-  request_id: string | null;
+  // `id` (uuid PK) is the request identifier — the live table has no
+  // `request_id` column. The under-review panel's approve action sends
+  // this back as `requestId`, which adminCategoryMutations matches on `id`.
+  id: string | null;
   provider_id: string | null;
   requested_category: string | null;
   status: string | null;
@@ -210,9 +213,14 @@ export async function buildProvidersUnderReview(): Promise<ProvidersUnderReviewR
   const [categoryReqRes, aliasRes, areaRes] = await Promise.all([
     adminSupabase
       .from("pending_category_requests")
-      .select("request_id, provider_id, requested_category, status, created_at")
+      // `id` not `request_id` (absent column). `user_phone IS NULL` keeps
+      // this to PROVIDER-originated requests only — a user-originated row
+      // can carry a backfilled provider_id but always has user_phone set,
+      // so it must not count toward a provider's under-review state.
+      .select("id, provider_id, requested_category, status, created_at")
       .eq("status", "pending")
       .not("provider_id", "is", null)
+      .is("user_phone", null)
       .order("created_at", { ascending: false })
       .limit(500),
     adminSupabase
@@ -263,7 +271,7 @@ export async function buildProvidersUnderReview(): Promise<ProvidersUnderReviewR
     if (!pid) continue;
     ensureGroup(pid).pendingCategories.push({
       kind: "category",
-      requestId: s(row.request_id),
+      requestId: s(row.id),
       requestedCategory: s(row.requested_category),
       createdAt: row.created_at ?? null,
     });

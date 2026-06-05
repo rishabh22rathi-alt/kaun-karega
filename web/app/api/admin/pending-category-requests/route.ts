@@ -12,10 +12,6 @@ import { readThroughSnapshotCache } from "@/lib/admin/snapshotCache";
 // normalized last-10-digit phone (providers / requests may store as
 // "91XXXXXXXXXX" or "XXXXXXXXXX" interchangeably).
 
-function normalizePhone(value: unknown): string {
-  return String(value ?? "").replace(/\D/g, "").slice(-10);
-}
-
 function normalizeCategoryKey(value: unknown): string {
   return String(value ?? "").trim().toLowerCase();
 }
@@ -179,10 +175,17 @@ async function computePendingCategoryApplications(): Promise<{
   // in the table for audit but never reappear in the admin queue. NULL
   // status is treated as pending defensively (some legacy rows may pre-date
   // the explicit default).
+  //
+  // `user_phone IS NULL` keeps this queue to PROVIDER-originated requests
+  // only (Phase 2 separation). Provider inserts never set user_phone;
+  // user-originated unlisted-work rows always do (and may carry a
+  // backfilled provider_id, which must NOT promote them here). User demand
+  // stays visible via the Kaam tab (tasks.status='pending_category_review').
   const { data, error } = await adminSupabase
     .from("pending_category_requests")
     .select("*")
     .or("status.is.null,status.eq.pending")
+    .is("user_phone", null)
     .order("created_at", { ascending: false })
     .limit(200);
 
@@ -193,52 +196,42 @@ async function computePendingCategoryApplications(): Promise<{
 
   const rawRows = data ?? [];
 
-  // Build the set of distinct phones we need to enrich. Match on full phone
-  // string AND on last-10 since providers may be stored either way.
-  const phoneSet = new Set<string>();
-  const phoneSet10 = new Set<string>();
+  // Provider-originated rows carry `provider_id` (user_phone is NULL after
+  // the filter, and the table has no `phone` column), so enrich provider
+  // name + phone via a single batched provider_id lookup.
+  const providerIdSet = new Set<string>();
   for (const row of rawRows) {
-    const phoneRaw = String((row as Record<string, unknown>).user_phone ?? (row as Record<string, unknown>).phone ?? "");
-    if (phoneRaw) phoneSet.add(phoneRaw);
-    const phone10 = normalizePhone(phoneRaw);
-    if (phone10.length === 10) phoneSet10.add(phone10);
+    const pid = String((row as Record<string, unknown>).provider_id ?? "").trim();
+    if (pid) providerIdSet.add(pid);
   }
 
-  const providersByPhone10 = new Map<string, { name: string; providerId: string }>();
-  if (phoneSet10.size > 0) {
+  const providersById = new Map<string, { name: string; phone: string }>();
+  if (providerIdSet.size > 0) {
     const { data: providerRows } = await adminSupabase
       .from("providers")
       .select("provider_id, full_name, phone")
-      .or(
-        Array.from(phoneSet)
-          .map((p) => `phone.eq.${p}`)
-          .concat(Array.from(phoneSet10).map((p) => `phone.eq.${p}`))
-          .join(",")
-      );
+      .in("provider_id", Array.from(providerIdSet));
     for (const provider of providerRows ?? []) {
-      const phone10 = normalizePhone((provider as { phone?: unknown }).phone);
-      if (phone10.length !== 10) continue;
-      // First match wins — if multiple providers share a phone, the
-      // earliest-listed one is shown. Realistically each phone maps to
-      // one provider.
-      if (providersByPhone10.has(phone10)) continue;
-      providersByPhone10.set(phone10, {
+      const pid = String((provider as { provider_id?: unknown }).provider_id ?? "").trim();
+      if (!pid) continue;
+      providersById.set(pid, {
         name: String((provider as { full_name?: unknown }).full_name ?? ""),
-        providerId: String((provider as { provider_id?: unknown }).provider_id ?? ""),
+        phone: String((provider as { phone?: unknown }).phone ?? ""),
       });
     }
   }
 
   const categoryApplications = rawRows.map((row: Record<string, unknown>) => {
-    const idValue = row.id ?? row.request_id ?? row.created_at ?? "";
-    const phoneRaw = String(row.user_phone ?? row.phone ?? "");
-    const phone10 = normalizePhone(phoneRaw);
-    const enrichment = providersByPhone10.get(phone10);
+    const providerId = String(row.provider_id ?? "").trim();
+    const enrichment = providersById.get(providerId);
+    // `id` (uuid PK) is the identifier the frontend sends back to
+    // approve/reject; the table has no `request_id` column.
+    const idValue = row.id ?? row.created_at ?? "";
     return {
       RequestID: String(idValue ?? ""),
       ProviderName: enrichment?.name ?? "",
-      ProviderID: enrichment?.providerId ?? "",
-      Phone: phoneRaw,
+      ProviderID: providerId,
+      Phone: enrichment?.phone ?? "",
       RequestedCategory: String(row.requested_category ?? ""),
       Area: row.area != null ? String(row.area) : undefined,
       Status: String(row.status ?? "pending"),

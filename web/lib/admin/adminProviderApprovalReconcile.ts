@@ -91,9 +91,15 @@ export async function reconcileProviderApprovalStatus(
     const [catReqRes, aliasRes, areaRes] = await Promise.all([
       adminSupabase
         .from("pending_category_requests")
-        .select("request_id", { count: "exact", head: true })
+        // `id` not `request_id` (absent column — selecting it errored and
+        // aborted the whole reconcile). `user_phone IS NULL` restricts the
+        // count to the provider's OWN category requests; a user-originated
+        // row with a backfilled provider_id must not hold the provider in
+        // "pending".
+        .select("id", { count: "exact", head: true })
         .eq("provider_id", pid)
-        .eq("status", "pending"),
+        .eq("status", "pending")
+        .is("user_phone", null),
       adminSupabase
         .from("category_aliases")
         .select("alias", { count: "exact", head: true })
