@@ -155,7 +155,11 @@ export async function POST(request: Request) {
                 severity: "warning",
                 source: "pending_category_requests",
                 related_id: relatedId,
-                action_url: "/admin/dashboard?tab=category",
+                // User-originated unlisted-work requests live in the Kaam tab
+                // (tasks.status='pending_category_review'), not Categories —
+                // the Categories queue is provider-originated only after the
+                // queue separation. Deep-link the admin to Kaam accordingly.
+                action_url: "/admin/dashboard?tab=kaam",
               });
             if (notifErr) {
               // Unique-constraint hits land in code 23505 — those mean
