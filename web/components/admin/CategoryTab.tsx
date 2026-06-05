@@ -1533,8 +1533,10 @@ export default function CategoryTab({
                             const approveKey = `approveAlias::${aliasKey}`;
                             const rejectKey = `rejectAlias::${aliasKey}`;
                             return (
-                              <tr
+                              <Fragment
                                 key={`${row.alias}-${row.canonicalCategory}`}
+                              >
+                              <tr
                                 className="border-b border-slate-100"
                                 data-testid={`kk-admin-pending-alias-row-${aliasKey}`}
                               >
@@ -1550,12 +1552,26 @@ export default function CategoryTab({
                                   {row.canonicalCategory || "—"}
                                 </td>
                                 <td className="px-3 py-2 text-slate-700">
-                                  <div className="font-medium">
-                                    {row.submittedByName || "—"}
-                                  </div>
-                                  <div className="text-xs text-slate-500">
-                                    {row.submittedByPhone || "—"}
-                                  </div>
+                                  {row.submittedByProviderId ? (
+                                    <>
+                                      <div className="font-medium">
+                                        {row.submittedByName ||
+                                          "Unknown provider"}
+                                      </div>
+                                      {row.submittedByPhone ? (
+                                        <div className="text-xs text-slate-500">
+                                          {row.submittedByPhone}
+                                        </div>
+                                      ) : null}
+                                      <div className="text-[10px] text-slate-400">
+                                        ID: {row.submittedByProviderId}
+                                      </div>
+                                    </>
+                                  ) : (
+                                    <span className="text-xs italic text-slate-500">
+                                      Admin/legacy entry — no provider linked
+                                    </span>
+                                  )}
                                 </td>
                                 <td className="px-3 py-2 text-xs text-slate-600">
                                   {row.createdAt
@@ -1593,6 +1609,23 @@ export default function CategoryTab({
                                   </div>
                                 </td>
                               </tr>
+                              <tr
+                                className="border-b border-slate-100"
+                                data-testid={`kk-admin-pending-alias-helper-${aliasKey}`}
+                              >
+                                <td
+                                  colSpan={5}
+                                  className="px-3 pb-2 pt-0 text-[11px] text-slate-500"
+                                >
+                                  Approving this will add it as a work
+                                  tag/alias under{" "}
+                                  <span className="font-semibold text-slate-700">
+                                    {row.canonicalCategory || "this category"}
+                                  </span>
+                                  . It will not create a new category.
+                                </td>
+                              </tr>
+                              </Fragment>
                             );
                           })}
                         </tbody>
