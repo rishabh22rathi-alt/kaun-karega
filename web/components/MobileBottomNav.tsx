@@ -299,17 +299,18 @@ export default function MobileBottomNav() {
     // Guest
     // Provider acquisition is the priority pre-login; Post and Alerts
     // had no value before login (both were just /login redirects), so
-    // they're replaced by a single "Provider" entry. The href routes
-    // THROUGH login (not directly to /provider/register) so the OTP
-    // funnel returns the guest to registration — the register page's
-    // own guard does not preserve a return path on its /login redirect.
+    // they're replaced by a single "Provider" entry. It points at the
+    // PUBLIC intro page /provider/start (Friction Phase 2, Option C),
+    // which explains the value then funnels into the still-gated
+    // /provider/register via /login?next=/provider/register. The full
+    // registration form and its login+OTP gate are unchanged.
     if (!session?.phone) {
       return [
         homeTab,
         { label: "Login", href: "/login", icon: LogIn },
         {
           label: "Provider",
-          href: "/login?next=/provider/register",
+          href: "/provider/start",
           icon: Briefcase,
         },
         menuTab,
