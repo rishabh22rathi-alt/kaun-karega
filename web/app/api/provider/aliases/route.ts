@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { adminSupabase } from "@/lib/supabase/admin";
 import { getAuthSession } from "@/lib/auth";
+import { notifyAdmins } from "@/lib/notifications/notifyAdmins";
 
 export const runtime = "nodejs";
 
@@ -218,11 +219,28 @@ export async function POST(request: Request) {
   const { data: inserted, error: insertErr } = await adminSupabase
     .from("category_aliases")
     .insert(insertPayload)
-    .select("alias, canonical_category, alias_type, active")
+    .select("id, alias, canonical_category, alias_type, active")
     .single();
   if (insertErr) {
     console.error("[provider/aliases] insert failed", insertErr.message);
     return NextResponse.json({ ok: false, error: "DB_ERROR" }, { status: 500 });
+  }
+
+  // Soft-fail admin alert: a provider-submitted work term needs admin
+  // approval, so notify the admin notification centre (+ admin push if
+  // enabled). The alias row id is the dedupe key. This must never block or
+  // fail the provider response — notifyAdmins is internally soft-fail and we
+  // also guard here. Distinct from the user-originated new_category_request
+  // (Kaam tab); this routes to Categories → Pending Admin Approval.
+  try {
+    await notifyAdmins("provider_work_term_submitted", {
+      alias_id: String((inserted as { id?: unknown } | null)?.id ?? "").trim(),
+      provider_id: providerId,
+      alias: aliasRaw,
+      canonical_category: canonicalCategory,
+    });
+  } catch {
+    // Belt-and-suspenders — notifyAdmins already swallows its own errors.
   }
 
   return NextResponse.json({

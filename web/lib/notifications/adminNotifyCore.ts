@@ -26,7 +26,8 @@ export type AdminEventType =
   | "invoice_issue_failed"
   | "new_provider_registered"
   | "task_zero_match"
-  | "issue_report_submitted";
+  | "issue_report_submitted"
+  | "provider_work_term_submitted";
 
 /** The exact shape persisted to admin_notifications (no metadata column). */
 export type AdminNotificationInput = {
@@ -223,6 +224,24 @@ export function buildAdminNotification(
       };
     }
 
+    case "provider_work_term_submitted": {
+      // Provider-submitted custom work term / alias awaiting admin approval.
+      // Distinct from the user-originated `new_category_request` (Kaam tab):
+      // these belong in Categories → Pending Admin Approval. relatedId is the
+      // category_aliases row id so retries/resubmits dedupe cleanly.
+      const alias = str(payload.alias);
+      const canonical = str(payload.canonical_category);
+      return {
+        type: eventType,
+        title: "New work term to review",
+        message: `Provider submitted "${alias}" under "${canonical}" for approval.`,
+        severity: "info",
+        source: "category_aliases",
+        relatedId: str(payload.alias_id) || null,
+        actionUrl: "/admin/dashboard?tab=category",
+      };
+    }
+
     default:
       return null;
   }
@@ -254,6 +273,10 @@ const ADMIN_PUSH_EVENTS: Record<string, { title: string; body: string }> = {
   invoice_issue_failed: {
     title: "Invoice issuance failed",
     body: "A paid order has no invoice yet.",
+  },
+  provider_work_term_submitted: {
+    title: "New work term to review",
+    body: "A provider submitted a custom work term for approval.",
   },
 };
 

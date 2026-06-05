@@ -86,6 +86,23 @@ test.describe("Phase A — buildAdminNotification", () => {
     expect(n!.actionUrl).toBe("/admin/dashboard?tab=reports");
   });
 
+  test("provider_work_term_submitted: info / category_aliases / alias id dedupe / tab=category", () => {
+    const n = buildAdminNotification("provider_work_term_submitted", {
+      alias_id: "alias-123",
+      provider_id: "PR-42",
+      alias: "khati",
+      canonical_category: "Carpenter",
+    });
+    expect(n).not.toBeNull();
+    expect(n!.type).toBe("provider_work_term_submitted");
+    expect(n!.severity).toBe("info");
+    expect(n!.source).toBe("category_aliases");
+    expect(n!.relatedId).toBe("alias-123");
+    expect(n!.actionUrl).toBe("/admin/dashboard?tab=category");
+    expect(n!.message).toContain("khati");
+    expect(n!.message).toContain("Carpenter");
+  });
+
   test("payment_amount_mismatch (mismatch): critical, related_id = order, amounts in message", () => {
     const n = buildAdminNotification("payment_amount_mismatch", {
       payment_order_id: "order_77",
