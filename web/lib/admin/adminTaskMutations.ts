@@ -34,9 +34,31 @@ export type TaskMutationResult =
 // /api/admin/task-monitor route — this file does NOT close tasks at 2h, by
 // design. Auto-closure only fires after AUTO_CLOSE_AFTER_DAYS with no
 // progress at all.
-const AUTO_CLOSE_AFTER_DAYS = 3;
+const AUTO_CLOSE_AFTER_DAYS = 7;
 const AUTO_CLOSE_REASON = "expired_no_progress";
 const AUTO_CLOSE_CANDIDATE_LIMIT = 1000;
+
+// Statuses that must never be swept by the stale-close sweep:
+//   - terminal: closed / completed / cancelled / expired
+//   - awaiting a DIFFERENT workflow: pending_category_review (user requests
+//     for an unlisted category awaiting ADMIN approval — they also surface in
+//     the Kaam tab; closing them would silently discard demand).
+//   - already has a provider response by STATUS: provider_responded /
+//     responded / assigned. The match-table check below also guards these,
+//     but a task can carry the response status while its provider_task_matches
+//     row is inconsistent (e.g. never written as "responded"), so we exclude
+//     by status too — honouring "never close provider_responded".
+const AUTO_CLOSE_EXCLUDED_STATUSES = new Set([
+  "closed",
+  "completed",
+  "cancelled",
+  "canceled",
+  "expired",
+  "pending_category_review",
+  "provider_responded",
+  "responded",
+  "assigned",
+]);
 
 // ---------------------------------------------------------------------------
 // Assign provider to a task
@@ -163,69 +185,120 @@ export async function closeTask(
 // Auto-close expired tasks (system / time-lapse)
 // ---------------------------------------------------------------------------
 
+// One stale candidate surfaced for the admin preview. Display-only fields
+// so the admin can sanity-check what the sweep would close.
+export type StaleTaskCandidate = {
+  taskId: string;
+  displayId: string | null;
+  category: string | null;
+  createdAt: string | null;
+};
+
 export type AutoCloseResult =
-  | { ok: true; closedCount: number; closedTaskIds: string[] }
-  | { ok: false; closedCount: number; closedTaskIds: string[]; error: string };
+  | {
+      ok: true;
+      dryRun: boolean;
+      candidateCount: number;
+      candidates: StaleTaskCandidate[];
+      closedCount: number;
+      closedTaskIds: string[];
+    }
+  | {
+      ok: false;
+      dryRun: boolean;
+      candidateCount: number;
+      candidates: StaleTaskCandidate[];
+      closedCount: number;
+      closedTaskIds: string[];
+      error: string;
+    };
 
 /**
- * Find tasks that have been open for more than AUTO_CLOSE_AFTER_DAYS days
- * with no meaningful progress, and close them via closeTask(taskId,
- * "system", "expired_no_progress"). Idempotent — already-closed tasks are
- * filtered out before the close calls run.
+ * Find tasks open for more than AUTO_CLOSE_AFTER_DAYS (7) days with no
+ * meaningful activity, and (unless dryRun) close them via
+ * closeTask(taskId, "system", "expired_no_progress"). Idempotent and bounded
+ * at AUTO_CLOSE_CANDIDATE_LIMIT per call.
  *
- * "No meaningful progress" means ALL of the following:
- *   - tasks.status NOT IN ("closed", "completed")
+ * Eligible to close = ALL of:
+ *   - created_at older than 7 days
+ *   - status NOT IN closed/completed/cancelled/canceled/expired AND NOT
+ *     pending_category_review (those await admin category approval)
  *   - no provider_task_matches row with match_status IN
- *     ("responded", "accepted", "assigned")
- *   - no chat_messages row with sender_type IN ("user", "provider")
+ *     ("responded", "accepted", "assigned")  — no active provider response
+ *   - no chat_messages (sender user/provider) in the LAST 7 days  — no
+ *     recent conversation. A task whose only chat is older than 7 days is
+ *     therefore eligible (the conversation has gone stale).
  *
- * The 2-hour "needs admin attention" RED light in /api/admin/task-monitor
- * is intentionally separate and never triggers closure here.
+ * dryRun=true returns the eligible candidates WITHOUT closing anything, so
+ * the admin can preview the sweep. The 2-hour "needs admin attention" RED
+ * light in /api/admin/task-monitor is separate and never closes tasks here.
  *
- * Bounded at AUTO_CLOSE_CANDIDATE_LIMIT per call. If there are more than
- * that many candidates, the admin can re-trigger this endpoint until the
- * backlog clears.
- *
- * Schema prerequisite: web/docs/migrations/add-task-closure-tracking.sql.
+ * Schema prerequisite: tasks.closed_at / closed_by / close_reason
+ * (supabase/migrations/20260610140000_task_closure_tracking.sql).
  */
-export async function autoCloseExpiredTasks(): Promise<AutoCloseResult> {
+export async function autoCloseExpiredTasks(
+  options: { dryRun?: boolean } = {}
+): Promise<AutoCloseResult> {
+  const dryRun = options.dryRun === true;
+  const fail = (error: string): AutoCloseResult => ({
+    ok: false,
+    dryRun,
+    candidateCount: 0,
+    candidates: [],
+    closedCount: 0,
+    closedTaskIds: [],
+    error,
+  });
+
   try {
+    // Single 7-day boundary: tasks created before it (age), AND chat
+    // messages on/after it count as "recent activity".
     const cutoffMs = Date.now() - AUTO_CLOSE_AFTER_DAYS * 24 * 60 * 60 * 1000;
     const cutoffIso = new Date(cutoffMs).toISOString();
 
-    // Fetch open + old candidates. We post-filter status in JS so NULL
-    // values and any future status casing are handled defensively without
-    // depending on PostgREST not-in syntax.
+    // Fetch old candidates. Status is post-filtered in JS so NULL values and
+    // any future casing are handled defensively.
     const { data: taskRows, error: tasksError } = await adminSupabase
       .from("tasks")
-      .select("task_id, status")
+      .select("task_id, status, display_id, category, created_at")
       .lt("created_at", cutoffIso)
       .order("created_at", { ascending: true })
       .limit(AUTO_CLOSE_CANDIDATE_LIMIT);
 
-    if (tasksError) {
+    if (tasksError) return fail(tasksError.message);
+
+    // Eligible-by-status candidates, keyed for detail lookup.
+    const candidateDetail = new Map<string, StaleTaskCandidate>();
+    for (const row of taskRows ?? []) {
+      const s = String(row.status ?? "").trim().toLowerCase();
+      if (AUTO_CLOSE_EXCLUDED_STATUSES.has(s)) continue;
+      const id = String(row.task_id ?? "").trim();
+      if (!id) continue;
+      candidateDetail.set(id, {
+        taskId: id,
+        displayId:
+          row.display_id != null ? String(row.display_id) : null,
+        category: row.category != null ? String(row.category) : null,
+        createdAt: row.created_at != null ? String(row.created_at) : null,
+      });
+    }
+    const candidateIds = Array.from(candidateDetail.keys());
+
+    if (candidateIds.length === 0) {
       return {
-        ok: false,
+        ok: true,
+        dryRun,
+        candidateCount: 0,
+        candidates: [],
         closedCount: 0,
         closedTaskIds: [],
-        error: tasksError.message,
       };
     }
 
-    const candidateIds = (taskRows ?? [])
-      .filter((row) => {
-        const s = String(row.status ?? "").trim().toLowerCase();
-        return s !== "closed" && s !== "completed";
-      })
-      .map((row) => String(row.task_id ?? "").trim())
-      .filter((id) => id.length > 0);
-
-    if (candidateIds.length === 0) {
-      return { ok: true, closedCount: 0, closedTaskIds: [] };
-    }
-
-    // Pull the two progress signals in parallel.
-    const [progressedMatchesRes, chatMessagesRes] = await Promise.all([
+    // Two progress signals in parallel:
+    //   - any active provider response, and
+    //   - any chat message in the last 7 days (sender user/provider).
+    const [progressedMatchesRes, recentChatRes] = await Promise.all([
       adminSupabase
         .from("provider_task_matches")
         .select("task_id")
@@ -235,65 +308,67 @@ export async function autoCloseExpiredTasks(): Promise<AutoCloseResult> {
         .from("chat_messages")
         .select("task_id")
         .in("task_id", candidateIds)
-        .in("sender_type", ["user", "provider"]),
+        .in("sender_type", ["user", "provider"])
+        .gte("created_at", cutoffIso),
     ]);
 
-    if (progressedMatchesRes.error) {
-      return {
-        ok: false,
-        closedCount: 0,
-        closedTaskIds: [],
-        error: progressedMatchesRes.error.message,
-      };
-    }
-    if (chatMessagesRes.error) {
-      return {
-        ok: false,
-        closedCount: 0,
-        closedTaskIds: [],
-        error: chatMessagesRes.error.message,
-      };
-    }
+    if (progressedMatchesRes.error) return fail(progressedMatchesRes.error.message);
+    if (recentChatRes.error) return fail(recentChatRes.error.message);
 
     const progressedTaskIds = new Set<string>();
     for (const row of progressedMatchesRes.data ?? []) {
       const id = String(row.task_id ?? "").trim();
       if (id) progressedTaskIds.add(id);
     }
-    for (const row of chatMessagesRes.data ?? []) {
+    for (const row of recentChatRes.data ?? []) {
       const id = String(row.task_id ?? "").trim();
       if (id) progressedTaskIds.add(id);
     }
 
-    const toCloseIds = candidateIds.filter((id) => !progressedTaskIds.has(id));
-    if (toCloseIds.length === 0) {
-      return { ok: true, closedCount: 0, closedTaskIds: [] };
+    const eligibleIds = candidateIds.filter((id) => !progressedTaskIds.has(id));
+    const candidates = eligibleIds
+      .map((id) => candidateDetail.get(id))
+      .filter((c): c is StaleTaskCandidate => Boolean(c));
+
+    // Preview only — never mutate.
+    if (dryRun) {
+      return {
+        ok: true,
+        dryRun: true,
+        candidateCount: candidates.length,
+        candidates,
+        closedCount: 0,
+        closedTaskIds: [],
+      };
     }
 
     const closedTaskIds: string[] = [];
-    for (const taskId of toCloseIds) {
+    for (const taskId of eligibleIds) {
       const result = await closeTask(taskId, "system", AUTO_CLOSE_REASON);
       if (result.ok) {
         closedTaskIds.push(taskId);
       } else {
-        console.error(
-          "[admin/auto-close-tasks] closeTask failed",
-          { taskId, error: result.error }
-        );
+        console.error("[admin/auto-close-tasks] closeTask failed", {
+          taskId,
+          error: result.error,
+        });
       }
+    }
+    if (closedTaskIds.length > 0) {
+      console.log(
+        `[admin/auto-close-tasks] closed ${closedTaskIds.length} stale task(s): ${closedTaskIds.join(", ")}`
+      );
     }
 
     return {
       ok: true,
+      dryRun: false,
+      candidateCount: candidates.length,
+      candidates,
       closedCount: closedTaskIds.length,
       closedTaskIds,
     };
   } catch (err) {
-    return {
-      ok: false,
-      closedCount: 0,
-      closedTaskIds: [],
-      error: err instanceof Error ? err.message : "Unknown error",
-    };
+    return fail(err instanceof Error ? err.message : "Unknown error");
   }
 }

@@ -7,18 +7,17 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 // Admin-triggered sweep that closes tasks with no progress after
-// AUTO_CLOSE_AFTER_DAYS (currently 3) using closeTask(taskId, "system",
-// "expired_no_progress"). Not run automatically on page load — must be
-// invoked explicitly by an admin or a future cron job.
+// AUTO_CLOSE_AFTER_DAYS (7) using closeTask(taskId, "system",
+// "expired_no_progress"). Not run automatically — invoked explicitly by an
+// admin (a future cron is out of scope for this phase).
+//
+//   POST /api/admin/auto-close-tasks?dryRun=1  → preview eligible candidates,
+//                                                closes NOTHING
+//   POST /api/admin/auto-close-tasks           → close eligible stale tasks
 //
 // Response:
-//   { ok: true, closedCount, closedTaskIds }   on success
-//   { ok: false, error, closedCount, closedTaskIds }   on failure
-//     (closedTaskIds may be partial if the sweep was halted mid-batch)
-//
-// Usage (curl as a logged-in admin):
-//   curl -X POST -H "Cookie: kk_auth_session=…" \
-//     http://localhost:3000/api/admin/auto-close-tasks
+//   { ok, dryRun, candidateCount, candidates, closedCount, closedTaskIds }
+//   on failure: same shape + { error } (lists may be partial mid-batch)
 
 export async function POST(request: Request) {
   const auth = await requireAdminSession(request);
@@ -29,12 +28,18 @@ export async function POST(request: Request) {
     );
   }
 
-  const result = await autoCloseExpiredTasks();
+  const dryRun =
+    new URL(request.url).searchParams.get("dryRun") === "1";
+
+  const result = await autoCloseExpiredTasks({ dryRun });
   if (!result.ok) {
     return NextResponse.json(
       {
         ok: false,
         error: result.error,
+        dryRun: result.dryRun,
+        candidateCount: result.candidateCount,
+        candidates: result.candidates,
         closedCount: result.closedCount,
         closedTaskIds: result.closedTaskIds,
       },
@@ -44,6 +49,9 @@ export async function POST(request: Request) {
 
   return NextResponse.json({
     ok: true,
+    dryRun: result.dryRun,
+    candidateCount: result.candidateCount,
+    candidates: result.candidates,
     closedCount: result.closedCount,
     closedTaskIds: result.closedTaskIds,
   });

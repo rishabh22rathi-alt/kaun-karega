@@ -517,6 +517,159 @@ function MonthlyReportPanel(): ReactElement {
   );
 }
 
+// ───────────────────────────────────────────────────────────────────
+// Stale request maintenance — admin preview + close for the 7-day
+// stale-Kaam sweep. Two steps so the admin always previews before
+// closing: "Preview" calls POST /api/admin/auto-close-tasks?dryRun=1
+// (closes nothing) and "Close" calls the same endpoint without dryRun.
+// The Close button is gated on a non-empty preview so a bulk close can
+// never fire without the admin first seeing exactly what it affects.
+// ───────────────────────────────────────────────────────────────────
+
+type StaleCandidate = {
+  taskId: string;
+  displayId: string | null;
+  category: string | null;
+  createdAt: string | null;
+};
+
+function StaleAutoClosePanel(): ReactElement {
+  const [busy, setBusy] = useState<"preview" | "close" | null>(null);
+  const [preview, setPreview] = useState<{
+    count: number;
+    candidates: StaleCandidate[];
+  } | null>(null);
+  const [closed, setClosed] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function run(dryRun: boolean): Promise<void> {
+    setBusy(dryRun ? "preview" : "close");
+    setError(null);
+    if (dryRun) setClosed(null);
+    try {
+      const url = dryRun
+        ? "/api/admin/auto-close-tasks?dryRun=1"
+        : "/api/admin/auto-close-tasks";
+      const res = await fetch(url, {
+        method: "POST",
+        credentials: "same-origin",
+        cache: "no-store",
+      });
+      const json = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        candidateCount?: number;
+        candidates?: StaleCandidate[];
+        closedCount?: number;
+      };
+      if (!res.ok || !json?.ok) {
+        setError(json?.error || `Failed (${res.status})`);
+        return;
+      }
+      if (dryRun) {
+        setPreview({
+          count: json.candidateCount ?? 0,
+          candidates: Array.isArray(json.candidates) ? json.candidates : [],
+        });
+      } else {
+        setClosed(json.closedCount ?? 0);
+        // Candidates are now closed — clear the stale preview so the
+        // Close button disables until the admin previews again.
+        setPreview(null);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Network error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <section
+      data-testid="kaam-stale-autoclose"
+      className="mt-5 rounded-xl border border-slate-200 bg-white p-4"
+    >
+      <h3 className="text-sm font-semibold text-slate-900">
+        Stale request maintenance
+      </h3>
+      <p className="mt-0.5 text-xs text-slate-500">
+        Close customer requests older than 7 days that have no provider
+        response and no chat in the last 7 days. Requests awaiting category
+        approval are never closed. Always preview before closing.
+      </p>
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={() => void run(true)}
+          disabled={busy !== null}
+          data-testid="kaam-stale-preview"
+          className="inline-flex items-center rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {busy === "preview" ? "Previewing…" : "Preview stale requests"}
+        </button>
+        <button
+          type="button"
+          onClick={() => void run(false)}
+          disabled={busy !== null || !preview || preview.count === 0}
+          data-testid="kaam-stale-close"
+          className="inline-flex items-center rounded-lg bg-[#003d20] px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-[#005533] disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {busy === "close"
+            ? "Closing…"
+            : `Close stale requests${preview ? ` (${preview.count})` : ""}`}
+        </button>
+      </div>
+
+      {error && (
+        <p
+          data-testid="kaam-stale-error"
+          className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700"
+        >
+          {error}
+        </p>
+      )}
+
+      {preview && (
+        <div data-testid="kaam-stale-preview-result" className="mt-3 text-xs">
+          {preview.count === 0 ? (
+            <p className="text-slate-600">No stale requests to close.</p>
+          ) : (
+            <>
+              <p className="font-semibold text-slate-800">
+                {preview.count} request{preview.count === 1 ? "" : "s"} would be
+                closed:
+              </p>
+              <ul className="mt-1 max-h-48 space-y-0.5 overflow-y-auto">
+                {preview.candidates.slice(0, 100).map((c) => (
+                  <li key={c.taskId} className="text-slate-600">
+                    <span className="font-mono">{c.displayId ?? c.taskId}</span>
+                    {c.category ? ` · ${c.category}` : ""}
+                  </li>
+                ))}
+              </ul>
+              {preview.candidates.length > 100 && (
+                <p className="mt-1 text-slate-400">
+                  …and {preview.candidates.length - 100} more.
+                </p>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {closed !== null && (
+        <p
+          data-testid="kaam-stale-close-result"
+          className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700"
+        >
+          Closed {closed} stale request{closed === 1 ? "" : "s"}.
+        </p>
+      )}
+    </section>
+  );
+}
+
 // Default number of rows shown in the "Recent Kaam" table before the
 // admin opts into the full list via the show-more toggle. The kaam
 // payload is already ordered created_at DESC, so the first N rows are
@@ -743,6 +896,7 @@ export default function KaamTab({
             analyticsTruncated={analyticsTruncated}
           />
           <MonthlyReportPanel />
+          <StaleAutoClosePanel />
 
           {error && (
             <p className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
