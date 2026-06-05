@@ -95,6 +95,33 @@ function getAdminActor(): { name: string; phone: string } {
   }
 }
 
+// Map raw alias API error codes to admin-friendly text. UI-only — the API
+// codes, validation, and duplicate prevention are unchanged. Unmapped codes
+// fall through to the provided fallback (e.g. "Add failed (409)").
+function friendlyAliasError(
+  code: string | undefined,
+  fallback: string
+): string {
+  switch (code) {
+    case "DUPLICATE_ACTIVE_ALIAS":
+      return "This alias already exists.";
+    case "ALIAS_COLLIDES_WITH_CANONICAL":
+      return "This alias matches an existing category name.";
+    case "CANONICAL_NOT_FOUND":
+      return "That category was not found.";
+    case "INVALID_ALIAS":
+      return "Please enter a valid alias (1–80 characters).";
+    case "INVALID_ALIAS_TYPE":
+      return "Please choose a valid alias type.";
+    case "ALIAS_NOT_FOUND":
+      return "That alias no longer exists.";
+    case "DB_ERROR":
+      return "Could not save right now. Please try again.";
+    default:
+      return code || fallback;
+  }
+}
+
 export default function CategoryTab({
   unread,
   onMarkRead,
@@ -582,7 +609,9 @@ export default function CategoryTab({
       });
       const json = (await res.json()) as { ok?: boolean; error?: string };
       if (!res.ok || !json?.ok) {
-        setActionError(json?.error || `Update failed (${res.status})`);
+        setActionError(
+          friendlyAliasError(json?.error, `Update failed (${res.status})`)
+        );
         return;
       }
       setEditingAliasId(null);
@@ -627,7 +656,9 @@ export default function CategoryTab({
       });
       const json = (await res.json()) as { ok?: boolean; error?: string };
       if (!res.ok || !json?.ok) {
-        setActionError(json?.error || `Add failed (${res.status})`);
+        setActionError(
+          friendlyAliasError(json?.error, `Add failed (${res.status})`)
+        );
         return;
       }
       handleCancelAddAlias();
@@ -655,7 +686,9 @@ export default function CategoryTab({
       });
       const json = (await res.json()) as { ok?: boolean; error?: string };
       if (!res.ok || !json?.ok) {
-        setActionError(json?.error || `Remove failed (${res.status})`);
+        setActionError(
+          friendlyAliasError(json?.error, `Remove failed (${res.status})`)
+        );
         return;
       }
       refreshCategories();
@@ -725,7 +758,9 @@ export default function CategoryTab({
       });
       const json = (await res.json()) as { ok?: boolean; error?: string };
       if (!res.ok || !json?.ok) {
-        setActionError(json?.error || `Approve failed (${res.status})`);
+        setActionError(
+          friendlyAliasError(json?.error, `Approve failed (${res.status})`)
+        );
         return;
       }
       refreshPending();
@@ -753,7 +788,9 @@ export default function CategoryTab({
       });
       const json = (await res.json()) as { ok?: boolean; error?: string };
       if (!res.ok || !json?.ok) {
-        setActionError(json?.error || `Reject failed (${res.status})`);
+        setActionError(
+          friendlyAliasError(json?.error, `Reject failed (${res.status})`)
+        );
         return;
       }
       refreshPending();
