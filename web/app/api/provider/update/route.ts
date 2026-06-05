@@ -443,19 +443,40 @@ export async function POST(request: Request) {
   // side-effect (adminProviderMutations.ts:52-56).
   if (newCustomCategories.length > 0) {
     const nowIso = new Date().toISOString();
-    await Promise.allSettled(
-      newCustomCategories.map((requestedCategory) =>
-        adminSupabase.from("pending_category_requests").insert({
-          request_id: `PCR-${crypto.randomUUID()}`,
-          provider_id: String(providerRow.provider_id),
-          provider_name: name,
-          phone: sessionPhone,
-          requested_category: requestedCategory,
-          status: "pending",
-          created_at: nowIso,
-        })
-      )
+    // Provider-originated pending category requests. Write ONLY columns
+    // that exist on the live table: provider_id (association),
+    // requested_category, status, created_at. The table has no
+    // request_id / provider_name / phone columns — writing them made every
+    // insert fail with PGRST204, silently swallowed by Promise.allSettled,
+    // so provider requests never landed. `user_phone` is intentionally
+    // omitted (NULL) — that is what marks a row as provider-originated.
+    const pcrResults = await Promise.allSettled(
+      newCustomCategories.map(async (requestedCategory) => {
+        const { error } = await adminSupabase
+          .from("pending_category_requests")
+          .insert({
+            provider_id: String(providerRow.provider_id),
+            requested_category: requestedCategory,
+            status: "pending",
+            created_at: nowIso,
+          });
+        if (error) {
+          throw new Error(
+            `insert failed for "${requestedCategory}": ${error.message}`
+          );
+        }
+      })
     );
+    // Surface failures in logs instead of swallowing them. Non-blocking:
+    // the profile update has already succeeded.
+    for (const res of pcrResults) {
+      if (res.status === "rejected") {
+        console.error(
+          "[provider/update] pending_category_requests insert failed",
+          res.reason instanceof Error ? res.reason.message : res.reason
+        );
+      }
+    }
   }
 
   // If the new full_name collides with another provider, re-enter the

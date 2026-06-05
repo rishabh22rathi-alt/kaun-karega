@@ -2179,21 +2179,45 @@ export async function POST(request: NextRequest) {
         )
       );
       if (effectivePendingNewCategories.length > 0) {
-        await Promise.allSettled(
-          effectivePendingNewCategories.map((rawCategory: unknown) => {
+        // Provider-originated pending category requests. Write ONLY columns
+        // that exist on the live table: provider_id (association),
+        // requested_category, status, created_at. The table has no
+        // request_id / provider_name / phone columns — writing them made
+        // every insert fail with PGRST204, and the failure was silently
+        // swallowed by Promise.allSettled, so provider requests never
+        // landed. `user_phone` is intentionally omitted (NULL) — that is
+        // what distinguishes a provider row from a user-originated one.
+        // Provider name/phone are enriched at read time from `provider_id`.
+        const pcrResults = await Promise.allSettled(
+          effectivePendingNewCategories.map(async (rawCategory: unknown) => {
             const requestedCategory = String(rawCategory || "").trim();
-            if (!requestedCategory) return Promise.resolve();
-            return adminSupabase.from("pending_category_requests").insert({
-              request_id: `PCR-${crypto.randomUUID()}`,
-              provider_id: providerId,
-              provider_name: name,
-              phone,
-              requested_category: requestedCategory,
-              status: "pending",
-              created_at: nowIso,
-            });
+            if (!requestedCategory) return;
+            const { error } = await adminSupabase
+              .from("pending_category_requests")
+              .insert({
+                provider_id: providerId,
+                requested_category: requestedCategory,
+                status: "pending",
+                created_at: nowIso,
+              });
+            if (error) {
+              throw new Error(
+                `insert failed for "${requestedCategory}": ${error.message}`
+              );
+            }
           })
         );
+        // Inspect results so insert failures surface in logs instead of
+        // being swallowed. Non-blocking: registration still succeeds even
+        // if a queue insert fails — the admin queue just misses that row.
+        for (const res of pcrResults) {
+          if (res.status === "rejected") {
+            console.error(
+              "[provider_register] pending_category_requests insert failed",
+              res.reason instanceof Error ? res.reason.message : res.reason
+            );
+          }
+        }
       }
 
       const effectiveVerified = isDuplicateName ? "no" : "yes";

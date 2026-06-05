@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { randomUUID } from "node:crypto";
 
 import { requireAdminSession } from "@/lib/adminAuth";
 import { adminSupabase } from "@/lib/supabase/admin";
@@ -117,42 +116,24 @@ async function backfillOrphanPendingRequests(): Promise<void> {
     );
     if (missing.length === 0) return;
 
-    // 4) Fetch provider name + phone for the missing rows so audit
-    //    fields are populated. One query, scoped to the orphan providers.
-    const missingProviderIds = Array.from(
-      new Set(missing.map((m) => m.providerId))
-    );
-    const { data: providerEnrichRows } = await adminSupabase
-      .from("providers")
-      .select("provider_id, full_name, phone")
-      .in("provider_id", missingProviderIds);
-    const enrichByProviderId = new Map<
-      string,
-      { name: string; phone: string }
-    >();
-    for (const row of providerEnrichRows || []) {
-      enrichByProviderId.set(
-        String((row as { provider_id?: unknown }).provider_id || ""),
-        {
-          name: String((row as { full_name?: unknown }).full_name || ""),
-          phone: String((row as { phone?: unknown }).phone || ""),
-        }
-      );
-    }
-
+    // 4) Insert the missing orphan rows. Provider name/phone are no longer
+    //    written here (those columns don't exist on the live table) — the
+    //    read path enriches name/phone from provider_id, so no per-provider
+    //    fetch is needed at backfill time.
     const nowIso = new Date().toISOString();
-    const insertPayload = missing.map((m) => {
-      const enrich = enrichByProviderId.get(m.providerId);
-      return {
-        request_id: `PCR-${randomUUID()}`,
-        provider_id: m.providerId,
-        provider_name: enrich?.name || null,
-        phone: enrich?.phone || null,
-        requested_category: m.category,
-        status: "pending",
-        created_at: nowIso,
-      };
-    });
+    // Write ONLY columns that exist on the live table: provider_id,
+    // requested_category, status, created_at. The table has no
+    // request_id / provider_name / phone columns — including them made the
+    // whole batch insert fail (PGRST204), so orphan provider categories
+    // were never backfilled. provider_name / phone are enriched at read
+    // time from provider_id; user_phone is omitted so these rows read as
+    // provider-originated.
+    const insertPayload = missing.map((m) => ({
+      provider_id: m.providerId,
+      requested_category: m.category,
+      status: "pending",
+      created_at: nowIso,
+    }));
     const { error: insertErr } = await adminSupabase
       .from("pending_category_requests")
       .insert(insertPayload);
