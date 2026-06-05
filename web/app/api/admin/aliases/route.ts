@@ -312,6 +312,12 @@ export async function POST(request: Request) {
       );
     }
 
+    // The admin Categories view (/api/admin/categories) bundles aliases
+    // under each category from the 6-hour "categories.list" snapshot.
+    // Invalidate it so the new alias appears on the next read instead of
+    // staying hidden until the TTL expires. Soft-fails internally.
+    await invalidateSnapshots(["categories.list"]);
+
     return NextResponse.json({
       ok: true,
       action: "created",
@@ -409,6 +415,10 @@ export async function POST(request: Request) {
       "alias.approve"
     );
 
+    // Promoting active=false→true changes the active-alias set bundled in
+    // the categories.list snapshot — invalidate so it shows immediately.
+    await invalidateSnapshots(["categories.list"]);
+
     return NextResponse.json({
       ok: true,
       action: "approved",
@@ -450,6 +460,11 @@ export async function POST(request: Request) {
     submittedBy || null,
     "alias.reject"
   );
+
+  // Reject deletes the inactive row; it would only have affected the
+  // categories.list snapshot if it had been active, but invalidate anyway
+  // to keep the admin view consistent and cheap. Soft-fails internally.
+  await invalidateSnapshots(["categories.list"]);
 
   return NextResponse.json({
     ok: true,

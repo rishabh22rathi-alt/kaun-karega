@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { requireAdminSession } from "@/lib/adminAuth";
 import { adminSupabase } from "@/lib/supabase/admin";
+import { invalidateSnapshots } from "@/lib/admin/snapshotCache";
 
 // Per-row admin mutations on `category_aliases`.
 //   PATCH  /api/admin/aliases/[id]   body: { newAlias: string }
@@ -130,6 +131,11 @@ export async function PATCH(request: Request, context: RouteContext) {
     );
   }
 
+  // Renaming an alias changes the active-alias set bundled in the
+  // categories.list snapshot — invalidate so the admin view updates
+  // immediately instead of after the 6-hour TTL. Soft-fails internally.
+  await invalidateSnapshots(["categories.list"]);
+
   return NextResponse.json({ ok: true, alias: newAlias });
 }
 
@@ -158,6 +164,11 @@ export async function DELETE(request: Request, context: RouteContext) {
       { status: 500 }
     );
   }
+
+  // Deleting an alias changes the active-alias set bundled in the
+  // categories.list snapshot — invalidate so the admin view updates
+  // immediately instead of after the 6-hour TTL. Soft-fails internally.
+  await invalidateSnapshots(["categories.list"]);
 
   return NextResponse.json({ ok: true });
 }
