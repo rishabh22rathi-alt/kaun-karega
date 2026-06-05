@@ -191,9 +191,10 @@ const LIFECYCLE_ROWS: KaamRow[] = [
     created_at: "2026-05-11T08:00:00.000Z",
     whenRequired: "Schedule later",
   },
-  // Two extra rows so the table has 7 total entries — exercises the
-  // show-5/show-all toggle ("Show all Kaam (2 more)") added to keep
-  // the dashboard compact on dense data.
+  // Five extra rows so the table has 10 LIFECYCLE_ROWS + 1 new-category
+  // row = 11 total entries — exercises the show-10/show-all toggle
+  // ("Show all Kaam (1 more)") which keeps the dashboard compact on
+  // dense data. The Recent Kaam list defaults to the latest 10.
   {
     taskId: "TK-EXTRA-1",
     kaamNo: "207",
@@ -223,6 +224,51 @@ const LIFECYCLE_ROWS: KaamRow[] = [
     statusAttentionLabel: null,
     created_at: "2026-05-09T06:00:00.000Z",
     whenRequired: "Tomorrow",
+  },
+  {
+    taskId: "TK-EXTRA-3",
+    kaamNo: "209",
+    phone: "9999999908",
+    category: "Electrician",
+    area: "Ratanada",
+    rawStatus: "submitted",
+    lifecycleStatus: "Task Created",
+    lifecycleStep: 1,
+    lifecycleTotalSteps: 5,
+    isNewServiceCategory: false,
+    statusAttentionLabel: null,
+    created_at: "2026-05-08T05:00:00.000Z",
+    whenRequired: "Today",
+  },
+  {
+    taskId: "TK-EXTRA-4",
+    kaamNo: "210",
+    phone: "9999999909",
+    category: "Carpenter",
+    area: "Pal Road",
+    rawStatus: "matched",
+    lifecycleStatus: "Matched",
+    lifecycleStep: 2,
+    lifecycleTotalSteps: 5,
+    isNewServiceCategory: false,
+    statusAttentionLabel: null,
+    created_at: "2026-05-07T04:00:00.000Z",
+    whenRequired: "Tomorrow",
+  },
+  {
+    taskId: "TK-EXTRA-5",
+    kaamNo: "211",
+    phone: "9999999910",
+    category: "Plumber",
+    area: "Shastri Nagar",
+    rawStatus: "submitted",
+    lifecycleStatus: "Task Created",
+    lifecycleStep: 1,
+    lifecycleTotalSteps: 5,
+    isNewServiceCategory: false,
+    statusAttentionLabel: null,
+    created_at: "2026-05-06T03:00:00.000Z",
+    whenRequired: "Today",
   },
 ];
 
@@ -429,14 +475,15 @@ test.describe("Admin: Kaam tab (lifecycle + reprocess + analytics)", () => {
     ).toHaveCount(0);
 
     // Show-more toggle: with 1 NEW_CATEGORY_ROW_BASE + LIFECYCLE_ROWS
-    // = 8 rows total, the table collapses to 5 and offers
-    // "Show all Kaam (3 more)". Click to expand so the lifecycle
+    // = 11 rows total, the table collapses to the latest 10 and offers
+    // "Show all Kaam (1 more)". Click to expand so the lifecycle
     // assertions below cover every label.
+    const RECENT_KAAM_ROWS = 10;
     const totalRowsCount = 1 + LIFECYCLE_ROWS.length;
     const kaamShowToggle = page.getByTestId("kaam-show-toggle");
-    await expect(tableRows).toHaveCount(5);
+    await expect(tableRows).toHaveCount(RECENT_KAAM_ROWS);
     await expect(kaamShowToggle).toHaveText(
-      `Show all Kaam (${totalRowsCount - 5} more)`
+      `Show all Kaam (${totalRowsCount - RECENT_KAAM_ROWS} more)`
     );
     await kaamShowToggle.click();
     await expect(tableRows).toHaveCount(totalRowsCount);

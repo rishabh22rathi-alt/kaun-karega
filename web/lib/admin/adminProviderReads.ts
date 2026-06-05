@@ -99,6 +99,62 @@ export async function getAllProvidersFromSupabase(): Promise<ProviderRow[]> {
 }
 
 // ---------------------------------------------------------------------------
+// Get recently registered providers (latest N by created_at)
+// ---------------------------------------------------------------------------
+
+// Same assembled shape as getAllProvidersFromSupabase, plus the
+// registration timestamp. createdAt may be null on legacy GAS-migrated
+// rows that pre-date the column being populated — callers render "—".
+export type RecentProviderRow = ProviderRow & { createdAt: string | null };
+
+export async function getRecentProvidersFromSupabase(
+  limit = 10
+): Promise<RecentProviderRow[]> {
+  // Newest registrations first. nullsFirst:false keeps rows with a
+  // missing created_at at the bottom rather than masking real recent
+  // providers. The providers table carries created_at (already selected
+  // + ordered by debug-stats / adminDashboardStats).
+  const { data: providerRows, error: providerError } = await adminSupabase
+    .from("providers")
+    .select("provider_id, full_name, phone, status, created_at")
+    .order("created_at", { ascending: false, nullsFirst: false })
+    .limit(limit);
+
+  if (providerError) throw new Error(providerError.message);
+  if (!providerRows || providerRows.length === 0) return [];
+
+  // Hydrate categories + areas for just these N providers (cheap `in`
+  // filter), then reuse assembleProviders so the shape and status
+  // normalization stay identical to the full-list read.
+  const ids = providerRows
+    .map((p) => String(p.provider_id ?? ""))
+    .filter(Boolean);
+  const [{ data: serviceRows }, { data: areaRows }] = await Promise.all([
+    adminSupabase
+      .from("provider_services")
+      .select("provider_id, category")
+      .in("provider_id", ids),
+    adminSupabase
+      .from("provider_areas")
+      .select("provider_id, area")
+      .in("provider_id", ids),
+  ]);
+
+  // assembleProviders preserves providerRows order, so zip by index to
+  // re-attach createdAt without a second lookup.
+  const assembled = assembleProviders(
+    providerRows,
+    serviceRows ?? null,
+    areaRows ?? null
+  );
+  return assembled.map((row, i) => ({
+    ...row,
+    createdAt:
+      (providerRows[i] as { created_at?: string | null }).created_at ?? null,
+  }));
+}
+
+// ---------------------------------------------------------------------------
 // Get single provider by ID
 // ---------------------------------------------------------------------------
 

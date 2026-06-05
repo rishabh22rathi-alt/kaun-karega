@@ -119,6 +119,28 @@ test.describe("Admin: Users tab auto-updates and search", () => {
       } as Record<string, unknown>,
     });
 
+    // Page-global admin endpoints the dashboard fires on mount / tab
+    // open. Unmocked they hit the real server and either 401 or get
+    // aborted by the test's page reloads (net::ERR_ABORTED), tripping
+    // diag.assertClean(). Stub each with the empty/no-op shape its route
+    // returns so the spec stays hermetic:
+    //   - /api/admin/unread-summary : per-tab unread dots (useAdminUnread)
+    //   - /api/announcements/active : PlatformAnnouncementBanner on every
+    //                                 admin page (same as admin-push-controls)
+    //   - /api/admin/mark-tab-read  : POST fired when a tab is opened
+    await mockJson(page, "**/api/admin/unread-summary", {
+      status: 200,
+      body: { ok: true, unread: {} } as Record<string, unknown>,
+    });
+    await mockJson(page, "**/api/announcements/active", {
+      status: 200,
+      body: { ok: true, announcement: null } as Record<string, unknown>,
+    });
+    await mockJson(page, "**/api/admin/mark-tab-read", {
+      status: 200,
+      body: { ok: true } as Record<string, unknown>,
+    });
+
     // Stateful /api/admin/users mock — flips the snapshot returned to
     // the next page-load. The UsersTab refetches on accordion open after
     // every reload, so this is enough to verify auto-update behaviour
@@ -154,7 +176,11 @@ test.describe("Admin: Users tab auto-updates and search", () => {
     );
     const usersBody = page.locator("#users-tab-body");
     const summaryLine = usersBody.getByText(/^Registered Users:/);
-    const tableRows = usersBody.locator("tbody tr");
+    // Scope row assertions to the MAIN searchable users table. A
+    // separate "Recently Registered Users" table also lives inside
+    // #users-tab-body, so an unscoped `tbody tr` would double-count.
+    const usersTable = usersBody.getByTestId("kk-admin-users-table");
+    const tableRows = usersTable.locator("tbody tr");
 
     const openUsersAccordion = async (label: string): Promise<void> => {
       // The accordion may auto-render closed after each reload. Click
@@ -188,7 +214,7 @@ test.describe("Admin: Users tab auto-updates and search", () => {
     await expect(tableRows).toHaveCount(BASELINE.users.length);
     for (const u of BASELINE.users) {
       await expect(
-        usersBody.locator("tbody tr", { hasText: u.phone })
+        usersTable.locator("tbody tr", { hasText: u.phone })
       ).toBeVisible();
     }
     const baselineCalls = usersCalls;
@@ -211,7 +237,7 @@ test.describe("Admin: Users tab auto-updates and search", () => {
     await expect(summaryLine).toContainText(
       String(AFTER_LOGIN.totalUsers)
     );
-    const freshRow = usersBody.locator("tbody tr", {
+    const freshRow = usersTable.locator("tbody tr", {
       hasText: FRESH_PHONE,
     });
     await expect(freshRow).toBeVisible();
@@ -237,7 +263,7 @@ test.describe("Admin: Users tab auto-updates and search", () => {
     await page.reload({ waitUntil: "domcontentloaded" });
     await openUsersAccordion("Phase 3");
 
-    const freshRowAfter = usersBody.locator("tbody tr", {
+    const freshRowAfter = usersTable.locator("tbody tr", {
       hasText: FRESH_PHONE,
     });
     await expect(freshRowAfter).toBeVisible();

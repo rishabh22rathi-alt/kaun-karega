@@ -517,6 +517,12 @@ function MonthlyReportPanel(): ReactElement {
   );
 }
 
+// Default number of rows shown in the "Recent Kaam" table before the
+// admin opts into the full list via the show-more toggle. The kaam
+// payload is already ordered created_at DESC, so the first N rows are
+// the most recent Kaam.
+const RECENT_KAAM_ROWS = 10;
+
 export default function KaamTab({
   unread,
   onMarkRead,
@@ -757,6 +763,12 @@ export default function KaamTab({
           )}
 
           {kaam && kaam.length > 0 && (
+            <p className="mb-2 text-sm font-semibold text-slate-900">
+              Recent Kaam
+            </p>
+          )}
+
+          {kaam && kaam.length > 0 && (
             <div className="overflow-x-auto rounded-xl border border-slate-200">
               <table className="min-w-full divide-y divide-slate-200 text-sm">
                 <thead className="bg-slate-50">
@@ -806,7 +818,7 @@ export default function KaamTab({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 bg-white">
-                  {(showAllKaam ? kaam : kaam.slice(0, 5)).map((row, index) => {
+                  {(showAllKaam ? kaam : kaam.slice(0, RECENT_KAAM_ROWS)).map((row, index) => {
                     const total = row.lifecycleTotalSteps || 5;
                     const step = Math.max(
                       1,
@@ -908,7 +920,7 @@ export default function KaamTab({
               </table>
             </div>
           )}
-          {kaam && kaam.length > 5 && (
+          {kaam && kaam.length > RECENT_KAAM_ROWS && (
             <button
               type="button"
               onClick={() => setShowAllKaam((v) => !v)}
@@ -917,7 +929,7 @@ export default function KaamTab({
             >
               {showAllKaam
                 ? "Show less"
-                : `Show all Kaam (${kaam.length - 5} more)`}
+                : `Show all Kaam (${kaam.length - RECENT_KAAM_ROWS} more)`}
             </button>
           )}
         </div>

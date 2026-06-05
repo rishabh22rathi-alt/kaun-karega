@@ -6,6 +6,18 @@ import { ChevronDown } from "lucide-react";
 import CacheStatusBar from "@/components/admin/CacheStatusBar";
 import { useCachedAdminEndpoint } from "@/lib/admin/useCachedAdminEndpoint";
 
+// One recently-registered provider, as returned inside the cached
+// provider-stats payload. Shape mirrors RecentProviderRow on the API.
+type RecentProvider = {
+  id: string;
+  name: string;
+  phone: string;
+  categories: string[];
+  areas: string[];
+  status: string;
+  createdAt: string | null;
+};
+
 type ProviderStats = {
   total: number;
   verified: number;
@@ -14,7 +26,29 @@ type ProviderStats = {
   // pending provider-sourced area review). The same providers are
   // excluded from `verified` so the three tiles stay coherent.
   underReview: number;
+  // Latest 10 registered providers (created_at DESC). Optional so a
+  // cached payload written before this field shipped still parses.
+  recent?: RecentProvider[];
 };
+
+// Local date formatter — mirrors the en-IN format used by UsersTab /
+// KaamTab so timestamps read consistently across admin tabs.
+function formatProviderDate(value: string | null): string {
+  if (!value) return "—";
+  const ts = Date.parse(value);
+  if (Number.isNaN(ts)) return "—";
+  try {
+    return new Date(ts).toLocaleString("en-IN", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return new Date(ts).toISOString();
+  }
+}
 
 type PendingCategoryReviewItem = {
   kind: "category";
@@ -973,6 +1007,84 @@ export default function ProvidersTab({
             interval={interval}
             onIntervalChange={setInterval}
           />
+          {/* Recently Registered Providers — latest 10 by created_at,
+              served inside the same cached provider-stats payload so it
+              refreshes with the Refresh button above. Sits above the
+              Total/Under Review/Verified tiles as the first thing the
+              admin sees. */}
+          {data?.recent && data.recent.length > 0 && (
+            <div
+              data-testid="kk-admin-recent-providers"
+              className="mb-5"
+            >
+              <p className="text-sm font-semibold text-slate-900">
+                Recently Registered Providers
+              </p>
+              <p className="mt-0.5 text-xs text-slate-500">
+                Latest {data.recent.length} provider
+                {data.recent.length === 1 ? "" : "s"} by registration time.
+              </p>
+              <div className="mt-3 overflow-x-auto rounded-xl border border-slate-200">
+                <table className="min-w-full divide-y divide-slate-200 text-sm">
+                  <thead className="bg-slate-50">
+                    <tr className="text-left text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                      <th className="px-3 py-2">Provider</th>
+                      <th className="px-3 py-2">Phone</th>
+                      <th className="px-3 py-2">Category</th>
+                      <th className="px-3 py-2">Area / Region</th>
+                      <th className="px-3 py-2">Status</th>
+                      <th className="px-3 py-2">Registered</th>
+                      <th className="px-3 py-2 text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 bg-white">
+                    {data.recent.map((p) => (
+                      <tr
+                        key={p.id}
+                        data-testid={`kk-admin-recent-provider-${p.id}`}
+                      >
+                        <td className="px-3 py-2 font-medium text-slate-800">
+                          {p.name || <span className="text-slate-400">—</span>}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2 font-mono text-slate-700">
+                          {p.phone || <span className="text-slate-400">—</span>}
+                        </td>
+                        <td className="px-3 py-2 text-slate-700">
+                          {p.categories.length > 0 ? (
+                            p.categories.join(", ")
+                          ) : (
+                            <span className="text-slate-400">—</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-slate-700">
+                          {p.areas.length > 0 ? (
+                            p.areas.join(", ")
+                          ) : (
+                            <span className="text-slate-400">—</span>
+                          )}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2 text-slate-700">
+                          {p.status || <span className="text-slate-400">—</span>}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2 text-slate-700">
+                          {formatProviderDate(p.createdAt)}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2 text-right">
+                          <a
+                            href={`/admin/providers/${encodeURIComponent(p.id)}`}
+                            data-testid={`kk-admin-recent-provider-view-${p.id}`}
+                            className="rounded border border-[#003d20]/40 px-2 py-1 text-[11px] font-semibold text-[#003d20] hover:bg-[#003d20]/5"
+                          >
+                            View
+                          </a>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
           {loading && (
             <p className="text-sm text-slate-500">Loading provider data…</p>
           )}

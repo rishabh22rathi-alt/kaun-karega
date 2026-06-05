@@ -114,6 +114,23 @@ export default function UsersTab({
     });
   }, [users, searchDigits]);
 
+  // Recently Registered Users — latest 10 by created_at. Independent of
+  // the phone search above. The API now orders the profiles window by
+  // created_at DESC, but the payload is re-sorted by activity, so we
+  // re-sort here by created_at to get a true registration recency view.
+  // Rows with a null created_at sort last.
+  const recentUsers = useMemo(() => {
+    if (!users) return [];
+    return [...users]
+      .sort((a, b) => {
+        const aCreated = a.created_at ?? "";
+        const bCreated = b.created_at ?? "";
+        if (aCreated !== bCreated) return aCreated < bCreated ? 1 : -1;
+        return 0;
+      })
+      .slice(0, 10);
+  }, [users]);
+
   useEffect(() => {
     if (!isOpen) return;
     let cancelled = false;
@@ -244,6 +261,54 @@ export default function UsersTab({
             interval={autoInterval}
             onIntervalChange={setAutoInterval}
           />
+          {/* Recently Registered Users — latest 10 by created_at, from
+              the same users payload. Sits above the summary + search so
+              the freshest signups are the first thing the admin sees. */}
+          {recentUsers.length > 0 && (
+            <div data-testid="kk-admin-recent-users" className="mb-4">
+              <p className="text-sm font-semibold text-slate-900">
+                Recently Registered Users
+              </p>
+              <p className="mt-0.5 text-xs text-slate-500">
+                Latest {recentUsers.length} user
+                {recentUsers.length === 1 ? "" : "s"} by registration time.
+              </p>
+              <div className="mt-3 overflow-x-auto rounded-xl border border-slate-200">
+                <table className="min-w-full divide-y divide-slate-200 text-sm">
+                  <thead className="bg-slate-50">
+                    <tr className="text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
+                      <th className="px-4 py-2.5">Name</th>
+                      <th className="px-4 py-2.5">Phone</th>
+                      <th className="px-4 py-2.5">Registered</th>
+                      <th className="px-4 py-2.5 text-right">Requests</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 bg-white">
+                    {recentUsers.map((u) => (
+                      <tr
+                        key={`recent-${u.phone}`}
+                        data-testid={`kk-admin-recent-user-${u.phone}`}
+                      >
+                        <td className="px-4 py-2.5 text-slate-700">
+                          {u.name && u.name.trim() ? u.name : "—"}
+                        </td>
+                        <td className="whitespace-nowrap px-4 py-2.5 font-mono text-slate-900">
+                          {u.phone}
+                        </td>
+                        <td className="whitespace-nowrap px-4 py-2.5 text-slate-700">
+                          {formatDate(u.created_at)}
+                        </td>
+                        <td className="whitespace-nowrap px-4 py-2.5 text-right tabular-nums text-slate-900">
+                          {u.totalRequests}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
             <p className="text-sm font-semibold text-slate-900">
               Registered Users:{" "}
@@ -315,7 +380,10 @@ export default function UsersTab({
 
           {users && users.length > 0 && filteredUsers && filteredUsers.length > 0 && (
             <div className="overflow-x-auto rounded-xl border border-slate-200">
-              <table className="min-w-full divide-y divide-slate-200 text-sm">
+              <table
+                data-testid="kk-admin-users-table"
+                className="min-w-full divide-y divide-slate-200 text-sm"
+              >
                 <thead className="bg-slate-50">
                   <tr>
                     <th

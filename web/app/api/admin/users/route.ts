@@ -97,12 +97,34 @@ async function computeUsersPayload(): Promise<UsersPayload> {
   // Pull the user-role profile rows. select("*") so we tolerate either
   // schema shape — `created_at` / `name` / `full_name` columns may or may
   // not exist; pickName() / pickCreatedAt() degrade gracefully.
-  const profilesRes = await adminSupabase
+  //
+  // Order by created_at DESC *before* the limit so the 500-row window is
+  // the newest registrants — required for the "Recently Registered
+  // Users" block. created_at is NOT guaranteed to exist on the GAS-
+  // migrated profiles table (the OTP upsert only writes phone/role/
+  // last_login_at), so a blind ORDER BY would 500 the whole endpoint.
+  // We attempt the ordered read and fall back to the original unordered
+  // read on error, matching this route's existing column-tolerant design.
+  let profilesRes = await adminSupabase
     .from("profiles")
     .select("*")
     .eq("role", "user")
     .eq("is_active", true)
+    .order("created_at", { ascending: false, nullsFirst: false })
     .limit(USERS_LIMIT);
+
+  if (profilesRes.error) {
+    console.warn(
+      "[admin/users] ordered profiles fetch failed (created_at may be absent); retrying unordered:",
+      profilesRes.error.message
+    );
+    profilesRes = await adminSupabase
+      .from("profiles")
+      .select("*")
+      .eq("role", "user")
+      .eq("is_active", true)
+      .limit(USERS_LIMIT);
+  }
 
   if (profilesRes.error) {
     console.error("[admin/users] profiles fetch error:", profilesRes.error);

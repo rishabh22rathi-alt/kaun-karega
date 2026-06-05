@@ -4,6 +4,10 @@ import { requireAdminSession } from "@/lib/adminAuth";
 import { adminSupabase } from "@/lib/supabase/admin";
 import { buildProvidersUnderReview } from "@/lib/admin/adminProviderReview";
 import { buildVerifiedProviderSet } from "@/lib/admin/verifiedProviders";
+import {
+  getRecentProvidersFromSupabase,
+  type RecentProviderRow,
+} from "@/lib/admin/adminProviderReads";
 import { readThroughSnapshotCache } from "@/lib/admin/snapshotCache";
 
 // Top-level provider tile counts for the Admin Providers tab.
@@ -41,6 +45,11 @@ type ProviderStatsPayload = {
   total: number;
   verified: number;
   underReview: number;
+  // Latest 10 registered providers (created_at DESC). Embedded in the
+  // same cached snapshot so it refreshes with the existing Refresh
+  // button and adds no second fetch. Soft-fails to [] so the tiles
+  // still render if the recent read errors.
+  recent: RecentProviderRow[];
 };
 
 async function computeProviderStats(): Promise<ProviderStatsPayload> {
@@ -88,10 +97,30 @@ async function computeProviderStats(): Promise<ProviderStatsPayload> {
     }ms (verified=${verifiedSet.size})`
   );
 
+  // 4. Recently registered providers — latest 10 by created_at. Soft-
+  // fail to an empty list so a transient read error degrades the
+  // recent section to "none yet" rather than blanking the whole tile.
+  const tRecent0 = Date.now();
+  let recent: RecentProviderRow[] = [];
+  try {
+    recent = await getRecentProvidersFromSupabase(10);
+  } catch (err) {
+    console.warn(
+      "[provider-stats] recent providers read failed; treating as empty",
+      err instanceof Error ? err.message : err
+    );
+  }
+  console.log(
+    `[admin-perf] provider-stats getRecentProviders took ${
+      Date.now() - tRecent0
+    }ms (size=${recent.length})`
+  );
+
   return {
     total,
     verified: verifiedSet.size,
     underReview,
+    recent,
   };
 }
 
