@@ -76,7 +76,7 @@ export default function ProviderStartPage() {
           data-testid="provider-start-cta"
           className="inline-flex w-full items-center justify-center rounded-xl bg-[#003d20] px-6 py-3.5 text-base font-bold text-white shadow-lg transition hover:bg-[#002a15] hover:shadow-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-[#003d20] focus-visible:ring-offset-2"
         >
-          मुफ्त प्रोफाइल शुरू करें
+          Create Free Profile
         </Link>
       </div>
     </main>
