@@ -27,6 +27,11 @@ export type PushEventType =
   // invoice_pdf_failed). The push_logs.event_type CHECK already admits
   // 'admin_alert' (20260518120000_notification_preferences.sql).
   | "admin_alert"
+  // User Push Phase 1: task lifecycle update sent to the task owner (first
+  // event: provider responded). The DB push_logs.event_type CHECK already
+  // admits 'task_update' (20260518120000_notification_preferences.sql); this
+  // entry lets the user sender build the payload + log without a cast.
+  | "task_update"
   | "test";
 
 export type PushDataPayload = {
@@ -218,6 +223,29 @@ export function chatMessagePayload(
     eventType: "chat_message",
     sentAt: new Date().toISOString(),
     threadId,
+  };
+}
+
+// User Push Phase 1: "a provider responded to your request" push, sent to
+// the TASK OWNER (not the responding provider). eventType 'task_update' maps
+// to the user's "Task Updates" preference toggle. Title/body are PII-free —
+// no provider name/phone; the body carries only the task label
+// (e.g. "Kaam No. 123"). deepLink lands on the user's requests list, which
+// is safe even before a chat thread exists. Data-only — sw.js renders it.
+export type ProviderRespondedPayloadInput = {
+  displayLabel: string;
+};
+
+export function providerRespondedPayload(
+  input: ProviderRespondedPayloadInput
+): PushDataPayload {
+  const displayLabel = String(input.displayLabel ?? "").trim() || "your request";
+  return {
+    title: "Provider responded",
+    body: `A provider responded to your request ${displayLabel}.`,
+    deepLink: "/dashboard/my-requests",
+    eventType: "task_update",
+    sentAt: new Date().toISOString(),
   };
 }
 

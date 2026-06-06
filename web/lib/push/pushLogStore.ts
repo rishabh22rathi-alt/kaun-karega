@@ -26,6 +26,10 @@ export type PushLogEventType =
   // (20260518120000_notification_preferences.sql) — this TS entry lets the
   // admin-alert sender call appendPushLog with the literal without a cast.
   | "admin_alert"
+  // User Push Phase 1: task lifecycle update to the task owner (first event:
+  // provider responded). The DB push_logs.event_type CHECK already admits
+  // 'task_update' (20260518120000_notification_preferences.sql).
+  | "task_update"
   | "test";
 
 export type PushLogStatus = "sent" | "failed" | "invalid_token" | "skipped";

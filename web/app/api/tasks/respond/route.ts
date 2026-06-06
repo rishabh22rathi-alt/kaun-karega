@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { getAuthSession } from "@/lib/auth";
+import { isPushConfigured } from "@/lib/push/firebaseAdmin";
+import { isPushAllowed } from "@/lib/notificationPreferences";
+import { normalizeTargetPhone } from "@/lib/push/recipients";
+import { providerRespondedPayload } from "@/lib/push/payloads";
+import { sendUserPush } from "@/lib/push/sendToUser";
 
 export const runtime = "nodejs";
 
@@ -123,10 +128,11 @@ async function handleRespond(
 
   const supabase = getServiceClient();
 
-  // Step 3: confirm the task exists (and load fields for the upsert).
+  // Step 3: confirm the task exists (and load fields for the upsert + the
+  // owner phone / previous status / display id for the user push below).
   const { data: task, error: taskError } = await supabase
     .from("tasks")
-    .select("task_id, category, area")
+    .select("task_id, category, area, phone, status, display_id")
     .eq("task_id", taskId)
     .single();
 
@@ -192,6 +198,50 @@ async function handleRespond(
     return NextResponse.json(
       { success: false, message: updateError.message || "Failed to update task status" },
       { status: 500 }
+    );
+  }
+
+  // Step 7: notify the TASK OWNER (the user) with a native push — additive,
+  // soft-fail, and strictly best-effort. The response above is the source of
+  // truth; push must never affect this endpoint's result.
+  //   - Target the task owner's phone (task.phone), NEVER the responding
+  //     provider's session phone, and only their actor_type='user' tokens
+  //     (sendUserPush → getActiveUserTokensForPhone filters that).
+  //   - Fire only on the TRANSITION into provider_responded (previousStatus
+  //     !== "provider_responded") so a repeated respond upsert doesn't
+  //     re-push. This is the feed-independent dedupe (no user feed exists).
+  //   - Gated: NATIVE_PUSH_ENABLED master switch, isPushConfigured(), and the
+  //     user's "task_update" preference (isPushAllowed fails OPEN).
+  try {
+    const previousStatus = String(task.status ?? "").trim();
+    const ownerPhone = normalizeTargetPhone(task.phone);
+    if (
+      previousStatus !== "provider_responded" &&
+      ownerPhone &&
+      process.env.NATIVE_PUSH_ENABLED === "true" &&
+      isPushConfigured()
+    ) {
+      const allowed = await isPushAllowed(
+        "user",
+        ownerPhone,
+        "task_update"
+      );
+      if (allowed) {
+        const displayIdRaw = (task as { display_id?: unknown }).display_id;
+        const displayLabel =
+          displayIdRaw != null && String(displayIdRaw).trim() !== ""
+            ? `Kaam No. ${String(displayIdRaw).trim()}`
+            : "";
+        await sendUserPush(
+          ownerPhone,
+          providerRespondedPayload({ displayLabel })
+        );
+      }
+    }
+  } catch (pushErr) {
+    console.warn(
+      "[tasks/respond] user push side-effect failed (non-fatal)",
+      pushErr instanceof Error ? pushErr.message : pushErr
     );
   }
 

@@ -97,6 +97,35 @@ export async function getActiveAdminWebTokens(): Promise<ActiveDeviceRow[]> {
     .filter((row): row is ActiveDeviceRow => row !== null);
 }
 
+// Resolve active USER-actor tokens by phone. Used by the user-facing push
+// fan-out (User Push Phase 1) so a phone that is ALSO registered as a
+// provider/admin never receives a user push on its provider/admin tokens —
+// strictly actor_type='user' AND active=true for the canonicalized phone.
+// Never throws: a Supabase error is logged and surfaces as [], so the
+// caller's soft-fail is trivial.
+export async function getActiveUserTokensForPhone(
+  phone: string
+): Promise<ActiveDeviceRow[]> {
+  const canonical = canonicalizePhone(phone);
+  if (!canonical) return [];
+  const { data, error } = await adminSupabase
+    .from("native_push_devices")
+    .select("fcm_token, phone, provider_id, actor_type")
+    .eq("phone", canonical)
+    .eq("actor_type", "user")
+    .eq("active", true);
+  if (error) {
+    console.error("[push/recipients] user token lookup failed", {
+      code: error.code,
+      message: error.message,
+    });
+    return [];
+  }
+  return (data ?? [])
+    .map(mapRow)
+    .filter((row): row is ActiveDeviceRow => row !== null);
+}
+
 // Resolve active provider-actor tokens by provider_id. Used by the
 // matched-job push fan-out (Phase 4B) so we never accidentally target
 // user/admin actor tokens that happen to share a phone with a provider.
