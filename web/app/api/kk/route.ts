@@ -1823,7 +1823,7 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      const supabase = await createClient();
+      const supabase = adminSupabase;
       const [{ data: approvedCategories, error: approvedCategoriesError }, { data: approvedAreas, error: approvedAreasError }] =
         await Promise.all([
           supabase.from("categories").select("name").eq("active", true),
