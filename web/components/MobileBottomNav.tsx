@@ -8,7 +8,6 @@ import {
   ClipboardList,
   Bell,
   Menu as MenuIcon,
-  MessageSquare,
   LayoutDashboard,
   Briefcase,
   LogIn,
@@ -344,22 +343,17 @@ export default function MobileBottomNav() {
     // Logged-in user (and the providerExists === null loading window —
     // show user tabs optimistically so we don't flash skeletons every
     // navigation).
-    // TODO(chats-route): there is no canonical chats inbox today —
-    // `/chat` is a redirect entry that needs taskId+provider. Until a
-    // proper inbox page lands, the "Chats" tab routes to /dashboard/my-
-    // requests where users open chats per-request. Revisit when an
-    // inbox view exists.
+    // No "Chats" tab: there is no canonical chats inbox today, so a Chats
+    // item would just duplicate the Requests route (/dashboard/my-requests).
+    // Chats stay reachable per-request via Requests → View Responses → Open
+    // Chat → /chat/thread/[threadId]. Add a Chats tab back only when a real
+    // inbox page exists.
     return [
       homeTab,
       {
         label: "Requests",
         href: "/dashboard/my-requests",
         icon: ClipboardList,
-      },
-      {
-        label: "Chats",
-        href: "/dashboard/my-requests",
-        icon: MessageSquare,
       },
       {
         label: "Alerts",
@@ -397,9 +391,9 @@ export default function MobileBottomNav() {
         className="fixed inset-x-0 bottom-0 z-50 border-t border-[#00542b] bg-[#003d20] shadow-[0_-8px_24px_rgba(0,61,32,0.35)] md:hidden"
         style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
       >
-        {/* Column count tracks the rendered item count: the guest nav is
-            4 items (grid-cols-4); the 2-item loading skeleton and the
-            5-item user/provider navs stay grid-cols-5 exactly as before. */}
+        {/* Column count tracks the rendered item count: the guest and user
+            navs are 4 items (grid-cols-4); the 2-item loading skeleton and
+            the 5-item provider nav stay grid-cols-5. */}
         <ul
           className={`grid h-16 ${
             tabs.length === 4 ? "grid-cols-4" : "grid-cols-5"
