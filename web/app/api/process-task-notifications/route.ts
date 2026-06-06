@@ -15,6 +15,7 @@ import {
 } from "@/lib/push/invalidateTokens";
 import { appendPushLog, tokenTail } from "@/lib/push/pushLogStore";
 import { filterProviderIdsByPreference } from "@/lib/notificationPreferences";
+import { notifyAdmins } from "@/lib/notifications/notifyAdmins";
 import {
   getEffectiveCityWideProviderIds,
   getEffectivePlanCodeMap,
@@ -352,6 +353,12 @@ export async function POST(request: Request) {
         .update({ status: "no_providers_matched" })
         .eq("task_id", taskId);
 
+      // Soft-fail admin alert: a task that matched nobody needs a human.
+      // Reuses the existing task_zero_match copy + check-first dedupe on
+      // (type, related_id=task_id) so a route retry never double-alerts.
+      // notifyAdmins never throws; a notify failure cannot break this flow.
+      await notifyAdmins("task_zero_match", { task_id: taskId });
+
       return NextResponse.json({
         ok: true,
         matchedProviders: 0,
@@ -377,6 +384,12 @@ export async function POST(request: Request) {
         .from("tasks")
         .update({ status: "no_providers_matched" })
         .eq("task_id", taskId);
+
+      // Soft-fail admin alert: candidates existed but all were blocked, so
+      // the task still reaches nobody. Same task_zero_match copy + dedupe as
+      // the no-candidates branch; the (type, task_id) check-first ensures a
+      // task that hits both paths across retries is alerted at most once.
+      await notifyAdmins("task_zero_match", { task_id: taskId });
 
       return NextResponse.json({
         ok: true,
