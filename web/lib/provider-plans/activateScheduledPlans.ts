@@ -348,6 +348,50 @@ async function processProvider(
     pushStatus = "failed";
   }
 
+  // Provider-facing in-app feed row — written regardless of
+  // NATIVE_PUSH_ENABLED so the provider always sees the activation even when
+  // push is off. Independent of the push above (which has its own gating and
+  // is audited via pushStatus). Soft-fail only: any error is logged and
+  // swallowed so a feed-insert failure can never undo a successful
+  // activation or stop the batch. Naturally retry-safe — this success branch
+  // runs once per activation (the RPC uses SELECT FOR UPDATE SKIP LOCKED and
+  // an already-activated plan returns a non-success outcome), so no
+  // check-first dedupe is needed.
+  try {
+    const planLabel = labelForPlanCode(activatedPlanCode);
+    const activatedAt = periodStart || new Date().toISOString();
+    const message =
+      regionCount > 0
+        ? `Your ${planLabel} is now active across ${regionCount} region(s).`
+        : `Your ${planLabel} is now active.`;
+    const { error: feedError } = await adminSupabase
+      .from("provider_notifications")
+      .insert({
+        provider_id: providerId,
+        type: "plan_activated",
+        title: "Plan activated 🎉",
+        message,
+        href: "/provider/dashboard",
+        payload_json: {
+          planCode: activatedPlanCode,
+          planLabel,
+          regionCount,
+          activatedAt,
+        },
+      });
+    if (feedError) {
+      console.error(
+        "[activateScheduledPlans] plan_activated feed insert failed",
+        { providerId, message: feedError.message }
+      );
+    }
+  } catch (err) {
+    console.error(
+      "[activateScheduledPlans] plan_activated feed insert threw (non-fatal)",
+      { providerId, message: err instanceof Error ? err.message : err }
+    );
+  }
+
   await writeActivationAudit(providerId, {
     outcome: "success",
     activatedPlanCode,
