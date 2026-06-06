@@ -87,6 +87,7 @@ function DashboardBody() {
       <InvoicesTab defaultOpen={activeTab === "invoices"} />
       <ReportsTab />
       <CategoryTab
+        defaultOpen={activeTab === "category"}
         unread={unread.category}
         onMarkRead={() => void markRead("category")}
       />

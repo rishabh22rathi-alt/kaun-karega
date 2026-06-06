@@ -316,7 +316,11 @@ export async function POST(request: Request) {
     // under each category from the 6-hour "categories.list" snapshot.
     // Invalidate it so the new alias appears on the next read instead of
     // staying hidden until the TTL expires. Soft-fails internally.
-    await invalidateSnapshots(["categories.list"]);
+    await invalidateSnapshots([
+      "categories.list",
+      "aliases.pending",
+      "aliases.active",
+    ]);
 
     return NextResponse.json({
       ok: true,
@@ -417,7 +421,11 @@ export async function POST(request: Request) {
 
     // Promoting active=false→true changes the active-alias set bundled in
     // the categories.list snapshot — invalidate so it shows immediately.
-    await invalidateSnapshots(["categories.list"]);
+    await invalidateSnapshots([
+      "categories.list",
+      "aliases.pending",
+      "aliases.active",
+    ]);
 
     return NextResponse.json({
       ok: true,

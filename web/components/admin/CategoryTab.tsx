@@ -8,6 +8,11 @@ type CategoryTabProps = {
   // Wired by the dashboard page (see useAdminUnread).
   unread?: UnreadIndicator | null;
   onMarkRead?: () => void;
+  // Set by the dashboard page when the URL carries ?tab=category (e.g. an
+  // admin tapped a "work term submitted" push). Opens the accordion and
+  // jumps straight to the Pending sub-tab so the item needing action is
+  // visible without extra clicks.
+  defaultOpen?: boolean;
 };
 
 // Window event dispatched by ProvidersTab when admin clicks "Manage
@@ -125,9 +130,12 @@ function friendlyAliasError(
 export default function CategoryTab({
   unread,
   onMarkRead,
+  defaultOpen = false,
 }: CategoryTabProps = {}) {
-  const [isOpen, setIsOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<ActiveTab>("approved");
+  const [isOpen, setIsOpen] = useState(defaultOpen);
+  const [activeTab, setActiveTab] = useState<ActiveTab>(
+    defaultOpen ? "pending" : "approved"
+  );
   const markReadFiredRef = useRef(false);
   useEffect(() => {
     if (!isOpen) {
@@ -302,7 +310,16 @@ export default function CategoryTab({
     setPendingError(null);
     setPendingAliasesError(null);
 
-    const categoryRequestsP = fetch("/api/admin/pending-category-requests")
+    // On the first open (pendingRefreshKey === 0) take the cached snapshot.
+    // After an approve/reject (refreshPending bumps the key) force a recompute
+    // so the just-mutated row leaves the queue immediately even if this GET
+    // lands on a different serverless instance than the mutation did. Both
+    // routes honour ?refresh=1.
+    const forceRefresh = pendingRefreshKey > 0;
+
+    const categoryRequestsP = fetch(
+      `/api/admin/pending-category-requests${forceRefresh ? "?refresh=1" : ""}`
+    )
       .then((r) => r.json())
       .then(
         (res: {
@@ -323,7 +340,9 @@ export default function CategoryTab({
         setPendingError(err instanceof Error ? err.message : "Network error");
       });
 
-    const aliasesP = fetch("/api/admin/aliases?status=pending")
+    const aliasesP = fetch(
+      `/api/admin/aliases?status=pending${forceRefresh ? "&refresh=1" : ""}`
+    )
       .then((r) => r.json())
       .then(
         (res: {

@@ -11,6 +11,7 @@
 
 import { adminSupabase } from "../supabase/admin";
 import { reconcileProviderApprovalStatusSoft } from "./adminProviderApprovalReconcile";
+import { invalidateSnapshots } from "./snapshotCache";
 
 // ---------------------------------------------------------------------------
 // Notification helper — fan out to the requesting provider.
@@ -246,6 +247,12 @@ export async function approveCategoryRequest(
       "approveCategoryRequest"
     );
 
+    // Drop the cached pending-requests list AND the categories.list snapshot
+    // so the approved row leaves the admin queue and the new category shows
+    // up immediately, instead of lingering until the 15-min TTL expires.
+    // Soft-fails internally — the mutation already succeeded.
+    await invalidateSnapshots(["pending_category_requests", "categories.list"]);
+
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : "Unknown error" };
@@ -291,6 +298,11 @@ export async function rejectCategoryRequest(
       requestRow?.provider_id ?? null,
       "rejectCategoryRequest"
     );
+
+    // Drop the cached pending-requests list so the rejected row leaves the
+    // admin queue immediately. categories.list is untouched by a reject, so
+    // it is intentionally not invalidated here. Soft-fails internally.
+    await invalidateSnapshots(["pending_category_requests"]);
 
     return { ok: true };
   } catch (err) {
