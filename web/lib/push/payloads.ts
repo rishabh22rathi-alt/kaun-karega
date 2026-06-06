@@ -63,6 +63,20 @@ export function adminTestPayload(): PushDataPayload {
   };
 }
 
+// Provider Push Phase 1: provider WEB test push. deepLink lands on
+// /provider/dashboard so the service-worker notificationclick opens the
+// provider's home screen. Title/body are PII-free (no name / phone / job
+// detail). Data-only (FCM `data` is Map<string,string>) — sw.js renders it.
+export function providerTestPayload(): PushDataPayload {
+  return {
+    title: "Kaun Karega",
+    body: "Test notification received. Push is working.",
+    deepLink: "/provider/dashboard",
+    eventType: "test",
+    sentAt: new Date().toISOString(),
+  };
+}
+
 // Phase B Step 7: admin business-alert push (admin WEB devices only). The
 // title/body are intentionally PII-free (no provider name / phone / amount)
 // — the in-app notification centre carries the detail; the push is just a

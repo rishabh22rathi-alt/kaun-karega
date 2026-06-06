@@ -1,6 +1,7 @@
 "use client";
 
 import NotificationPreferencesCard from "@/components/NotificationPreferencesCard";
+import ProviderPushControls from "@/components/provider/ProviderPushControls";
 import { PROVIDER_NOTIFICATION_TOGGLES } from "@/lib/notificationPreferenceUiConfig";
 import { useSessionGuard } from "@/lib/useSessionGuard";
 
@@ -22,6 +23,7 @@ export default function ProviderNotificationsPage() {
   return (
     <main className="min-h-screen bg-[linear-gradient(180deg,#f8fafc_0%,#eef6ff_100%)] px-4 py-8">
       <div className="mx-auto w-full max-w-3xl space-y-6">
+        <ProviderPushControls />
         <NotificationPreferencesCard
           scope="provider"
           apiPath="/api/notification-preferences"
