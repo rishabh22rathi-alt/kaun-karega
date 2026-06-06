@@ -308,6 +308,7 @@ export async function cleanupHarnessRows(
     "provider_services",
     "provider_areas",
     "provider_work_terms",
+    "provider_notifications",
     "provider_plans",
   ]) {
     try {
@@ -350,6 +351,64 @@ export type AdminCallResult = {
 function adminCookieHeader(adminPhone: string): string {
   const cookie = buildSignedAuthCookie(adminPhone);
   return `kk_auth_session=${encodeURIComponent(cookie)}; kk_admin=1`;
+}
+
+export async function setProviderVerifiedViaApi(
+  request: APIRequestContext,
+  baseURL: string,
+  adminPhone: string,
+  providerId: string,
+  verified: "yes" | "no"
+): Promise<AdminCallResult> {
+  const res = await request.post(`${baseURL}/api/kk`, {
+    headers: { Cookie: adminCookieHeader(adminPhone) },
+    data: { action: "set_provider_verified", providerId, verified },
+  });
+  return { status: res.status(), body: await res.json() };
+}
+
+export async function blockProviderViaApi(
+  request: APIRequestContext,
+  baseURL: string,
+  adminPhone: string,
+  providerId: string
+): Promise<AdminCallResult> {
+  const res = await request.post(`${baseURL}/api/admin/providers/block`, {
+    headers: { Cookie: adminCookieHeader(adminPhone) },
+    data: { id: providerId },
+  });
+  return { status: res.status(), body: await res.json() };
+}
+
+export async function unblockProviderViaApi(
+  request: APIRequestContext,
+  baseURL: string,
+  adminPhone: string,
+  providerId: string
+): Promise<AdminCallResult> {
+  const res = await request.post(`${baseURL}/api/admin/providers/unblock`, {
+    headers: { Cookie: adminCookieHeader(adminPhone) },
+    data: { id: providerId },
+  });
+  return { status: res.status(), body: await res.json() };
+}
+
+/** Read provider_notifications rows for a provider, optionally filtered by type. */
+export async function readProviderNotifications(
+  request: APIRequestContext,
+  providerId: string,
+  type?: string
+): Promise<Array<{ type: string; title: string; seen_at: string | null }>> {
+  const typeFilter = type ? `&type=eq.${encodeURIComponent(type)}` : "";
+  return supabaseRest<Array<{ type: string; title: string; seen_at: string | null }>>(
+    request,
+    "provider_notifications",
+    {
+      query: `provider_id=eq.${encodeURIComponent(
+        providerId
+      )}${typeFilter}&select=type,title,seen_at`,
+    }
+  );
 }
 
 export async function adminApproveCategoryRequest(

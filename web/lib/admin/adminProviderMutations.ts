@@ -38,6 +38,71 @@ export type ProviderBlockResult =
   | null;
 
 // ---------------------------------------------------------------------------
+// Provider notification feed (in-app bell)
+// ---------------------------------------------------------------------------
+
+/**
+ * Insert a single provider_notifications row for an admin-driven status
+ * change. Soft-fail by design: any error is logged and swallowed — the
+ * verify/block mutation has already succeeded and a missing in-app alert
+ * is recoverable, never worth failing the admin action over. Mirrors the
+ * pattern in adminCategoryMutations.notifyProviderOfCategoryDecision.
+ *
+ * Check-first dedupe on (provider_id, type, seen_at IS NULL): if an UNSEEN
+ * alert of the same type already exists for this provider, we skip the
+ * insert so a double-click / retry never stacks a second identical alert.
+ * provider_notifications has no unique index, so this is the dedupe surface.
+ */
+async function notifyProviderStatus(params: {
+  providerId: string;
+  type: "provider_approved" | "provider_rejected" | "provider_blocked";
+  title: string;
+  message: string;
+  payload: Record<string, unknown>;
+}): Promise<void> {
+  if (!params.providerId) return;
+  try {
+    const { data: existing, error: lookupError } = await adminSupabase
+      .from("provider_notifications")
+      .select("id")
+      .eq("provider_id", params.providerId)
+      .eq("type", params.type)
+      .is("seen_at", null)
+      .limit(1);
+    if (lookupError) {
+      console.warn(
+        "[adminProviderMutations] notification dedupe lookup failed; proceeding",
+        lookupError.message
+      );
+    } else if (existing && existing.length > 0) {
+      return; // an unseen alert of this type is already pending
+    }
+
+    const { error } = await adminSupabase
+      .from("provider_notifications")
+      .insert({
+        provider_id: params.providerId,
+        type: params.type,
+        title: params.title,
+        message: params.message,
+        href: "/provider/dashboard",
+        payload_json: params.payload,
+      });
+    if (error) {
+      console.error(
+        "[adminProviderMutations] notification insert failed",
+        error.message
+      );
+    }
+  } catch (err) {
+    console.error(
+      "[adminProviderMutations] notification threw (non-fatal)",
+      err instanceof Error ? err.message : err
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Verify / approve / reject
 // ---------------------------------------------------------------------------
 
@@ -62,6 +127,15 @@ export async function setProviderVerified(
         .update({ verified: "yes", status: "active" })
         .eq("provider_id", providerId);
       if (error) return { ok: false, error: error.message };
+      // Notify the provider their profile is live. Soft-fail only.
+      await notifyProviderStatus({
+        providerId,
+        type: "provider_approved",
+        title: "You're approved ✅",
+        message:
+          "Your provider profile has been approved. You can now receive job leads.",
+        payload: { decision: "approved" },
+      });
     } else {
       const [{ error: verifyError }] = await Promise.all([
         adminSupabase
@@ -76,6 +150,15 @@ export async function setProviderVerified(
           .eq("status", "pending"),
       ]);
       if (verifyError) return { ok: false, error: verifyError.message };
+      // Notify the provider their profile was not approved. Soft-fail only.
+      await notifyProviderStatus({
+        providerId,
+        type: "provider_rejected",
+        title: "Profile not approved",
+        message:
+          "Your provider profile was not approved. Please contact support for details.",
+        payload: { decision: "rejected" },
+      });
     }
     await invalidateSnapshots(PROVIDER_STATS_SNAPSHOT_KEYS);
     return { ok: true };
@@ -109,6 +192,18 @@ export async function setProviderBlockStatus(
       .update({ status: newStatus })
       .eq("provider_id", providerId);
     if (error) return null;
+    // Notify the provider only on block (no unblock alert by design).
+    // Soft-fail only.
+    if (blocked) {
+      await notifyProviderStatus({
+        providerId,
+        type: "provider_blocked",
+        title: "Account blocked",
+        message:
+          "Your provider account has been blocked. Contact support if you believe this is a mistake.",
+        payload: { status: "Blocked" },
+      });
+    }
     await invalidateSnapshots(PROVIDER_STATS_SNAPSHOT_KEYS);
     return { status: newStatus };
   } catch {
