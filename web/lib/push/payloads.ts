@@ -194,6 +194,33 @@ export type AnnouncementPayloadInput = {
   targetCategory?: string | null;
 };
 
+// Provider chat-reply push. Fired when a customer replies in a chat thread
+// (in lockstep with the existing provider_notifications 'chat_message' feed
+// row + its unseen-per-thread dedupe). Title/body are PII-free — no customer
+// name / phone / message text; the body carries only the task label
+// (e.g. "Kaam No. 123"). deepLink lands on the shared chat thread route so
+// the service worker opens the exact conversation on tap. Data-only (FCM
+// `data` is Map<string,string>) — sw.js renders the notification.
+export type ChatMessagePayloadInput = {
+  threadId: string;
+  taskLabel: string;
+};
+
+export function chatMessagePayload(
+  input: ChatMessagePayloadInput
+): PushDataPayload {
+  const threadId = String(input.threadId ?? "").trim();
+  const taskLabel = String(input.taskLabel ?? "").trim() || "your job";
+  return {
+    title: "Customer replied",
+    body: `Customer replied on ${taskLabel}.`,
+    deepLink: `/chat/thread/${encodeURIComponent(threadId)}`,
+    eventType: "chat_message",
+    sentAt: new Date().toISOString(),
+    threadId,
+  };
+}
+
 export function announcementPayload(
   input: AnnouncementPayloadInput
 ): PushDataPayload {

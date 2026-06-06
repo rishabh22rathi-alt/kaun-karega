@@ -6,6 +6,10 @@ import {
   sendUserFirstProviderMessageNotification,
   type SendTemplateResult,
 } from "../whatsappTemplates";
+import { isPushAllowed } from "../notificationPreferences";
+import { isPushConfigured } from "../push/firebaseAdmin";
+import { chatMessagePayload } from "../push/payloads";
+import { sendChatReplyPush } from "../push/sendToProvider";
 import type { ChatSessionIdentity } from "./chatActor";
 
 // Re-export the identity helpers so route handlers can import from the same
@@ -1702,6 +1706,34 @@ export async function sendChatMessageFromSupabase(
               "[chat] chat_message notif insert failed",
               notifInsertErr.message
             );
+          } else {
+            // Native push, in lockstep with the feed row just created so it
+            // inherits the unseen-per-thread dedupe above (one push per
+            // unread burst, reset when the provider opens the bell). Gated:
+            //   1. NATIVE_PUSH_ENABLED master switch (ops controls rollout,
+            //      same as the matched-job push).
+            //   2. isPushConfigured() — skip cleanly when Firebase Admin is
+            //      absent so we don't log spurious 'failed' rows.
+            //   3. chat_message preference (isPushAllowed fails OPEN).
+            // Fully soft-fail: sendChatReplyPush never throws, and this whole
+            // branch is inside the outer try/catch — push must never block or
+            // fail the chat insert / thread update / WhatsApp path.
+            if (
+              process.env.NATIVE_PUSH_ENABLED === "true" &&
+              isPushConfigured()
+            ) {
+              const pushAllowed = await isPushAllowed(
+                "provider",
+                providerId,
+                "chat_message"
+              );
+              if (pushAllowed) {
+                await sendChatReplyPush(
+                  providerId,
+                  chatMessagePayload({ threadId, taskLabel })
+                );
+              }
+            }
           }
         }
       } catch (notifErr) {
