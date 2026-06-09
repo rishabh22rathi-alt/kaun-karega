@@ -1824,11 +1824,33 @@ export async function POST(request: NextRequest) {
       }
 
       const supabase = adminSupabase;
-      const [{ data: approvedCategories, error: approvedCategoriesError }, { data: approvedAreas, error: approvedAreasError }] =
-        await Promise.all([
-          supabase.from("categories").select("name").eq("active", true),
-          supabase.from("areas").select("area_name").eq("active", true),
-        ]);
+      // Approved-area source #2: the region catalog. Areas the provider
+      // picks via the region selector are EXPANDED from
+      // service_region_areas.canonical_area — an admin-curated, approved
+      // catalog. Those canonical areas are NOT guaranteed to also exist as
+      // rows in the `areas` master table (the two have drifted: e.g. JOD's
+      // 25-region rollout populated service_region_areas with ~250 canonical
+      // areas, many of which were never backfilled into `areas`). Checking
+      // pending-approval against `areas` ALONE therefore flagged every
+      // region-derived area as "new", forcing the provider to status=pending
+      // even though no custom area was submitted — and because no
+      // area_review_queue row is created for region areas (only for typed
+      // custom localities via pendingNewAreas), the provider was stuck
+      // "Pending Admin Approval" with nothing for an admin to approve. Union
+      // both sources so a region pick is recognized as approved.
+      const [
+        { data: approvedCategories, error: approvedCategoriesError },
+        { data: approvedAreas, error: approvedAreasError },
+        { data: catalogAreas, error: catalogAreasError },
+      ] = await Promise.all([
+        supabase.from("categories").select("name").eq("active", true),
+        supabase.from("areas").select("area_name").eq("active", true),
+        supabase
+          .from("service_region_areas")
+          .select("canonical_area")
+          .eq("active", true)
+          .limit(10000),
+      ]);
 
       if (approvedCategoriesError) {
         return withNoCache(
@@ -1840,18 +1862,35 @@ export async function POST(request: NextRequest) {
           NextResponse.json({ ok: false, error: approvedAreasError.message }, { status: 500 })
         );
       }
+      // Catalog read is a safety-net augmentation, not a hard dependency. A
+      // failure here degrades to the legacy `areas`-only behavior rather
+      // than blocking registration.
+      if (catalogAreasError) {
+        console.warn(
+          "[provider_register] service_region_areas lookup failed; falling back to areas-only approval check",
+          catalogAreasError.message
+        );
+      }
+
+      // Normalize for comparison: trim + collapse internal whitespace +
+      // lowercase. Whitespace-collapse matters because some catalog areas
+      // carry stray double spaces (e.g. "Ravan Ka  Chabutra"); without
+      // collapsing, an otherwise-identical pick would miss the approved set.
+      const normalizeName = (value: unknown) =>
+        String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
 
       const approvedCategoryNames = new Set(
-        (approvedCategories ?? []).map((row) => String(row.name || "").trim().toLowerCase())
+        (approvedCategories ?? []).map((row) => normalizeName(row.name))
       );
-      const approvedAreaNames = new Set(
-        (approvedAreas ?? []).map((row) => String(row.area_name || "").trim().toLowerCase())
-      );
+      const approvedAreaNames = new Set([
+        ...(approvedAreas ?? []).map((row) => normalizeName(row.area_name)),
+        ...(catalogAreas ?? []).map((row) => normalizeName(row.canonical_area)),
+      ]);
       const hasNewCategory = categories.some(
-        (category) => !approvedCategoryNames.has(String(category || "").trim().toLowerCase())
+        (category) => !approvedCategoryNames.has(normalizeName(category))
       );
       const hasNewArea = areas.some(
-        (area) => !approvedAreaNames.has(String(area || "").trim().toLowerCase())
+        (area) => !approvedAreaNames.has(normalizeName(area))
       );
       const pendingApproval = hasNewCategory || hasNewArea ? "yes" : "no";
 
@@ -1965,7 +2004,7 @@ export async function POST(request: NextRequest) {
       // Category" before any human review. Approval inserts the
       // provider_services row in adminCategoryMutations.approveCategoryRequest.
       const approvedSelectedCategories = categories.filter((category) =>
-        approvedCategoryNames.has(String(category || "").trim().toLowerCase())
+        approvedCategoryNames.has(normalizeName(category))
       );
 
       if (approvedSelectedCategories.length > 0) {
@@ -2166,10 +2205,7 @@ export async function POST(request: NextRequest) {
       // the queue. Client-provided `pendingNewCategories` is unioned in
       // for forward compatibility.
       const serverPendingNewCategories = categories.filter(
-        (category) =>
-          !approvedCategoryNames.has(
-            String(category || "").trim().toLowerCase()
-          )
+        (category) => !approvedCategoryNames.has(normalizeName(category))
       );
       const effectivePendingNewCategories = Array.from(
         new Set(
