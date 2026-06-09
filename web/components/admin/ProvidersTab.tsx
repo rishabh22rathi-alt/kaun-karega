@@ -8,6 +8,12 @@ import { useCachedAdminEndpoint } from "@/lib/admin/useCachedAdminEndpoint";
 
 // One recently-registered provider, as returned inside the cached
 // provider-stats payload. Shape mirrors RecentProviderRow on the API.
+type RecentProviderRegion = {
+  code: string;
+  name: string;
+  areas: string[];
+};
+
 type RecentProvider = {
   id: string;
   name: string;
@@ -16,6 +22,10 @@ type RecentProvider = {
   areas: string[];
   status: string;
   createdAt: string | null;
+  // Region-first grouping. Optional so a provider-stats snapshot cached
+  // before this field shipped still parses — the row falls back to the
+  // flat `areas` list when `regions` is absent/empty.
+  regions?: RecentProviderRegion[];
 };
 
 type ProviderStats = {
@@ -48,6 +58,17 @@ function formatProviderDate(value: string | null): string {
   } catch {
     return new Date(ts).toISOString();
   }
+}
+
+// Compact region label: "CODE · Name" when both differ, else whichever
+// is present. Null-region areas arrive as { code: "", name: "Other areas" }.
+function regionLabel(region: RecentProviderRegion): string {
+  const code = region.code.trim();
+  const name = region.name.trim();
+  if (code && name && name.toLowerCase() !== code.toLowerCase()) {
+    return `${code} · ${name}`;
+  }
+  return code || name || "—";
 }
 
 type PendingCategoryReviewItem = {
@@ -260,6 +281,13 @@ export default function ProvidersTab({
   const [reviewActionErrors, setReviewActionErrors] = useState<
     Record<string, string>
   >({});
+
+  // Recently Registered table: one provider's area list expanded at a
+  // time. Keeps each row compact (region-first) on mobile and only
+  // reveals the full area list on tap.
+  const [expandedRecentProvider, setExpandedRecentProvider] = useState<
+    string | null
+  >(null);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [sortMode, setSortMode] = useState<SortMode>("countDesc");
@@ -1031,55 +1059,140 @@ export default function ProvidersTab({
                       <th className="px-3 py-2">Provider</th>
                       <th className="px-3 py-2">Phone</th>
                       <th className="px-3 py-2">Category</th>
-                      <th className="px-3 py-2">Area / Region</th>
+                      <th className="px-3 py-2">Regions</th>
                       <th className="px-3 py-2">Status</th>
                       <th className="px-3 py-2">Registered</th>
                       <th className="px-3 py-2 text-right">Action</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 bg-white">
-                    {data.recent.map((p) => (
-                      <tr
-                        key={p.id}
-                        data-testid={`kk-admin-recent-provider-${p.id}`}
-                      >
-                        <td className="px-3 py-2 font-medium text-slate-800">
-                          {p.name || <span className="text-slate-400">—</span>}
-                        </td>
-                        <td className="whitespace-nowrap px-3 py-2 font-mono text-slate-700">
-                          {p.phone || <span className="text-slate-400">—</span>}
-                        </td>
-                        <td className="px-3 py-2 text-slate-700">
-                          {p.categories.length > 0 ? (
-                            p.categories.join(", ")
-                          ) : (
-                            <span className="text-slate-400">—</span>
+                    {data.recent.map((p) => {
+                      const regions = p.regions ?? [];
+                      const totalAreas =
+                        regions.length > 0
+                          ? regions.reduce((n, r) => n + r.areas.length, 0)
+                          : p.areas.length;
+                      const isAreasOpen = expandedRecentProvider === p.id;
+                      return (
+                        <Fragment key={p.id}>
+                          <tr data-testid={`kk-admin-recent-provider-${p.id}`}>
+                            <td className="px-3 py-2 align-top font-medium text-slate-800">
+                              {p.name || (
+                                <span className="text-slate-400">—</span>
+                              )}
+                            </td>
+                            <td className="whitespace-nowrap px-3 py-2 align-top font-mono text-slate-700">
+                              {p.phone || (
+                                <span className="text-slate-400">—</span>
+                              )}
+                            </td>
+                            <td className="px-3 py-2 align-top text-slate-700">
+                              {p.categories.length > 0 ? (
+                                p.categories.join(", ")
+                              ) : (
+                                <span className="text-slate-400">—</span>
+                              )}
+                            </td>
+                            {/* Region-first: show compact region chips and hide
+                                the (potentially huge) area list behind a
+                                per-row "View areas" toggle so the table stays
+                                readable on mobile. */}
+                            <td className="px-3 py-2 align-top text-slate-700">
+                              {totalAreas === 0 ? (
+                                <span className="text-slate-400">—</span>
+                              ) : (
+                                <div className="flex flex-col items-start gap-1">
+                                  <div className="flex flex-wrap gap-1">
+                                    {regions.length > 0 ? (
+                                      regions.map((r) => (
+                                        <span
+                                          key={r.code || "other"}
+                                          className="inline-flex items-center rounded-full border border-slate-300 bg-slate-50 px-2 py-0.5 text-[11px] font-medium text-slate-700"
+                                        >
+                                          {regionLabel(r)}
+                                        </span>
+                                      ))
+                                    ) : (
+                                      <span className="text-[11px] italic text-slate-400">
+                                        No region mapped
+                                      </span>
+                                    )}
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setExpandedRecentProvider((prev) =>
+                                        prev === p.id ? null : p.id
+                                      )
+                                    }
+                                    aria-expanded={isAreasOpen}
+                                    data-testid={`kk-admin-recent-provider-areas-toggle-${p.id}`}
+                                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#003d20] hover:underline"
+                                  >
+                                    <ChevronDown
+                                      aria-hidden="true"
+                                      className={`h-3 w-3 transition-transform ${
+                                        isAreasOpen ? "rotate-180" : "rotate-0"
+                                      }`}
+                                    />
+                                    {isAreasOpen
+                                      ? "Hide areas"
+                                      : `View areas (${totalAreas})`}
+                                  </button>
+                                </div>
+                              )}
+                            </td>
+                            <td className="whitespace-nowrap px-3 py-2 align-top text-slate-700">
+                              {p.status || (
+                                <span className="text-slate-400">—</span>
+                              )}
+                            </td>
+                            <td className="whitespace-nowrap px-3 py-2 align-top text-slate-700">
+                              {formatProviderDate(p.createdAt)}
+                            </td>
+                            <td className="whitespace-nowrap px-3 py-2 text-right align-top">
+                              <a
+                                href={`/admin/providers/${encodeURIComponent(p.id)}`}
+                                data-testid={`kk-admin-recent-provider-view-${p.id}`}
+                                className="rounded border border-[#003d20]/40 px-2 py-1 text-[11px] font-semibold text-[#003d20] hover:bg-[#003d20]/5"
+                              >
+                                View
+                              </a>
+                            </td>
+                          </tr>
+                          {isAreasOpen && (
+                            <tr
+                              data-testid={`kk-admin-recent-provider-areas-${p.id}`}
+                              className="bg-slate-50/60"
+                            >
+                              <td colSpan={7} className="px-3 py-2">
+                                {regions.length > 0 ? (
+                                  <div className="space-y-2">
+                                    {regions.map((r) => (
+                                      <div key={r.code || "other"}>
+                                        <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">
+                                          {regionLabel(r)}
+                                          <span className="ml-1 font-normal text-slate-400">
+                                            ({r.areas.length})
+                                          </span>
+                                        </p>
+                                        <p className="mt-0.5 text-xs text-slate-700">
+                                          {r.areas.join(", ")}
+                                        </p>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <p className="text-xs text-slate-700">
+                                    {p.areas.join(", ")}
+                                  </p>
+                                )}
+                              </td>
+                            </tr>
                           )}
-                        </td>
-                        <td className="px-3 py-2 text-slate-700">
-                          {p.areas.length > 0 ? (
-                            p.areas.join(", ")
-                          ) : (
-                            <span className="text-slate-400">—</span>
-                          )}
-                        </td>
-                        <td className="whitespace-nowrap px-3 py-2 text-slate-700">
-                          {p.status || <span className="text-slate-400">—</span>}
-                        </td>
-                        <td className="whitespace-nowrap px-3 py-2 text-slate-700">
-                          {formatProviderDate(p.createdAt)}
-                        </td>
-                        <td className="whitespace-nowrap px-3 py-2 text-right">
-                          <a
-                            href={`/admin/providers/${encodeURIComponent(p.id)}`}
-                            data-testid={`kk-admin-recent-provider-view-${p.id}`}
-                            className="rounded border border-[#003d20]/40 px-2 py-1 text-[11px] font-semibold text-[#003d20] hover:bg-[#003d20]/5"
-                          >
-                            View
-                          </a>
-                        </td>
-                      </tr>
-                    ))}
+                        </Fragment>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

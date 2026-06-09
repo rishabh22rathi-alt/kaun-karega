@@ -105,7 +105,24 @@ export async function getAllProvidersFromSupabase(): Promise<ProviderRow[]> {
 // Same assembled shape as getAllProvidersFromSupabase, plus the
 // registration timestamp. createdAt may be null on legacy GAS-migrated
 // rows that pre-date the column being populated — callers render "—".
-export type RecentProviderRow = ProviderRow & { createdAt: string | null };
+// Region-first grouping for the admin Providers tab. Areas are grouped
+// under their provider_areas.region_code; `name` comes from
+// service_regions.region_name (falls back to the code). Areas whose
+// region_code is NULL (legacy / custom localities) are collected under a
+// synthetic { code: "", name: "Other areas" } bucket.
+export type RecentProviderRegion = {
+  code: string;
+  name: string;
+  areas: string[];
+};
+
+// `regions` is additive + optional so a provider-stats snapshot cached
+// before this field shipped still parses — the UI falls back to the flat
+// `areas` list when `regions` is absent.
+export type RecentProviderRow = ProviderRow & {
+  createdAt: string | null;
+  regions?: RecentProviderRegion[];
+};
 
 export async function getRecentProvidersFromSupabase(
   limit = 10
@@ -136,9 +153,66 @@ export async function getRecentProvidersFromSupabase(
       .in("provider_id", ids),
     adminSupabase
       .from("provider_areas")
-      .select("provider_id, area")
+      // region_code drives the region-first grouping below; assembleProviders
+      // ignores it, so the flat `areas` list stays byte-identical.
+      .select("provider_id, area, region_code")
       .in("provider_id", ids),
   ]);
+
+  // Resolve region_code -> region_name for the codes actually present, then
+  // group each provider's areas under their region. Soft-fails to code-only
+  // labels if the service_regions read errors.
+  const typedAreaRows = (areaRows ?? []) as Array<{
+    provider_id: unknown;
+    area: unknown;
+    region_code: unknown;
+  }>;
+  const regionCodes = Array.from(
+    new Set(
+      typedAreaRows
+        .map((r) => String(r.region_code ?? "").trim())
+        .filter(Boolean)
+    )
+  );
+  const regionNameByCode = new Map<string, string>();
+  if (regionCodes.length > 0) {
+    const { data: regionRows } = await adminSupabase
+      .from("service_regions")
+      .select("region_code, region_name")
+      .in("region_code", regionCodes);
+    for (const r of (regionRows ?? []) as Array<{
+      region_code: unknown;
+      region_name: unknown;
+    }>) {
+      regionNameByCode.set(
+        String(r.region_code ?? "").trim(),
+        String(r.region_name ?? "").trim()
+      );
+    }
+  }
+  const regionsByProvider = new Map<string, RecentProviderRegion[]>();
+  for (const r of typedAreaRows) {
+    const pid = String(r.provider_id ?? "");
+    if (!pid) continue;
+    const area = String(r.area ?? "").trim();
+    if (!area) continue;
+    const code = String(r.region_code ?? "").trim();
+    let buckets = regionsByProvider.get(pid);
+    if (!buckets) {
+      buckets = [];
+      regionsByProvider.set(pid, buckets);
+    }
+    let bucket = buckets.find((b) => b.code === code);
+    if (!bucket) {
+      bucket = {
+        code,
+        name: code ? regionNameByCode.get(code) || code : "Other areas",
+        areas: [],
+      };
+      buckets.push(bucket);
+    }
+    if (!bucket.areas.includes(area)) bucket.areas.push(area);
+  }
 
   // assembleProviders preserves providerRows order, so zip by index to
   // re-attach createdAt without a second lookup.
@@ -151,6 +225,7 @@ export async function getRecentProvidersFromSupabase(
     ...row,
     createdAt:
       (providerRows[i] as { created_at?: string | null }).created_at ?? null,
+    regions: regionsByProvider.get(row.id) ?? [],
   }));
 }
 
