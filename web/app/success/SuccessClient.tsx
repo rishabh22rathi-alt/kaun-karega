@@ -197,7 +197,6 @@ export default function SuccessClient({
     setNotificationStatus("queued");
 
     const timer = window.setTimeout(async () => {
-      sessionStorage.setItem(storageKey, "1");
       setNotificationStatus("processing");
 
       try {
@@ -216,6 +215,14 @@ export default function SuccessClient({
               : "Unable to process provider notifications."
           );
         }
+
+        // Mark the dedupe flag ONLY after a confirmed response. The trigger
+        // is idempotent server-side (process-task-notifications gates on
+        // tasks.status), so a transient network/5xx failure must NOT pin the
+        // flag — leaving it unset lets a same-session revisit retry instead
+        // of silently orphaning the task. A successful (or server-"skipped")
+        // response is final, so we set it here to prevent a duplicate fire.
+        sessionStorage.setItem(storageKey, "1");
 
         console.log("SUCCESS_NOTIFICATION_TRIGGER", {
           taskId,
